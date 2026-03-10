@@ -1,0 +1,7 @@
+[package]
+name = "omnisim-cache"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omnisim-core = { workspace = true }

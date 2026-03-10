@@ -1,0 +1,22 @@
+name = "arm-riscv-soc"
+
+[[units]]
+id   = "arm-core0"
+kind = "omnisim-cpu-arm"
+
+[[units]]
+id   = "riscv-core0"
+kind = "omnisim-cpu-riscv"
+
+[[units]]
+id   = "mailbox0"
+kind = "omnisim-io-mailbox"
+
+[[buses]]
+kind = "reset"
+id   = "soc-reset-bus"
+[[buses.connections]]
+from = "arm-core0"
+to   = "riscv-core0"
+
+[boot]

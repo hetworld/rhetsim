@@ -1,0 +1,35 @@
+name = "riscv-soc"
+
+[[units]]
+id   = "rv64-core0"
+kind = "omnisim-cpu-riscv"
+[units.config]
+isa = "rv64gcv"
+
+[[units]]
+id   = "clint0"
+kind = "omnisim-intc-clint"
+
+[[units]]
+id   = "plic0"
+kind = "omnisim-intc-plic"
+[units.config]
+num_sources = 64
+
+[[units]]
+id   = "dram0"
+kind = "omnisim-mem-dram"
+[units.config]
+size_mb = 256
+
+[[buses]]
+kind       = "mem"
+id         = "soc-mem-bus"
+initiators = ["rv64-core0"]
+[[buses.targets]]
+unit = "dram0"
+base = 0x80000000
+
+[boot]
+kernel = "Image"
+append = "console=ttyS0"

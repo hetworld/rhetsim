@@ -1,0 +1,17 @@
+[package]
+name = "omnisim-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omnisim"
+path = "src/main.rs"
+
+[dependencies]
+omnisim-core     = { workspace = true }
+omnisim-manifest = { workspace = true }
+omnisim-compat   = { workspace = true }
+tokio            = { workspace = true }
+log              = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = "0.3"

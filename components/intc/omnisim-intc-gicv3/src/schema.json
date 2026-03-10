@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "required": ["num_cpus"],
+  "additionalProperties": false,
+  "properties": {
+    "num_cpus":    { "type": "integer", "minimum": 1, "maximum": 256 },
+    "gicd_base":   { "type": "integer" },
+    "gicr_stride": { "type": "integer", "default": 131072 },
+    "its_enable":  { "type": "boolean", "default": false }
+  }
+}

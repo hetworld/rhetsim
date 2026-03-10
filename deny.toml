@@ -1,0 +1,10 @@
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"]
+deny = ["GPL-2.0", "GPL-3.0", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0"]
+
+[bans]
+multiple-versions = "warn"
+deny = []
+
+# 组件 crate 不允许互相依赖
+# 通过 CI 中 cargo-deny check bans 强制执行

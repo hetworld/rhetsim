@@ -1,0 +1,33 @@
+[package]
+name = "omni-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omni-cli"
+path = "src/main.rs"
+
+[dependencies]
+omnisim-core     = { workspace = true }
+omnisim-manifest = { workspace = true }
+omnisim-runtime  = { workspace = true }
+omnisim-compat   = { workspace = true }
+omnisim-cpu-arm  = { path = "../../components/cpu/omnisim-cpu-arm" }
+omnisim-cpu-riscv = { path = "../../components/cpu/omnisim-cpu-riscv" }
+omnisim-cpu-x86  = { path = "../../components/cpu/omnisim-cpu-x86" }
+omnisim-cpu-mock = { path = "../../components/cpu/omnisim-cpu-mock" }
+omnisim-intc-gicv3 = { path = "../../components/intc/omnisim-intc-gicv3" }
+omnisim-intc-plic  = { path = "../../components/intc/omnisim-intc-plic" }
+omnisim-intc-clint = { path = "../../components/intc/omnisim-intc-clint" }
+omnisim-cache      = { path = "../../components/cache/omnisim-cache" }
+omnisim-mem-dram   = { path = "../../components/memory/omnisim-mem-dram" }
+omnisim-mem-sram   = { path = "../../components/memory/omnisim-mem-sram" }
+omnisim-mem-gddr   = { path = "../../components/memory/omnisim-mem-gddr" }
+omnisim-io-uart    = { path = "../../components/io/omnisim-io-uart" }
+omnisim-io-pcie    = { path = "../../components/io/omnisim-io-pcie" }
+omnisim-io-dma     = { path = "../../components/io/omnisim-io-dma" }
+omnisim-io-mailbox = { path = "../../components/io/omnisim-io-mailbox" }
+omnisim-io-virtio  = { path = "../../components/io/omnisim-io-virtio" }
+omnisim-accel-gpgpu = { path = "../../components/accel/omnisim-accel-gpgpu" }
+omnisim-accel-dpu   = { path = "../../components/accel/omnisim-accel-dpu" }
+tracing-subscriber = "0.3"

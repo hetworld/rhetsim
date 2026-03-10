@@ -1,0 +1,11 @@
+[package]
+name = "omnisim-compat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omnisim-core     = { workspace = true }
+omnisim-manifest = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+tokio            = { workspace = true }

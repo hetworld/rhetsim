@@ -1,0 +1,15 @@
+[package]
+name = "omnisim-core"
+version = "0.1.0"
+edition = "2021"
+description = "OmniSim core interfaces — L1+L2 abstractions, zero business dependencies"
+
+[dependencies]
+thiserror = { workspace = true }
+bitflags  = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"

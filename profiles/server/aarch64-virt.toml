@@ -1,0 +1,32 @@
+name = "aarch64-virt"
+
+[[units]]
+id      = "arm-core0"
+kind    = "omnisim-cpu-arm"
+backend = "kvm"
+[units.config]
+model = "cortex-a78"
+
+[[units]]
+id   = "gicv3"
+kind = "omnisim-intc-gicv3"
+[units.config]
+num_cpus = 1
+
+[[units]]
+id   = "dram0"
+kind = "omnisim-mem-dram"
+[units.config]
+size_mb = 4096
+
+[[buses]]
+kind       = "mem"
+id         = "mem-bus"
+initiators = ["arm-core0"]
+[[buses.targets]]
+unit = "dram0"
+base = 0x40000000
+
+[boot]
+kernel = "Image"
+dtb    = "virt.dtb"

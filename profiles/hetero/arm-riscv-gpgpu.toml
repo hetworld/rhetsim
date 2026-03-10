@@ -1,0 +1,31 @@
+name = "arm-riscv-gpgpu"
+
+[[units]]
+id   = "arm-core0"
+kind = "omnisim-cpu-arm"
+
+[[units]]
+id   = "riscv-core0"
+kind = "omnisim-cpu-riscv"
+
+[[units]]
+id   = "gpgpu0"
+kind = "omnisim-accel-gpgpu"
+
+[[units]]
+id   = "dram0"
+kind = "omnisim-mem-dram"
+[units.config]
+size_mb = 8192
+
+[[buses]]
+kind         = "pcie"
+id           = "pcie-bus0"
+root_complex = "arm-core0"
+[[buses.endpoints]]
+unit = "gpgpu0"
+bus  = 1
+device = 0
+function = 0
+
+[boot]

@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/omnisim-core",
+    "crates/omnisim-manifest",
+    "crates/omnisim-runtime",
+    "crates/omnisim-tcg",
+    "crates/omnisim-compat",
+    "components/cpu/omnisim-cpu-arm",
+    "components/cpu/omnisim-cpu-riscv",
+    "components/cpu/omnisim-cpu-x86",
+    "components/cpu/omnisim-cpu-mock",
+    "components/intc/omnisim-intc-gicv3",
+    "components/intc/omnisim-intc-plic",
+    "components/intc/omnisim-intc-clint",
+    "components/cache/omnisim-cache",
+    "components/memory/omnisim-mem-dram",
+    "components/memory/omnisim-mem-sram",
+    "components/memory/omnisim-mem-gddr",
+    "components/io/omnisim-io-uart",
+    "components/io/omnisim-io-pcie",
+    "components/io/omnisim-io-dma",
+    "components/io/omnisim-io-mailbox",
+    "components/io/omnisim-io-virtio",
+    "components/accel/omnisim-accel-gpgpu",
+    "components/accel/omnisim-accel-dpu",
+    "tools/omni-cli",
+    "tools/omni-dbg",
+]
+
+[workspace.dependencies]
+omnisim-core     = { path = "crates/omnisim-core" }
+omnisim-manifest = { path = "crates/omnisim-manifest" }
+omnisim-runtime  = { path = "crates/omnisim-runtime" }
+omnisim-tcg      = { path = "crates/omnisim-tcg" }
+omnisim-compat   = { path = "crates/omnisim-compat" }
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+thiserror        = "1"
+bitflags         = "2"
+log              = "0.4"
+tracing          = "0.1"
+tokio            = { version = "1", features = ["full"] }
+kvm-ioctls       = "0.16"
+vm-memory        = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
+debug = true

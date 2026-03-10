@@ -1,0 +1,11 @@
+[package]
+name = "omni-dbg"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omni-dbg"
+path = "src/main.rs"
+
+[dependencies]
+omnisim-core = { workspace = true }
