@@ -2,13 +2,13 @@
 
 ---
 
-# OmniSim
+# RHetSim
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](./Cargo.toml)
 [![Build Status](https://img.shields.io/badge/build-pending-lightgrey.svg)](#)
 
-OmniSim is an open-source heterogeneous hardware simulation framework written in Rust. It enables mixed-ISA platform simulation through a declarative Manifest system, pluggable execution backends, and a QEMU-compatible interface layer.
+RHetSim is an open-source heterogeneous hardware simulation framework written in Rust. It enables mixed-ISA platform simulation through a declarative Manifest system, pluggable execution backends, and a QEMU-compatible interface layer.
 
 ## Features
 
@@ -59,7 +59,7 @@ Full documentation is maintained in [`docs/`](./docs/INDEX.md). Each document is
 ## Project Structure
 
 ```
-omnisim/
+rhetsim/
 ├── crates/                  # Framework core (strictly layered)
 │   ├── omnisim-core/        # L1+L2: traits and abstractions, zero business deps
 │   ├── omnisim-manifest/    # L3: declarative platform description and realizer
