@@ -130,6 +130,8 @@ pub struct PowerConnectionDesc {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BootDesc {
     #[serde(default)]
+    pub firmware: Option<String>,
+    #[serde(default)]
     pub kernel:   Option<String>,
     #[serde(default)]
     pub initrd:   Option<String>,
