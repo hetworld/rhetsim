@@ -1,7 +1,0 @@
-[package]
-name = "omnisim-intc-gicv3"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-omnisim-core = { workspace = true }

@@ -2,19 +2,19 @@ name = "arm-riscv-gpgpu"
 
 [[units]]
 id   = "arm-core0"
-kind = "omnisim-cpu-arm"
+kind = "rhetsim-cpu-arm"
 
 [[units]]
 id   = "riscv-core0"
-kind = "omnisim-cpu-riscv"
+kind = "rhetsim-cpu-riscv"
 
 [[units]]
 id   = "gpgpu0"
-kind = "omnisim-accel-gpgpu"
+kind = "rhetsim-accel-gpgpu"
 
 [[units]]
 id   = "dram0"
-kind = "omnisim-mem-dram"
+kind = "rhetsim-mem-dram"
 [units.config]
 size_mb = 8192
 

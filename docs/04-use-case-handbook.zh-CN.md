@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — 应用场景手册
+# RhetSim — 应用场景手册
 
 > **文档编号**：DOC-04 &nbsp;&nbsp; **版本**：v1.0 &nbsp;&nbsp; **日期**：2026-Q1 &nbsp;&nbsp; **作者**：OpenFunTech
 
@@ -11,7 +11,7 @@
 | 文档编号 | DOC-04 |
 | --- | --- |
 | 文档版本 | v1.0 |
-| 适用读者 | 外部用户（使用 OmniSim 搭建平台）· 新入贡献者 |
+| 适用读者 | 外部用户（使用 RhetSim 搭建平台）· 新入贡献者 |
 | 前置阅读 | DOC-01 架构设计（推荐） |
 | 关联文档 | DOC-02 接口规范 · DOC-03 组件开发指南 |
 | 上次更新 | 2026-Q1 |
@@ -341,7 +341,7 @@ id = "np0"; kind = "net-processor-card"; backend = "functional"
 [units.config]
 core_count  = 8
 core_isa    = "mips64"
-hw_fwd_table = true   # omnisim-net-hwfwd 组件
+hw_fwd_table = true   # rhetsim-net-hwfwd 组件
 crypto_engine = true  # MockBackend
 [[buses]]
 kind = "pcie"; id = "pcie0"
@@ -478,19 +478,19 @@ base_addr = "0x800000000000"; size = "0x800000000"
 
 ### 5.1  场景十一：嵌套虚拟化
 
-OmniSim 仿真完整物理机（TCG 全系统仿真），物理机上运行真实的 Hypervisor 软件（KVM / LeoVirt-S），Hypervisor 再管理多个 VM。框架零改动，嵌套能力完全由 omnisim-tcg 的 EL2/VMX/H扩展前端提供。
+RhetSim 仿真完整物理机（TCG 全系统仿真），物理机上运行真实的 Hypervisor 软件（KVM / LeoVirt-S），Hypervisor 再管理多个 VM。框架零改动，嵌套能力完全由 rhetsim-tcg 的 EL2/VMX/H扩展前端提供。
 
 ```
 版本要求
-ARM 嵌套虚拟化：需要 omnisim-tcg P1（EL2 特权级仿真 + vGIC），非 P0 开源版本功能
-x86 嵌套虚拟化：需要 omnisim-tcg P1（VMX 指令集 + EPT），非 P0 开源版本功能
-RISC-V 嵌套虚拟化：需要 omnisim-tcg P1（H 扩展），非 P0 开源版本功能
+ARM 嵌套虚拟化：需要 rhetsim-tcg P1（EL2 特权级仿真 + vGIC），非 P0 开源版本功能
+x86 嵌套虚拟化：需要 rhetsim-tcg P1（VMX 指令集 + EPT），非 P0 开源版本功能
+RISC-V 嵌套虚拟化：需要 rhetsim-tcg P1（H 扩展），非 P0 开源版本功能
 ```
 
 ```toml
 [platform]
 name = "nested-virt"
-# 仿真物理机（不是 VM！是 OmniSim 仿真的硬件）
+# 仿真物理机（不是 VM！是 RhetSim 仿真的硬件）
 [[units]]
 id = "phys-cpu"; kind = "arm-cortex-a78-core"; backend = "functional"
 [units.config]
@@ -505,7 +505,7 @@ enable_virt = true  # GICv3 虚拟化扩展（vGIC）
 id = "phys-dram"; kind = "ddr-ctrl"; backend = "functional"
 [units.config]
 size_gb = 64
-# Stage-2 MMU 由 omnisim-tcg EL2 前端自动管理
+# Stage-2 MMU 由 rhetsim-tcg EL2 前端自动管理
 # 不需要在 Manifest 中显式配置
 # Hypervisor 软件（KVM / LeoVirt-S）以普通 ELF 加载
 [[boot.sequence]]
@@ -551,8 +551,8 @@ unit = "secure-sram"; base = "0x0e000000"
 
 ```
 P2 特性，当前版本未实现
-AMD SEV-SNP：需要 omnisim-security-psp 组件（P2）
-ARM CCA：需要 omnisim-security-rmm 组件（P2）+ omnisim-tcg Realm World 支持
+AMD SEV-SNP：需要 rhetsim-security-psp 组件（P2）
+ARM CCA：需要 rhetsim-security-rmm 组件（P2）+ rhetsim-tcg Realm World 支持
 P0/P1 版本：MemSecurity 枚举已预留，接口已定义，但隔离检查为 no-op
 ```
 

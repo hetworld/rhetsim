@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — Interface Specification
+# RhetSim — Interface Specification
 
 > **Document ID**: DOC-02 &nbsp;&nbsp; **Version**: v1.0 &nbsp;&nbsp; **Date**: 2026-Q1 &nbsp;&nbsp; **Author**: OpenFunTech
 
@@ -11,15 +11,15 @@
 | Document ID | DOC-02 |
 | --- | --- |
 | Version | v1.0 |
-| Audience | Framework developers (implementing omnisim-core) · Component developers (depending on interfaces) |
+| Audience | Framework developers (implementing rhetsim-core) · Component developers (depending on interfaces) |
 | Prerequisites | DOC-01 Architecture Design |
 | Related Docs | DOC-03 Component Dev Guide · DOC-04 Use Case Handbook |
 | Last Updated | 2026-Q1 |
 
-## 1  omnisim-core Interface Definitions
+## 1  rhetsim-core Interface Definitions
 
 ```
-omnisim-core Design Conventions
+rhetsim-core Design Conventions
 Zero business dependencies (only std + thiserror + bitflags are permitted)
 All traits require Send + Sync + 'static
 All interface methods must not panic; errors are returned via OmniResult
@@ -31,7 +31,7 @@ This crate is the sole shared dependency for all other crates
 The unified interface for all hardware units that "do work". CPUs, NPUs, DPUs, and DMA engines all implement this trait; the framework knows nothing about what happens internally.
 
 ```rust
-// omnisim-core/src/backend/execution.rs
+// rhetsim-core/src/backend/execution.rs
 ```
 
 ```
@@ -93,7 +93,7 @@ pub enum StepResult {
 Orthogonal to ExecutionBackend. Describes how a Unit participates in global time advancement; it is the foundation for SyncBus to coordinate mixed-fidelity simulation.
 
 ```rust
-// omnisim-core/src/backend/timing.rs
+// rhetsim-core/src/backend/timing.rs
 ```
 
 ```
@@ -136,7 +136,7 @@ pub trait TimingModel: Send + Sync {
 ### 1.3  MemTarget / MemSpace — Memory Subsystem
 
 ```rust
-// omnisim-core/src/mem.rs
+// rhetsim-core/src/mem.rs
 ```
 
 ```
@@ -250,7 +250,7 @@ pub trait AddressTranslator: Send + Sync {
 ### 1.4  IrqLine / IrqSink / IrqSource — Interrupt Subsystem
 
 ```rust
-// omnisim-core/src/irq.rs
+// rhetsim-core/src/irq.rs
 ```
 
 ```
@@ -302,7 +302,7 @@ pub trait MsiSender: Send + Sync {
 The unified abstraction for all hardware entities. ARM CPUs, NPUs, DPUs, and UARTs are fully equal at the framework level through this trait.
 
 ```rust
-// omnisim-core/src/unit.rs
+// rhetsim-core/src/unit.rs
 ```
 
 ```
@@ -426,7 +426,7 @@ pub enum IrqKind { LevelSensitive, EdgeTriggered, Msi }
 Used for large data transfers between accelerators (NPU/DPU) and memory; kept separate from MemBus to avoid MMIO path overhead.
 
 ```rust
-// omnisim-core/src/dataflow.rs
+// rhetsim-core/src/dataflow.rs
 ```
 
 ```
@@ -465,7 +465,7 @@ pub enum DataOp {
 ### 1.7  UnitRegistry — Global Unit Registry
 
 ```rust
-// omnisim-core/src/registry.rs
+// rhetsim-core/src/registry.rs
 ```
 
 ```
@@ -498,17 +498,17 @@ impl UnitRegistry {
 
 ### 1.8  Security Execution Interface (Reserved in P0, Implemented in P2)
 
-To support TrustZone (Scenario 12) and confidential virtualization (Scenario 13, P2), security-related interfaces are reserved in omnisim-core. In P0 the interfaces exist but produce no actual isolation (no-ops); P2 implements real security domain checks.
+To support TrustZone (Scenario 12) and confidential virtualization (Scenario 13, P2), security-related interfaces are reserved in rhetsim-core. In P0 the interfaces exist but produce no actual isolation (no-ops); P2 implements real security domain checks.
 
 ```
 P0/P2 Phased Notes
 P0: enums and interfaces defined; MemBus security checks are no-ops; Units return Normal World by default
-P1: TrustZone SMC/HVC path, EL2/EL3 switching (implemented in omnisim-tcg)
+P1: TrustZone SMC/HVC path, EL2/EL3 switching (implemented in rhetsim-tcg)
 P2: MemBus actual security domain isolation checks; ARM CCA RMM; AMD SEV-SNP PSP
 ```
 
 ```rust
-// omnisim-core/src/security.rs
+// rhetsim-core/src/security.rs
 
 /// Memory security attribute
 /// Attached to MemAttrs; describes which security domain a memory page belongs to
@@ -592,7 +592,7 @@ impl MemBus {
 To support CXL.cache (Scenario 8, P2), cache coherence domain interfaces are reserved. CXL.cache allows devices to cache Host memory and requires coherence protocol (snoop/invalidate) support. Before P2, only the interface is defined; it is not connected to MemBus.
 
 ```rust
-// omnisim-core/src/coherence.rs
+// rhetsim-core/src/coherence.rs
 // P2 interface placeholder: defines traits, not yet implemented
 
 #[derive(Debug, Clone, Copy)]
@@ -631,13 +631,13 @@ To support nested virtualization (Scenario 11), AddressTranslator is extended wi
 
 ```
 Nested Simulation Architecture Notes
-OmniSim simulates a complete physical machine (TCG); a real Hypervisor (KVM / LeoVirt-S) runs on the physical machine
+RhetSim simulates a complete physical machine (TCG); a real Hypervisor (KVM / LeoVirt-S) runs on the physical machine
 The Hypervisor manages multiple VMs; Stage-2 MMU is the core mechanism for VM isolation
-omnisim-core only needs to provide the interface; the concrete implementation is in omnisim-tcg's EL2/VMX frontend (P1)
+rhetsim-core only needs to provide the interface; the concrete implementation is in rhetsim-tcg's EL2/VMX frontend (P1)
 ```
 
 ```rust
-// omnisim-core/src/mem.rs extension
+// rhetsim-core/src/mem.rs extension
 
 pub trait AddressTranslator: Send + Sync {
     /// Stage-1: VA → IPA (Guest OS page tables, EL1-controlled)
@@ -717,7 +717,7 @@ Bus connections can cross Composite Unit boundaries
 Responsible for address routing: given an Initiator's access address, it finds the corresponding MemTarget and forwards the read/write operation. Supports partial visibility (`visible_to`) to implement address space isolation between subsystems.
 
 ```rust
-// omnisim-core/src/bus/mem_bus.rs
+// rhetsim-core/src/bus/mem_bus.rs
 ```
 
 ```
@@ -806,7 +806,7 @@ pub struct MappingInfo {
 Manages interrupt line connections. Supports one-to-one, one-to-many (interrupt fan-out), and many-to-one (interrupt aggregation) connections.
 
 ```rust
-// omnisim-core/src/bus/irq_bus.rs
+// rhetsim-core/src/bus/irq_bus.rs
 ```
 
 ```
@@ -859,7 +859,7 @@ impl IrqBus {
 Handles PCIe topology: Root Complex to Endpoint connections, BAR address mapping, MSI routing, and configuration space access.
 
 ```rust
-// omnisim-core/src/bus/pcie_bus.rs
+// rhetsim-core/src/bus/pcie_bus.rs
 ```
 
 ```
@@ -928,7 +928,7 @@ pub struct Bdf { pub bus: u8, pub device: u8, pub function: u8 }
 Coordinates global timing across different TimingModels in mixed-fidelity simulation, ensuring correct causality between LooseTiming and CycleAccurate Units.
 
 ```rust
-// omnisim-core/src/bus/sync_bus.rs
+// rhetsim-core/src/bus/sync_bus.rs
 ```
 
 ```
@@ -981,7 +981,7 @@ pub struct SyncStats {
 Centrally manages interrupt connections across all IrqBuses, providing name-based lookup and dynamic connection capabilities.
 
 ```rust
-// omnisim-core/src/bus/irq_router.rs (continued in §5.6)
+// rhetsim-core/src/bus/irq_router.rs (continued in §5.6)
 ```
 
 ```
@@ -1030,7 +1030,7 @@ On-chip scenario: Reset Controller Unit acts as reset_source; controlled cores a
 ```
 
 ```rust
-// omnisim-core/src/bus/reset_bus.rs
+// rhetsim-core/src/bus/reset_bus.rs
 
 /// Reset signal receive side (implemented by the Unit being reset)
 pub trait ResetSink: Send + Sync {
@@ -1161,7 +1161,7 @@ Server scenarios: PowerBus is typically not needed (components do not implement 
 ```
 
 ```rust
-// omnisim-core/src/bus/power_bus.rs
+// rhetsim-core/src/bus/power_bus.rs
 
 /// Power state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1245,7 +1245,7 @@ Not mutually exclusive: a GPU card connects to Host via PcieBus and to other car
 ```
 
 ```rust
-// omnisim-core/src/bus/interconnect_bus.rs
+// rhetsim-core/src/bus/interconnect_bus.rs
 
 /// Addressing mode: determines the fundamental semantics of memory access
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1415,7 +1415,7 @@ size      = "0x800000000"
 The DPU scenario (Scenario 3) introduces the need for an EP to proactively access Host memory: the DPU's DMA engine needs to read/write virtio rings in Host memory directly, without going through BAR registers. This is EP→RC direction DMA, the reverse of the usual RC→EP direction.
 
 ```rust
-// omnisim-core/src/bus/pcie_bus.rs extension
+// rhetsim-core/src/bus/pcie_bus.rs extension
 
 pub trait PcieEndpoint: Unit {
     // Existing interfaces unchanged...
@@ -1467,7 +1467,7 @@ impl PcieBus {
 NetworkBackend provides a unified external network access interface for DPU nvme-of initiators, network processors, and similar components, abstracting away the differences between host sockets and simulated networks.
 
 ```rust
-// omnisim-core/src/network.rs
+// rhetsim-core/src/network.rs
 
 pub trait NetworkBackend: Send + Sync {
     /// Send a packet to the external network
@@ -1492,7 +1492,7 @@ pub struct HostSocketBackend {
 /// Simulated network implementation
 /// Connects to another simulated node's PacketBus (component layer)
 pub struct SimNetworkBackend {
-    // PacketBus reference, defined in the omnisim-dpu-core component layer
+    // PacketBus reference, defined in the rhetsim-dpu-core component layer
     tx: std::sync::mpsc::Sender<Packet>,
 }
 
@@ -1500,7 +1500,7 @@ impl NetworkBackend for HostSocketBackend { /* ... */ }
 impl NetworkBackend for SimNetworkBackend  { /* ... */ }
 ```
 
-## 3  omnisim-manifest — L3 Platform Description Layer
+## 3  rhetsim-manifest — L3 Platform Description Layer
 
 ```
 L3 Layer Responsibilities
@@ -1510,7 +1510,7 @@ The sole responsibility of L3 is to translate a declarative Manifest (JSON/TOML)
 ### 3.1  Manifest Top-Level Structure
 
 ```rust
-// omnisim-manifest/src/manifest.rs
+// rhetsim-manifest/src/manifest.rs
 ```
 
 ```
@@ -1553,7 +1553,7 @@ pub enum SimMode {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ManifestMeta {
     pub version:         String,
-    pub omnisim_version: String,
+    pub rhetsim_version: String,
     pub created_by:      Option<String>,
     pub created_at:      Option<String>,
     /// SHA256 of content before this field
@@ -1780,7 +1780,7 @@ pub enum ImageFormat {
 Static validation is performed before realize to pinpoint errors to specific fields, avoiding problems that would only surface at runtime.
 
 ```rust
-// omnisim-manifest/src/validator.rs
+// rhetsim-manifest/src/validator.rs
 ```
 
 ```
@@ -1834,7 +1834,7 @@ pub enum ErrorKind {
 ### 3.6  Realizer — Manifest to Platform
 
 ```rust
-// omnisim-manifest/src/realizer.rs
+// rhetsim-manifest/src/realizer.rs
 ```
 
 ```
@@ -1951,13 +1951,13 @@ pub struct BusSet {
 Each component crate provides a `register()` function, called at binary startup, achieving zero-intrusion registration:
 
 ```rust
-// components/cpu/omnisim-cpu-arm/src/lib.rs
+// components/cpu/rhetsim-cpu-arm/src/lib.rs
 ```
 
 ```
 /// ARM CPU component registration entry point
-/// Called in omnisim-runtime's main():
-///   omnisim_cpu_arm::register(&mut registry);
+/// Called in rhetsim-runtime's main():
+///   rhetsim_cpu_arm::register(&mut registry);
 pub fn register(reg: &mut ComponentRegistry) {
     reg.register(
         "arm-cortex-a78-core",
@@ -1985,11 +1985,11 @@ static SCHEMA_JSON: &str = r#"{
 }"#;
 ```
 
-## 4  omnisim-runtime — Runtime and Scheduling Layer
+## 4  rhetsim-runtime — Runtime and Scheduling Layer
 
 ```
 Runtime Layer Responsibilities
-omnisim-runtime is the "engine" of the entire simulation platform: it holds the Platform instance, drives exec() on all executable Units, coordinates SyncBus timing, handles VM exits, and responds to external control commands (pause / resume / snapshot).
+rhetsim-runtime is the "engine" of the entire simulation platform: it holds the Platform instance, drives exec() on all executable Units, coordinates SyncBus timing, handles VM exits, and responds to external control commands (pause / resume / snapshot).
 ```
 
 ### 4.1  Overall Execution Model
@@ -2018,7 +2018,7 @@ UnitThread reports events (VmExit/Fault/Halt) via channel
 ### 4.2  Scheduler
 
 ```rust
-// omnisim-runtime/src/scheduler.rs
+// rhetsim-runtime/src/scheduler.rs
 ```
 
 ```
@@ -2094,7 +2094,7 @@ impl Scheduler {
 ### 4.3  UnitThread — Unit Execution Thread
 
 ```rust
-// omnisim-runtime/src/unit_thread.rs
+// rhetsim-runtime/src/unit_thread.rs
 ```
 
 ```
@@ -2186,7 +2186,7 @@ pub enum VmExitReason {
 When a KVM Unit triggers a VM exit, the UnitThread reports the event and the RunLoop routes it to the corresponding MemTarget or IO handler:
 
 ```rust
-// omnisim-runtime/src/vm_exit.rs
+// rhetsim-runtime/src/vm_exit.rs
 ```
 
 ```
@@ -2223,7 +2223,7 @@ pub enum DispatchResult {
 ### 4.5  SimClock — Global Simulation Clock
 
 ```rust
-// omnisim-runtime/src/clock.rs
+// rhetsim-runtime/src/clock.rs
 ```
 
 ```
@@ -2260,7 +2260,7 @@ impl SimClock {
 ### 4.6  BootSequencer — Boot Sequence Executor
 
 ```rust
-// omnisim-runtime/src/boot.rs
+// rhetsim-runtime/src/boot.rs
 ```
 
 ```
@@ -2292,11 +2292,11 @@ impl BootSequencer {
 // 7. ReleaseReset(riscv_ctrl)            // release RISC-V co-processor
 ```
 
-## 5  omnisim-tcg — TCG Execution Engine Interface
+## 5  rhetsim-tcg — TCG Execution Engine Interface
 
 ```
 TCG Boundary Design Principles
-TCG is one ExecutionBackend implementation of omnisim-core — it is not the framework core
+TCG is one ExecutionBackend implementation of rhetsim-core — it is not the framework core
 TCG accesses memory via the MemSpace interface; it holds no direct reference to MemBus
 TCG emits interrupts via IrqLine; it never calls IrqSink directly
 TCG IR is an internal implementation detail; it is not exposed to other crates
@@ -2306,7 +2306,7 @@ Ported from QEMU TCG, but interface boundaries are completely redefined
 ### 5.1  TcgEngine — TCG Engine Main Interface
 
 ```rust
-// omnisim-tcg/src/engine.rs
+// rhetsim-tcg/src/engine.rs
 ```
 
 ```
@@ -2492,17 +2492,17 @@ impl TbCache {
 | RISC-V RV32 | ✅ Supported | Planned | Embedded scenarios |
 | x86-64 | KVM preferred | ✅ TCG | KVM recommended on x86 hosts |
 
-## 6  omnisim-compat — L4 Compatibility Layer
+## 6  rhetsim-compat — L4 Compatibility Layer
 
 ```
 L4 Layer Responsibilities
-omnisim-compat makes the outside world (libvirt / OpenStack / virt-manager) see OmniSim as a standard QEMU process. It implements QEMU command-line parsing and the core subset of the QMP protocol, internally translating them into L3 Manifest operations and L2 Platform control.
+rhetsim-compat makes the outside world (libvirt / OpenStack / virt-manager) see RhetSim as a standard QEMU process. It implements QEMU command-line parsing and the core subset of the QMP protocol, internally translating them into L3 Manifest operations and L2 Platform control.
 ```
 
 ### 6.1  CLI Parser — QEMU Command-Line Parsing
 
 ```rust
-// omnisim-compat/src/cli/parser.rs
+// rhetsim-compat/src/cli/parser.rs
 ```
 
 ```
@@ -2552,7 +2552,7 @@ impl QemuCliParser {
 ### 6.2  QMP Server — QMP Protocol Implementation
 
 ```rust
-// omnisim-compat/src/qmp/server.rs
+// rhetsim-compat/src/qmp/server.rs
 ```
 
 ```
@@ -2587,7 +2587,7 @@ Sorted by actual libvirt usage frequency, with implementation priority noted:
 
 | Command | Priority | Description | L2/L3 Operation |
 | --- | --- | --- | --- |
-| qmp_capabilities | P0 | Capability negotiation (first handshake step; must implement) | Return list of capabilities supported by OmniSim |
+| qmp_capabilities | P0 | Capability negotiation (first handshake step; must implement) | Return list of capabilities supported by RhetSim |
 | query-version | P0 | QEMU version info (used by libvirt for detection) | Return hardcoded compatible version number |
 | query-status | P0 | Query running state | Scheduler::state() |
 | stop | P0 | Pause all vCPUs | Scheduler::pause() |
@@ -2614,7 +2614,7 @@ Sorted by actual libvirt usage frequency, with implementation priority noted:
 ### 6.4  QMP Message Format
 
 ```rust
-// omnisim-compat/src/qmp/types.rs
+// rhetsim-compat/src/qmp/types.rs
 ```
 
 ```
@@ -2665,7 +2665,7 @@ pub struct QmpEvent {
     pub timestamp: QmpTimestamp,
 }
 
-/// Async events emitted by OmniSim (subscribed to by libvirt):
+/// Async events emitted by RhetSim (subscribed to by libvirt):
 /// STOP              → Scheduler enters Paused
 /// RESUME            → Scheduler enters Running
 /// RESET             → system reset complete
@@ -2678,12 +2678,12 @@ pub struct QmpEvent {
 /// BALLOON_CHANGE    → memory balloon changed
 ```
 
-### 6.5  GDB Stub — omni-dbg
+### 6.5  GDB Stub — rhetsim-dbg
 
-Implements GDB RSP (Remote Serial Protocol), enabling standard GDB / LLDB to debug the guest running inside OmniSim.
+Implements GDB RSP (Remote Serial Protocol), enabling standard GDB / LLDB to debug the guest running inside RhetSim.
 
 ```rust
-// tools/omni-dbg/src/gdb_stub.rs
+// tools/rhetsim-dbg/src/gdb_stub.rs
 ```
 
 ```
@@ -2710,7 +2710,7 @@ pub struct GdbStub {
 /// T        → query whether a thread is alive
 /// H        → select operating thread (maps to CPU Unit)
 
-/// GDB ↔ OmniSim mapping:
+/// GDB ↔ RhetSim mapping:
 /// GDB thread id  →  CPU Unit id  (soc0.arm_ss.core0 → tid=1)
 /// GDB register   →  DebugBackend::read_reg()
 /// GDB memory     →  MemSpace::read() (from the perspective of the target CPU)
@@ -2718,19 +2718,19 @@ pub struct GdbStub {
 
 ### 6.6  Executable Masquerade
 
-OmniSim masquerades as QEMU executables via symlinks, allowing seamless libvirt integration:
+RhetSim masquerades as QEMU executables via symlinks, allowing seamless libvirt integration:
 
 ```
 # Create symlinks at install time
-ln -s /usr/bin/omnisim /usr/bin/qemu-system-aarch64
-ln -s /usr/bin/omnisim /usr/bin/qemu-system-x86_64
-ln -s /usr/bin/omnisim /usr/bin/qemu-system-riscv64
+ln -s /usr/bin/rhetsim /usr/bin/qemu-system-aarch64
+ln -s /usr/bin/rhetsim /usr/bin/qemu-system-x86_64
+ln -s /usr/bin/rhetsim /usr/bin/qemu-system-riscv64
 
-# OmniSim reads argv[0] to infer the default architecture:
+# RhetSim reads argv[0] to infer the default architecture:
 # qemu-system-aarch64 → arch = "aarch64"
 # qemu-system-x86_64  → arch = "x86_64"
 
-# Full invocation generated by libvirt (handled transparently by OmniSim):
+# Full invocation generated by libvirt (handled transparently by RhetSim):
 qemu-system-aarch64 \
   -machine virt \
   -accel kvm \
@@ -2741,8 +2741,8 @@ qemu-system-aarch64 \
   -append "root=/dev/vda console=ttyAMA0" \
   -drive file=/path/to/disk.qcow2,if=virtio \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
-  -qmp unix:/var/run/omnisim-1234.sock,server,nowait \
-  -daemonize -pidfile /var/run/omnisim-1234.pid
+  -qmp unix:/var/run/rhetsim-1234.sock,server,nowait \
+  -daemonize -pidfile /var/run/rhetsim-1234.pid
 ```
 
 ## 7  Component Implementation Conventions
@@ -2755,8 +2755,8 @@ All component crates follow the same set of conventions to guarantee interchange
 ### 7.1  Standard Component Crate Structure
 
 ```
-// Using omnisim-intc-gicv3 as an example
-omnisim-intc-gicv3/
+// Using rhetsim-intc-gicv3 as an example
+rhetsim-intc-gicv3/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs          // register() entry point + pub re-exports
@@ -2773,7 +2773,7 @@ omnisim-intc-gicv3/
 ### 7.2  Leaf Unit Standard Pattern
 
 ```rust
-// Using UART (omnisim-io-uart) as an example
+// Using UART (rhetsim-io-uart) as an example
 ```
 
 ```
@@ -2946,7 +2946,7 @@ impl Unit for GicV3 {
 Each component must provide a JSON Schema; the Validator checks UnitDesc.config before realize:
 
 ```
-// components/intc/omnisim-intc-gicv3/src/schema.json
+// components/intc/rhetsim-intc-gicv3/src/schema.json
 {
     "$schema": "http://json-schema.org/draft-07/schema",
     "type": "object",
@@ -2993,14 +2993,14 @@ Each component crate must include:
 ### 8.1  Complete Workspace Structure
 
 ```
-omnisim/
+rhetsim/
 ├── Cargo.toml                      # workspace root
 ├── Cargo.lock
 ├── deny.toml                       # cargo-deny: license + vulnerability checks
 ├── .cargo/config.toml              # target / linker / env configuration
 │
 ├── crates/                         # framework core crates (strict layering)
-│   ├── omnisim-core/               # L1+L2 interfaces; zero business dependencies (std+thiserror+bitflags)
+│   ├── rhetsim-core/               # L1+L2 interfaces; zero business dependencies (std+thiserror+bitflags)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -3027,7 +3027,7 @@ omnisim/
 │   │       ├── registry.rs         # UnitRegistry
 │   │       └── snapshot.rs         # UnitSnapshot / PlatformSnapshot
 │   │
-│   ├── omnisim-manifest/           # L3 platform description
+│   ├── rhetsim-manifest/           # L3 platform description
 │   │   └── src/
 │   │       ├── manifest.rs         # Manifest / UnitDesc / BusDesc / BootDesc
 │   │       ├── validator.rs        # Validator / ValidationReport
@@ -3035,7 +3035,7 @@ omnisim/
 │   │       ├── realizer.rs         # Realizer / ComponentRegistry / Platform
 │   │       └── loader.rs           # from_json / from_toml / to_json / to_toml
 │   │
-│   ├── omnisim-runtime/            # runtime scheduling
+│   ├── rhetsim-runtime/            # runtime scheduling
 │   │   └── src/
 │   │       ├── scheduler.rs        # Scheduler / SchedulerConfig
 │   │       ├── unit_thread.rs      # UnitThread / CtrlCmd / UnitEvent
@@ -3044,7 +3044,7 @@ omnisim/
 │   │       ├── boot.rs             # BootSequencer
 │   │       └── main.rs             # program entry point (register all components, parse CLI, start)
 │   │
-│   ├── omnisim-tcg/                # TCG execution engine
+│   ├── rhetsim-tcg/                # TCG execution engine
 │   │   └── src/
 │   │       ├── engine.rs           # TcgEngine<F,B>
 │   │       ├── frontend.rs         # TcgFrontend trait / CpuState trait
@@ -3060,7 +3060,7 @@ omnisim/
 │   │           ├── x86_64/         # generates x86_64 machine code
 │   │           └── aarch64/        # generates AArch64 machine code
 │   │
-│   └── omnisim-compat/             # L4 compatibility layer
+│   └── rhetsim-compat/             # L4 compatibility layer
 │       └── src/
 │           ├── lib.rs
 │           ├── cli/
@@ -3073,33 +3073,33 @@ omnisim/
 │
 ├── components/                     # hardware component library
 │   ├── cpu/
-│   │   ├── omnisim-cpu-arm/        # ARM Cortex-A series
-│   │   ├── omnisim-cpu-riscv/      # RISC-V RV64/RV32
-│   │   ├── omnisim-cpu-x86/        # x86-64 (TCG + KVM)
-│   │   └── omnisim-cpu-mock/       # Mock CPU (testing)
+│   │   ├── rhetsim-cpu-arm/        # ARM Cortex-A series
+│   │   ├── rhetsim-cpu-riscv/      # RISC-V RV64/RV32
+│   │   ├── rhetsim-cpu-x86/        # x86-64 (TCG + KVM)
+│   │   └── rhetsim-cpu-mock/       # Mock CPU (testing)
 │   │   # MMU merged into each CPU crate; not a standalone component
-│   │   # omnisim-cpu-arm/src/mmu.rs    ARMv8/v9 MMU (Stage1 + Stage2)
-│   │   # omnisim-cpu-riscv/src/mmu.rs  Sv39/Sv48/Sv57
+│   │   # rhetsim-cpu-arm/src/mmu.rs    ARMv8/v9 MMU (Stage1 + Stage2)
+│   │   # rhetsim-cpu-riscv/src/mmu.rs  Sv39/Sv48/Sv57
 │   ├── intc/
-│   │   ├── omnisim-intc-gicv3/     # ARM GICv3 (GICD+GICR+GICC+ITS)
-│   │   ├── omnisim-intc-plic/      # RISC-V PLIC
-│   │   └── omnisim-intc-clint/     # RISC-V CLINT (software interrupt + timer)
+│   │   ├── rhetsim-intc-gicv3/     # ARM GICv3 (GICD+GICR+GICC+ITS)
+│   │   ├── rhetsim-intc-plic/      # RISC-V PLIC
+│   │   └── rhetsim-intc-clint/     # RISC-V CLINT (software interrupt + timer)
 │   ├── cache/
-│   │   └── omnisim-cache/          # Unified Cache model (L1/L2/L3 distinguished by capacity/latency params)
+│   │   └── rhetsim-cache/          # Unified Cache model (L1/L2/L3 distinguished by capacity/latency params)
 │   │   #    May be split into separate crates in P2 if RTL co-sim divergence is too large
 │   ├── memory/
-│   │   ├── omnisim-mem-dram/       # DRAM (with TimingBackend)
-│   │   ├── omnisim-mem-sram/       # SRAM (no timing; low latency)
-│   │   └── omnisim-mem-gddr/       # GDDR6 (GPU VRAM; with TimingBackend)
+│   │   ├── rhetsim-mem-dram/       # DRAM (with TimingBackend)
+│   │   ├── rhetsim-mem-sram/       # SRAM (no timing; low latency)
+│   │   └── rhetsim-mem-gddr/       # GDDR6 (GPU VRAM; with TimingBackend)
 │   ├── io/
-│   │   ├── omnisim-io-uart/        # PL011 UART
-│   │   ├── omnisim-io-pcie/        # PCIe Root Complex + EP framework
-│   │   ├── omnisim-io-dma/         # DMA engine (with Dataflow interface)
-│   │   ├── omnisim-io-mailbox/     # on-chip Mailbox (bidirectional interrupt)
-│   │   └── omnisim-io-virtio/      # Virtio bus + devices (blk/net/console)
+│   │   ├── rhetsim-io-uart/        # PL011 UART
+│   │   ├── rhetsim-io-pcie/        # PCIe Root Complex + EP framework
+│   │   ├── rhetsim-io-dma/         # DMA engine (with Dataflow interface)
+│   │   ├── rhetsim-io-mailbox/     # on-chip Mailbox (bidirectional interrupt)
+│   │   └── rhetsim-io-virtio/      # Virtio bus + devices (blk/net/console)
 │   └── accel/
-│       ├── omnisim-accel-gpgpu/    # GPGPU (SM + L2 + VRAM; Composite)
-│       └── omnisim-accel-dpu/      # DPU (network processor; Composite)
+│       ├── rhetsim-accel-gpgpu/    # GPGPU (SM + L2 + VRAM; Composite)
+│       └── rhetsim-accel-dpu/      # DPU (network processor; Composite)
 │
 ├── profiles/                       # pre-built Platform Profiles
 │   ├── embedded/                   # embedded SoC (RISC-V)
@@ -3108,8 +3108,8 @@ omnisim/
 │   └── extended/                   # extended feature interface placeholders (TimingBackend / RTL co-sim etc.)
 │
 ├── tools/
-│   ├── omni-cli/                   # CLI entry point (registers all components)
-│   └── omni-dbg/                   # GDB stub
+│   ├── rhetsim-cli/                   # CLI entry point (registers all components)
+│   └── rhetsim-dbg/                   # GDB stub
 │
 └── tests/
     ├── common/                     # test utilities (MinimalPlatform / MockBackend)
@@ -3143,21 +3143,21 @@ omnisim/
 ```
 [workspace]
 members = [
-    "crates/omnisim-core",
-    "crates/omnisim-manifest",
-    "crates/omnisim-runtime",
-    "crates/omnisim-tcg",
-    "crates/omnisim-compat",
-    "components/cpu/omnisim-cpu-arm",
+    "crates/rhetsim-core",
+    "crates/rhetsim-manifest",
+    "crates/rhetsim-runtime",
+    "crates/rhetsim-tcg",
+    "crates/rhetsim-compat",
+    "components/cpu/rhetsim-cpu-arm",
     # ... all components
-    "tools/omni-cli",
-    "tools/omni-dbg",
+    "tools/rhetsim-cli",
+    "tools/rhetsim-dbg",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 # Versions managed centrally; each crate uses { workspace = true }
-omnisim-core = { path = "crates/omnisim-core" }
+rhetsim-core = { path = "crates/rhetsim-core" }
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 thiserror    = "1"
@@ -3182,8 +3182,8 @@ debug    = true
 
 | Rule | Description |
 | --- | --- |
-| Component crates may only depend on omnisim-core | Cross-component dependencies are prohibited (checked via `bans` in deny.toml) |
-| omnisim-core has zero business dependencies | Only std + thiserror + bitflags permitted; no business logic dependencies |
+| Component crates may only depend on rhetsim-core | Cross-component dependencies are prohibited (checked via `bans` in deny.toml) |
+| rhetsim-core has zero business dependencies | Only std + thiserror + bitflags permitted; no business logic dependencies |
 | License allowlist | MIT / Apache-2.0 / BSD-2/3 / ISC (GPL/LGPL must not enter the core) |
 | No `unwrap()` in library code | `clippy::unwrap_used = deny` (enforced via .clippy.toml) |
 | All `pub` interfaces documented | `missing_docs = warn` (core crates use `deny`) |

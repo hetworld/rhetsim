@@ -2,15 +2,15 @@ name = "arm-riscv-soc"
 
 [[units]]
 id   = "arm-core0"
-kind = "omnisim-cpu-arm"
+kind = "rhetsim-cpu-arm"
 
 [[units]]
 id   = "riscv-core0"
-kind = "omnisim-cpu-riscv"
+kind = "rhetsim-cpu-riscv"
 
 [[units]]
 id   = "mailbox0"
-kind = "omnisim-io-mailbox"
+kind = "rhetsim-io-mailbox"
 
 [[buses]]
 kind = "reset"

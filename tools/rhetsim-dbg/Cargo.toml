@@ -1,0 +1,11 @@
+[package]
+name = "rhetsim-dbg"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rhetsim-dbg"
+path = "src/main.rs"
+
+[dependencies]
+rhetsim-core = { workspace = true }

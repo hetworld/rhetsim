@@ -2,13 +2,13 @@
 
 ---
 
-# OmniSim
+# RhetSim
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](./Cargo.toml)
 [![Build Status](https://img.shields.io/badge/build-pending-lightgrey.svg)](#)
 
-OmniSim 是一个用 Rust 编写的开源异构硬件仿真框架。通过声明式 Manifest 系统、可插拔执行后端以及 QEMU 兼容接口层，实现多 ISA 混合平台仿真。
+RhetSim 是一个用 Rust 编写的开源异构硬件仿真框架。通过声明式 Manifest 系统、可插拔执行后端以及 QEMU 兼容接口层，实现多 ISA 混合平台仿真。
 
 ## 核心特性
 
@@ -34,8 +34,8 @@ rustup update stable
 **构建**
 
 ```bash
-git clone https://github.com/openfuntech/omnisim.git
-cd omnisim
+git clone https://github.com/openfuntech/rhetsim.git
+cd rhetsim
 cargo build --workspace
 ```
 
@@ -59,13 +59,13 @@ cargo build --workspace
 ## 工程结构
 
 ```
-omnisim/
+rhetsim/
 ├── crates/                  # 框架核心（严格分层）
-│   ├── omnisim-core/        # L1+L2：trait 与抽象，零业务依赖
-│   ├── omnisim-manifest/    # L3：声明式平台描述与 Realizer
-│   ├── omnisim-runtime/     # 调度器、UnitThread、SimClock、BootSequencer
-│   ├── omnisim-tcg/         # TCG 执行引擎（ARM / RISC-V / x86 前端）
-│   └── omnisim-compat/      # L4：QEMU CLI 解析器与 QMP Server
+│   ├── rhetsim-core/        # L1+L2：trait 与抽象，零业务依赖
+│   ├── rhetsim-manifest/    # L3：声明式平台描述与 Realizer
+│   ├── rhetsim-runtime/     # 调度器、UnitThread、SimClock、BootSequencer
+│   ├── rhetsim-tcg/         # TCG 执行引擎（ARM / RISC-V / x86 前端）
+│   └── rhetsim-compat/      # L4：QEMU CLI 解析器与 QMP Server
 ├── components/              # 硬件组件库
 │   ├── cpu/                 # ARM Cortex-A、RISC-V、x86、Mock
 │   ├── intc/                # GICv3、PLIC、CLINT
@@ -73,7 +73,7 @@ omnisim/
 │   ├── io/                  # UART、PCIe、DMA、Mailbox、VirtIO
 │   └── accel/               # GPGPU、DPU
 ├── profiles/                # 预置平台 Profile（TOML/JSON）
-├── tools/                   # omni-cli、omni-dbg（GDB stub）
+├── tools/                   # rhetsim-cli、rhetsim-dbg（GDB stub）
 ├── tests/                   # 集成与系统测试（16 个场景）
 └── docs/                    # 技术文档
 ```
@@ -86,4 +86,4 @@ omnisim/
 
 ## 开源协议
 
-OmniSim 采用 [Apache License 2.0](./LICENSE) 开源协议。
+RhetSim 采用 [Apache License 2.0](./LICENSE) 开源协议。

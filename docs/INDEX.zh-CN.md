@@ -2,9 +2,9 @@
 
 ---
 
-# OmniSim — 文档索引
+# RhetSim — 文档索引
 
-本索引收录 OmniSim 全部技术文档，每份文档均提供中英文版本。
+本索引收录 RhetSim 全部技术文档，每份文档均提供中英文版本。
 
 ## 文档列表
 
@@ -18,10 +18,10 @@
 ## 文档说明
 
 **01 — 架构设计**
-OmniSim 的顶层设计：四层架构（L1–L4）、五个核心抽象（Unit、Bus、Backend、Manifest、Profile）以及整体设计理念。初次了解项目从这里开始。
+RhetSim 的顶层设计：四层架构（L1–L4）、五个核心抽象（Unit、Bus、Backend、Manifest、Profile）以及整体设计理念。初次了解项目从这里开始。
 
 **02 — 接口规范**
-`omnisim-core`、`omnisim-manifest`、`omnisim-runtime`、`omnisim-tcg`、`omnisim-compat` 全部公共接口的 Rust trait 与类型定义。框架开发者和组件开发者的主要参考手册。
+`rhetsim-core`、`rhetsim-manifest`、`rhetsim-runtime`、`rhetsim-tcg`、`rhetsim-compat` 全部公共接口的 Rust trait 与类型定义。框架开发者和组件开发者的主要参考手册。
 
 **03 — 组件开发指南**
 实现一个硬件组件的完整流程：工程目录结构、trait 实现模式、自注册机制、配置 Schema 约定、测试规范。

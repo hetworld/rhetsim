@@ -34,8 +34,8 @@ rustup update stable
 **Build**
 
 ```bash
-git clone https://github.com/openfuntech/omnisim.git
-cd omnisim
+git clone https://github.com/openfuntech/rhetsim.git
+cd rhetsim
 cargo build --workspace
 ```
 
@@ -61,11 +61,11 @@ Full documentation is maintained in [`docs/`](./docs/INDEX.md). Each document is
 ```
 rhetsim/
 ├── crates/                  # Framework core (strictly layered)
-│   ├── omnisim-core/        # L1+L2: traits and abstractions, zero business deps
-│   ├── omnisim-manifest/    # L3: declarative platform description and realizer
-│   ├── omnisim-runtime/     # Scheduler, UnitThread, SimClock, BootSequencer
-│   ├── omnisim-tcg/         # TCG execution engine (ARM / RISC-V / x86 frontends)
-│   └── omnisim-compat/      # L4: QEMU CLI parser and QMP server
+│   ├── rhetsim-core/        # L1+L2: traits and abstractions, zero business deps
+│   ├── rhetsim-manifest/    # L3: declarative platform description and realizer
+│   ├── rhetsim-runtime/     # Scheduler, UnitThread, SimClock, BootSequencer
+│   ├── rhetsim-tcg/         # TCG execution engine (ARM / RISC-V / x86 frontends)
+│   └── rhetsim-compat/      # L4: QEMU CLI parser and QMP server
 ├── components/              # Hardware component library
 │   ├── cpu/                 # ARM Cortex-A, RISC-V, x86, Mock
 │   ├── intc/                # GICv3, PLIC, CLINT
@@ -73,7 +73,7 @@ rhetsim/
 │   ├── io/                  # UART, PCIe, DMA, Mailbox, VirtIO
 │   └── accel/               # GPGPU, DPU
 ├── profiles/                # Pre-built platform profiles (TOML/JSON)
-├── tools/                   # omni-cli, omni-dbg (GDB stub)
+├── tools/                   # rhetsim-cli, rhetsim-dbg (GDB stub)
 ├── tests/                   # Integration and system tests (16 scenarios)
 └── docs/                    # Technical documentation
 ```
@@ -86,4 +86,4 @@ We welcome issues, discussions, and pull requests. The project follows standard 
 
 ## License
 
-OmniSim is licensed under the [Apache License 2.0](./LICENSE).
+RhetSim is licensed under the [Apache License 2.0](./LICENSE).

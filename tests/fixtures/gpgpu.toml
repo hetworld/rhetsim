@@ -2,11 +2,11 @@ name = "pcie-gpgpu"
 
 [[units]]
 id   = "host-cpu0"
-kind = "omnisim-cpu-x86"
+kind = "rhetsim-cpu-x86"
 
 [[units]]
 id   = "gpgpu0"
-kind = "omnisim-accel-gpgpu"
+kind = "rhetsim-accel-gpgpu"
 
 [[buses]]
 kind         = "pcie"

@@ -1,7 +1,7 @@
 //! 测试工具 — MinimalPlatform / MockBackend
 
-use omnisim_core::error::OmniResult;
-use omnisim_core::unit::{Unit, UnitId, UnitCaps, RealizeCtx};
+use rhetsim_core::error::OmniResult;
+use rhetsim_core::unit::{Unit, UnitId, UnitCaps, RealizeCtx};
 
 /// 最小平台：用于集成测试
 pub struct MinimalPlatform;

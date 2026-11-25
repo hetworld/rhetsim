@@ -1,0 +1,17 @@
+[package]
+name = "rhetsim-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rhetsim"
+path = "src/main.rs"
+
+[dependencies]
+rhetsim-core     = { workspace = true }
+rhetsim-manifest = { workspace = true }
+rhetsim-compat   = { workspace = true }
+tokio            = { workspace = true }
+log              = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = "0.3"

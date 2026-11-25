@@ -2,6 +2,6 @@ name = "minimal"
 
 [[units]]
 id   = "cpu0"
-kind = "omnisim-cpu-mock"
+kind = "rhetsim-cpu-mock"
 
 [boot]

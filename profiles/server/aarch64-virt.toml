@@ -2,20 +2,20 @@ name = "aarch64-virt"
 
 [[units]]
 id      = "arm-core0"
-kind    = "omnisim-cpu-arm"
+kind    = "rhetsim-cpu-arm"
 backend = "kvm"
 [units.config]
 model = "cortex-a78"
 
 [[units]]
 id   = "gicv3"
-kind = "omnisim-intc-gicv3"
+kind = "rhetsim-intc-gicv3"
 [units.config]
 num_cpus = 1
 
 [[units]]
 id   = "dram0"
-kind = "omnisim-mem-dram"
+kind = "rhetsim-mem-dram"
 [units.config]
 size_mb = 4096
 

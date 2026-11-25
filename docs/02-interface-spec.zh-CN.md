@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — 接口规范
+# RhetSim — 接口规范
 
 > **文档编号**：DOC-02 &nbsp;&nbsp; **版本**：v1.0 &nbsp;&nbsp; **日期**：2026-Q1 &nbsp;&nbsp; **作者**：OpenFunTech
 
@@ -11,15 +11,15 @@
 | 文档编号 | DOC-02 |
 | --- | --- |
 | 文档版本 | v1.0 |
-| 适用读者 | 框架开发者（实现 omnisim-core）· 组件开发者（依赖接口） |
+| 适用读者 | 框架开发者（实现 rhetsim-core）· 组件开发者（依赖接口） |
 | 前置阅读 | DOC-01 架构设计 |
 | 关联文档 | DOC-03 组件开发指南 · DOC-04 应用场景手册 |
 | 上次更新 | 2026-Q1 |
 
-## 4  omnisim-core 接口定义
+## 4  rhetsim-core 接口定义
 
 ```
-omnisim-core 设计约定
+rhetsim-core 设计约定
 零业务依赖（仅允许 std + thiserror + bitflags）
 所有 trait 要求 Send + Sync + 'static
 所有接口方法不 panic，通过 OmniResult 返回错误
@@ -31,7 +31,7 @@ omnisim-core 设计约定
 所有"会动"的硬件单元的统一接口。CPU、NPU、DPU、DMA 引擎都实现此 trait，框架完全不知道内部做了什么。
 
 ```rust
-// omnisim-core/src/backend/execution.rs
+// rhetsim-core/src/backend/execution.rs
 ```
 
 ```
@@ -93,7 +93,7 @@ Fault(FaultKind),
 与 ExecutionBackend 正交。描述 Unit 如何参与全局时间推进，是 SyncBus 协调混合精度仿真的基础。
 
 ```rust
-// omnisim-core/src/backend/timing.rs
+// rhetsim-core/src/backend/timing.rs
 ```
 
 ```
@@ -136,7 +136,7 @@ fn clock_hz(&self) -> Option<u64> { None }
 ### 4.3  MemTarget / MemSpace — 内存子系统
 
 ```rust
-// omnisim-core/src/mem.rs
+// rhetsim-core/src/mem.rs
 ```
 
 ```
@@ -250,7 +250,7 @@ fn flush_tlb(&mut self, asid: Option<u64>);
 ### 4.4  IrqLine / IrqSink / IrqSource — 中断子系统
 
 ```rust
-// omnisim-core/src/irq.rs
+// rhetsim-core/src/irq.rs
 ```
 
 ```
@@ -302,7 +302,7 @@ fn send_msi(&self, desc: &MsiDesc) -> OmniResult<()>;
 所有硬件实体的统一抽象。ARM CPU、NPU、DPU、UART 在框架层面通过此 trait 完全对等。
 
 ```rust
-// omnisim-core/src/unit.rs
+// rhetsim-core/src/unit.rs
 ```
 
 ```
@@ -426,7 +426,7 @@ pub enum IrqKind { LevelSensitive, EdgeTriggered, Msi }
 用于 NPU/DPU 等加速器与内存之间的大块数据传输，与 MemBus 分离以避免 MMIO 路径的开销。
 
 ```rust
-// omnisim-core/src/dataflow.rs
+// rhetsim-core/src/dataflow.rs
 ```
 
 ```
@@ -465,7 +465,7 @@ Custom(u32),
 ### 4.7  UnitRegistry — 全局单元注册表
 
 ```rust
-// omnisim-core/src/registry.rs
+// rhetsim-core/src/registry.rs
 ```
 
 ```
@@ -498,17 +498,17 @@ pub fn executable_units(&self)
 
 ### 4.8 安全执行接口（P0 预留，P2 实现）
 
-为支持 TrustZone（场景十二）和机密虚拟化（场景十三，P2），在 omnisim-core 预留安全相关接口。P0 阶段接口存在但不产生实际隔离效果（no-op），P2 阶段实现真正的安全域检查。
+为支持 TrustZone（场景十二）和机密虚拟化（场景十三，P2），在 rhetsim-core 预留安全相关接口。P0 阶段接口存在但不产生实际隔离效果（no-op），P2 阶段实现真正的安全域检查。
 
 ```
 P0/P2 分阶段说明
 P0：定义枚举和接口，MemBus 安全检查为 no-op，Unit 默认返回 Normal World
-P1：TrustZone SMC/HVC 路径，EL2/EL3 切换（在 omnisim-tcg 实现）
+P1：TrustZone SMC/HVC 路径，EL2/EL3 切换（在 rhetsim-tcg 实现）
 P2：MemBus 实际安全域隔离检查，ARM CCA RMM，AMD SEV-SNP PSP
 ```
 
 ```rust
-// omnisim-core/src/security.rs
+// rhetsim-core/src/security.rs
 
 /// 内存安全属性
 /// 附加在 MemAttrs 上，描述内存页属于哪个安全域
@@ -592,7 +592,7 @@ Ok(())   // P2 实现真正的隔离检查
 为支持 CXL.cache（场景八，P2），预留缓存一致性域接口。CXL.cache 允许设备缓存 Host 内存，需要一致性协议（snoop/invalidate）支持。P2 之前只定义接口，不接入 MemBus。
 
 ```rust
-// omnisim-core/src/coherence.rs
+// rhetsim-core/src/coherence.rs
 // P2 接口占位：定义 trait，暂不实现
 
 #[derive(Debug, Clone, Copy)]
@@ -631,13 +631,13 @@ pub members:  Vec<UnitId>,
 
 ```
 嵌套仿真架构说明
-OmniSim 仿真完整物理机（TCG），物理机上跑真实 Hypervisor 软件（KVM / LeoVirt-S）
+RhetSim 仿真完整物理机（TCG），物理机上跑真实 Hypervisor 软件（KVM / LeoVirt-S）
 Hypervisor 管理多个 VM，Stage-2 MMU 是 Hypervisor 隔离 VM 的核心机制
-omnisim-core 只需提供接口，具体实现在 omnisim-tcg 的 EL2/VMX 前端（P1）
+rhetsim-core 只需提供接口，具体实现在 rhetsim-tcg 的 EL2/VMX 前端（P1）
 ```
 
 ```rust
-// omnisim-core/src/mem.rs 扩展
+// rhetsim-core/src/mem.rs 扩展
 
 pub trait AddressTranslator: Send + Sync {
 /// Stage-1：VA → IPA（Guest OS 页表，EL1 控制）
@@ -717,7 +717,7 @@ Bus 连接可以跨越 Composite Unit 边界
 负责地址路由：根据 Initiator 的访问地址找到对应的 MemTarget，并转发读写操作。支持部分可见（visible_to）实现不同子系统的地址空间隔离。
 
 ```rust
-// omnisim-core/src/bus/mem_bus.rs
+// rhetsim-core/src/bus/mem_bus.rs
 ```
 
 ```
@@ -806,7 +806,7 @@ pub visible_to:  Option<Vec<u32>>,
 管理中断线的连接关系。支持一对一、一对多（中断扇出）、多对一（中断汇聚）连接。
 
 ```rust
-// omnisim-core/src/bus/irq_bus.rs
+// rhetsim-core/src/bus/irq_bus.rs
 ```
 
 ```
@@ -859,7 +859,7 @@ pub fn dump_connections(&self) -> Vec<IrqConnectionInfo>;
 处理 PCIe 拓扑：Root Complex 与 Endpoint 的连接，BAR 地址映射，MSI 路由，配置空间访问。
 
 ```rust
-// omnisim-core/src/bus/pcie_bus.rs
+// rhetsim-core/src/bus/pcie_bus.rs
 ```
 
 ```
@@ -928,7 +928,7 @@ pub struct Bdf { pub bus: u8, pub device: u8, pub function: u8 }
 协调混合精度仿真中不同 TimingModel 的全局时序，确保 LooseTiming 和 CycleAccurate Unit 之间的因果关系正确。
 
 ```rust
-// omnisim-core/src/bus/sync_bus.rs
+// rhetsim-core/src/bus/sync_bus.rs
 ```
 
 ```
@@ -981,7 +981,7 @@ pub lagging_units:  Vec<UnitId>,  // 没有跟上时序的 Unit
 集中管理所有 IrqBus 的中断连接，提供按名字查找和动态连接功能。
 
 ```rust
-// omnisim-core/src/bus/irq_router.rs
+// rhetsim-core/src/bus/irq_router.rs
 ```
 
 ```
@@ -1030,7 +1030,7 @@ PcieBus realize 时自动在 RC 和所有 EP 之间建立 ResetLine，无需手�
 ```
 
 ```rust
-// omnisim-core/src/bus/reset_bus.rs
+// rhetsim-core/src/bus/reset_bus.rs
 
 /// 复位信号接收端（被复位的 Unit 实现此 trait）
 pub trait ResetSink: Send + Sync {
@@ -1161,7 +1161,7 @@ PowerBus 与 ResetBus 完全对称，统一建模嵌入式 SoC 中的电源域�
 ```
 
 ```rust
-// omnisim-core/src/bus/power_bus.rs
+// rhetsim-core/src/bus/power_bus.rs
 
 /// 电源状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1245,7 +1245,7 @@ InterconnectBus：节点之间对等互联，没有主从，节点可以是 GPU 
 ```
 
 ```rust
-// omnisim-core/src/bus/interconnect_bus.rs
+// rhetsim-core/src/bus/interconnect_bus.rs
 
 /// 寻址模式：决定内存访问的根本语义
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1415,7 +1415,7 @@ size      = "0x800000000"
 DPU 场景（场景三）引入了 EP 主动访问 Host 内存的需求：DPU 的 DMA 引擎需要直接读写 Host 内存里的 virtio ring，不经过 BAR 寄存器。这是 PCIe EP→RC 方向的 DMA，与通常的 RC→EP 方向相反。
 
 ```rust
-// omnisim-core/src/bus/pcie_bus.rs 扩展
+// rhetsim-core/src/bus/pcie_bus.rs 扩展
 
 pub trait PcieEndpoint: Unit {
 // 现有接口不变...
@@ -1467,7 +1467,7 @@ buf:       &[u8],
 NetworkBackend 为 DPU 的 nvme-of initiator、网络处理器等组件提供统一的外部网络接入接口，屏蔽宿主机 socket 和仿真网络的差异。
 
 ```rust
-// omnisim-core/src/network.rs
+// rhetsim-core/src/network.rs
 
 pub trait NetworkBackend: Send + Sync {
 /// 发送数据包到外部网络
@@ -1492,7 +1492,7 @@ fd: std::os::unix::io::RawFd,
 /// 仿真网络实现
 /// 连接到另一个仿真节点的 PacketBus（组件层）
 pub struct SimNetworkBackend {
-// PacketBus 引用，在 omnisim-dpu-core 组件层定义
+// PacketBus 引用，在 rhetsim-dpu-core 组件层定义
 tx: std::sync::mpsc::Sender<Packet>,
 }
 
@@ -1500,7 +1500,7 @@ impl NetworkBackend for HostSocketBackend { /* ... */ }
 impl NetworkBackend for SimNetworkBackend  { /* ... */ }
 ```
 
-## 6  omnisim-manifest — L3 平台描述层
+## 6  rhetsim-manifest — L3 平台描述层
 
 ```
 L3 层职责
@@ -1510,7 +1510,7 @@ L3 的唯一职责：把声明式的 Manifest（JSON/TOML）翻译成运行时�
 ### 6.1  Manifest 顶层结构
 
 ```rust
-// omnisim-manifest/src/manifest.rs
+// rhetsim-manifest/src/manifest.rs
 ```
 
 ```
@@ -1553,7 +1553,7 @@ Rtl,          // RTL 协同（CycleAccurate 混合）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ManifestMeta {
 pub version:    String,
-pub omnisim_version: String,
+pub rhetsim_version: String,
 pub created_by: Option<String>,
 pub created_at: Option<String>,
 /// SHA256 of content before this field
@@ -1780,7 +1780,7 @@ pub enum ImageFormat {
 realize 之前先做静态校验，将错误精确到字段，避免运行时才发现配置问题。
 
 ```rust
-// omnisim-manifest/src/validator.rs
+// rhetsim-manifest/src/validator.rs
 ```
 
 ```
@@ -1834,7 +1834,7 @@ ConfigSchemaViolation, // 与组件 JSON Schema 不符
 ### 6.6  Realizer — Manifest 到 Platform
 
 ```rust
-// omnisim-manifest/src/realizer.rs
+// rhetsim-manifest/src/realizer.rs
 ```
 
 ```
@@ -1951,13 +1951,13 @@ pub pcie_buses: HashMap<String, PcieBus>,
 每个 component crate 提供一个 register() 函数，在 binary 启动时调用，实现零侵入注册：
 
 ```rust
-// components/cpu/omnisim-cpu-arm/src/lib.rs
+// components/cpu/rhetsim-cpu-arm/src/lib.rs
 ```
 
 ```
 /// ARM CPU 组件注册入口
-/// 在 omnisim-runtime 的 main() 中调用：
-///   omnisim_cpu_arm::register(&mut registry);
+/// 在 rhetsim-runtime 的 main() 中调用：
+///   rhetsim_cpu_arm::register(&mut registry);
 pub fn register(reg: &mut ComponentRegistry) {
 reg.register(
 "arm-cortex-a78-core",
@@ -1985,11 +1985,11 @@ static SCHEMA_JSON: &str = r#"{
 }"#;
 ```
 
-## 7  omnisim-runtime — 运行时与调度层
+## 7  rhetsim-runtime — 运行时与调度层
 
 ```
 runtime 层职责
-omnisim-runtime 是整个仿真平台的"发动机"：持有 Platform 实例，驱动所有可执行 Unit 的 exec()，协调 SyncBus 时序，处理 VM exit，响应外部控制命令（暂停/继续/快照）。
+rhetsim-runtime 是整个仿真平台的"发动机"：持有 Platform 实例，驱动所有可执行 Unit 的 exec()，协调 SyncBus 时序，处理 VM exit，响应外部控制命令（暂停/继续/快照）。
 ```
 
 ### 7.1  整体执行模型
@@ -2018,7 +2018,7 @@ UnitThread 通过 channel 上报事件（VmExit/Fault/Halt）
 ### 7.2  Scheduler — 调度器
 
 ```rust
-// omnisim-runtime/src/scheduler.rs
+// rhetsim-runtime/src/scheduler.rs
 ```
 
 ```
@@ -2094,7 +2094,7 @@ fn handle_event(&mut self, event: UnitEvent) -> OmniResult<()>;
 ### 7.3  UnitThread — 单元执行线程
 
 ```rust
-// omnisim-runtime/src/unit_thread.rs
+// rhetsim-runtime/src/unit_thread.rs
 ```
 
 ```
@@ -2186,7 +2186,7 @@ Unknown(u64),
 KVM Unit 发生 VM exit 时，UnitThread 上报事件，RunLoop 路由到对应的 MemTarget 或 IO handler：
 
 ```rust
-// omnisim-runtime/src/vm_exit.rs
+// rhetsim-runtime/src/vm_exit.rs
 ```
 
 ```
@@ -2223,7 +2223,7 @@ Error(OmniError),
 ### 7.5  SimClock — 全局仿真时钟
 
 ```rust
-// omnisim-runtime/src/clock.rs
+// rhetsim-runtime/src/clock.rs
 ```
 
 ```
@@ -2260,7 +2260,7 @@ pub fn cancel_event(&self, handle: EventHandle);
 ### 7.6  BootSequencer — 启动顺序执行器
 
 ```rust
-// omnisim-runtime/src/boot.rs
+// rhetsim-runtime/src/boot.rs
 ```
 
 ```
@@ -2292,11 +2292,11 @@ fn execute_step(&mut self, step: &BootStep) -> OmniResult<()>;
 // 7. ReleaseReset(riscv_ctrl)            // 释放 RISC-V 协处理器
 ```
 
-## 8  omnisim-tcg — TCG 执行引擎接口
+## 8  rhetsim-tcg — TCG 执行引擎接口
 
 ```
 TCG 边界设计原则
-TCG 是 omnisim-core 的一个 ExecutionBackend 实现，不是框架核心
+TCG 是 rhetsim-core 的一个 ExecutionBackend 实现，不是框架核心
 TCG 通过 MemSpace 接口访问内存，不持有任何 MemBus 的直接引用
 TCG 通过 IrqLine 发出中断，不直接调用 IrqSink
 TCG IR 是内部实现细节，不暴露给其他 crate
@@ -2306,7 +2306,7 @@ TCG IR 是内部实现细节，不暴露给其他 crate
 ### 8.1  TcgEngine — TCG 引擎主接口
 
 ```rust
-// omnisim-tcg/src/engine.rs
+// rhetsim-tcg/src/engine.rs
 ```
 
 ```
@@ -2492,17 +2492,17 @@ pub fn stats(&self) -> TbCacheStats;
 | RISC-V RV32 | ✅ 支持 | 计划中 | 嵌入式场景 |
 | x86-64 | KVM 优先 | ✅ TCG | x86 Host 推荐用 KVM |
 
-## 9  omnisim-compat — L4 兼容层
+## 9  rhetsim-compat — L4 兼容层
 
 ```
 L4 层职责
-omnisim-compat 让外部世界（libvirt / OpenStack / virt-manager）看到的是一个标准 QEMU 进程。它实现 QEMU 命令行解析和 QMP 协议核心子集，内部翻译为 L3 Manifest 操作和 L2 Platform 控制。
+rhetsim-compat 让外部世界（libvirt / OpenStack / virt-manager）看到的是一个标准 QEMU 进程。它实现 QEMU 命令行解析和 QMP 协议核心子集，内部翻译为 L3 Manifest 操作和 L2 Platform 控制。
 ```
 
 ### 9.1  CLI Parser — QEMU 命令行解析
 
 ```rust
-// omnisim-compat/src/cli/parser.rs
+// rhetsim-compat/src/cli/parser.rs
 ```
 
 ```
@@ -2552,7 +2552,7 @@ pub fn parse(&self, args: &[String]) -> OmniResult<Manifest>;
 ### 9.2  QMP Server — QMP 协议实现
 
 ```rust
-// omnisim-compat/src/qmp/server.rs
+// rhetsim-compat/src/qmp/server.rs
 ```
 
 ```
@@ -2587,7 +2587,7 @@ async fn dispatch(&self, cmd: QmpCommand) -> QmpResponse;
 
 | 命令 | 优先级 | 说明 | L2/L3 操作 |
 | --- | --- | --- | --- |
-| qmp_capabilities | P0 | 能力协商（握手第一步，必须实现） | 返回 OmniSim 支持的能力列表 |
+| qmp_capabilities | P0 | 能力协商（握手第一步，必须实现） | 返回 RhetSim 支持的能力列表 |
 | query-version | P0 | QEMU 版本信息（libvirt 检测用） | 返回硬编码的兼容版本号 |
 | query-status | P0 | 查询运行状态 | Scheduler::state() |
 | stop | P0 | 暂停所有 vCPU | Scheduler::pause() |
@@ -2614,7 +2614,7 @@ async fn dispatch(&self, cmd: QmpCommand) -> QmpResponse;
 ### 9.4  QMP 消息格式
 
 ```rust
-// omnisim-compat/src/qmp/types.rs
+// rhetsim-compat/src/qmp/types.rs
 ```
 
 ```
@@ -2665,7 +2665,7 @@ pub data:      serde_json::Value,
 pub timestamp: QmpTimestamp,
 }
 
-/// OmniSim 发出的异步事件列表（libvirt 订阅）：
+/// RhetSim 发出的异步事件列表（libvirt 订阅）：
 /// STOP         → Scheduler 进入 Paused
 /// RESUME       → Scheduler 进入 Running
 /// RESET        → 系统复位完成
@@ -2678,12 +2678,12 @@ pub timestamp: QmpTimestamp,
 /// BALLOON_CHANGE    → 内存气球变化
 ```
 
-### 9.5  GDB Stub — omni-dbg
+### 9.5  GDB Stub — rhetsim-dbg
 
-实现 GDB RSP（Remote Serial Protocol），让标准 GDB / LLDB 可以调试 OmniSim 内的 guest。
+实现 GDB RSP（Remote Serial Protocol），让标准 GDB / LLDB 可以调试 RhetSim 内的 guest。
 
 ```rust
-// tools/omni-dbg/src/gdb_stub.rs
+// tools/rhetsim-dbg/src/gdb_stub.rs
 ```
 
 ```
@@ -2710,7 +2710,7 @@ target_cpu:  UnitId,   // 当前调试的 CPU Unit
 /// T        → 查询线程是否存活
 /// H        → 选择操作线程（对应 CPU Unit）
 
-/// GDB 与 OmniSim 的映射：
+/// GDB 与 RhetSim 的映射：
 /// GDB thread id  →  CPU Unit id（soc0.arm_ss.core0 → tid=1）
 /// GDB register   →  DebugBackend::read_reg()
 /// GDB memory     →  MemSpace::read()（使用 target CPU 的视角）
@@ -2718,19 +2718,19 @@ target_cpu:  UnitId,   // 当前调试的 CPU Unit
 
 ### 9.6  可执行文件伪装
 
-OmniSim 通过软链接伪装成 QEMU 可执行文件，libvirt 无感接入：
+RhetSim 通过软链接伪装成 QEMU 可执行文件，libvirt 无感接入：
 
 ```
 # 安装时创建软链接
-ln -s /usr/bin/omnisim /usr/bin/qemu-system-aarch64
-ln -s /usr/bin/omnisim /usr/bin/qemu-system-x86_64
-ln -s /usr/bin/omnisim /usr/bin/qemu-system-riscv64
+ln -s /usr/bin/rhetsim /usr/bin/qemu-system-aarch64
+ln -s /usr/bin/rhetsim /usr/bin/qemu-system-x86_64
+ln -s /usr/bin/rhetsim /usr/bin/qemu-system-riscv64
 
-# OmniSim 读取 argv[0] 推断默认体系结构：
+# RhetSim 读取 argv[0] 推断默认体系结构：
 # qemu-system-aarch64 → arch = "aarch64"
 # qemu-system-x86_64  → arch = "x86_64"
 
-# libvirt 生成的完整调用（OmniSim 透明处理）：
+# libvirt 生成的完整调用（RhetSim 透明处理）：
 qemu-system-aarch64 \
 -machine virt \
 -accel kvm \
@@ -2741,8 +2741,8 @@ qemu-system-aarch64 \
 -append "root=/dev/vda console=ttyAMA0" \
 -drive file=/path/to/disk.qcow2,if=virtio \
 -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
--qmp unix:/var/run/omnisim-1234.sock,server,nowait \
--daemonize -pidfile /var/run/omnisim-1234.pid
+-qmp unix:/var/run/rhetsim-1234.sock,server,nowait \
+-daemonize -pidfile /var/run/rhetsim-1234.pid
 ```
 
 ## 10  组件实现约定
@@ -2755,8 +2755,8 @@ qemu-system-aarch64 \
 ### 10.1  组件 crate 标准结构
 
 ```
-// 以 omnisim-intc-gicv3 为例
-omnisim-intc-gicv3/
+// 以 rhetsim-intc-gicv3 为例
+rhetsim-intc-gicv3/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs          // register() 入口 + pub re-exports
@@ -2773,7 +2773,7 @@ omnisim-intc-gicv3/
 ### 10.2  Leaf Unit 标准模式
 
 ```rust
-// 以 UART（omnisim-io-uart）为例
+// 以 UART（rhetsim-io-uart）为例
 ```
 
 ```
@@ -2946,7 +2946,7 @@ Some(self.gicd().as_irq_sink().unwrap())
 每个组件必须提供 JSON Schema，Validator 在 realize 前校验 UnitDesc.config：
 
 ```
-// components/intc/omnisim-intc-gicv3/src/schema.json
+// components/intc/rhetsim-intc-gicv3/src/schema.json
 {
 "$schema": "http://json-schema.org/draft-07/schema",
 "type": "object",
@@ -2993,14 +2993,14 @@ Some(self.gicd().as_irq_sink().unwrap())
 ### 11.1  Workspace 完整结构
 
 ```
-omnisim/
+rhetsim/
 ├── Cargo.toml                      # workspace 根
 ├── Cargo.lock
 ├── deny.toml                       # cargo-deny：许可证 + 漏洞检查
 ├── .cargo/config.toml              # target / linker / env 配置
 │
 ├── crates/                         # 框架核心 crate（严格分层）
-│   ├── omnisim-core/               # L1+L2 接口，零业务依赖（std+thiserror+bitflags）
+│   ├── rhetsim-core/               # L1+L2 接口，零业务依赖（std+thiserror+bitflags）
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -3027,7 +3027,7 @@ omnisim/
 │   │       ├── registry.rs         # UnitRegistry
 │   │       └── snapshot.rs         # UnitSnapshot / PlatformSnapshot
 │   │
-│   ├── omnisim-manifest/           # L3 平台描述
+│   ├── rhetsim-manifest/           # L3 平台描述
 │   │   └── src/
 │   │       ├── manifest.rs         # Manifest / UnitDesc / BusDesc / BootDesc
 │   │       ├── validator.rs        # Validator / ValidationReport
@@ -3035,7 +3035,7 @@ omnisim/
 │   │       ├── realizer.rs         # Realizer / ComponentRegistry / Platform
 │   │       └── loader.rs           # from_json / from_toml / to_json / to_toml
 │   │
-│   ├── omnisim-runtime/            # 运行时调度
+│   ├── rhetsim-runtime/            # 运行时调度
 │   │   └── src/
 │   │       ├── scheduler.rs        # Scheduler / SchedulerConfig
 │   │       ├── unit_thread.rs      # UnitThread / CtrlCmd / UnitEvent
@@ -3044,7 +3044,7 @@ omnisim/
 │   │       ├── boot.rs             # BootSequencer
 │   │       └── main.rs             # 程序入口（注册所有组件，解析 CLI，启动）
 │   │
-│   ├── omnisim-tcg/                # TCG 执行引擎
+│   ├── rhetsim-tcg/                # TCG 执行引擎
 │   │   └── src/
 │   │       ├── engine.rs           # TcgEngine<F,B>
 │   │       ├── frontend.rs         # TcgFrontend trait / CpuState trait
@@ -3060,7 +3060,7 @@ omnisim/
 │   │           ├── x86_64/         # 生成 x86_64 机器码
 │   │           └── aarch64/        # 生成 AArch64 机器码
 │   │
-│   └── omnisim-compat/             # L4 兼容层
+│   └── rhetsim-compat/             # L4 兼容层
 │       └── src/
 │           ├── lib.rs
 │           ├── cli/
@@ -3073,34 +3073,34 @@ omnisim/
 │
 ├── components/                     # 硬件组件库
 │   ├── cpu/
-│   │   ├── omnisim-cpu-arm/        # ARM Cortex-A 系列
-│   │   ├── omnisim-cpu-riscv/      # RISC-V RV64/RV32
-│   │   ├── omnisim-cpu-x86/        # x86-64（TCG + KVM）
-│   │   └── omnisim-cpu-mock/       # Mock CPU（测试）
+│   │   ├── rhetsim-cpu-arm/        # ARM Cortex-A 系列
+│   │   ├── rhetsim-cpu-riscv/      # RISC-V RV64/RV32
+│   │   ├── rhetsim-cpu-x86/        # x86-64（TCG + KVM）
+│   │   └── rhetsim-cpu-mock/       # Mock CPU（测试）
 │   │   # MMU 并入各 CPU crate 内部，不独立成组件
-│   │   # omnisim-cpu-arm/src/mmu.rs    ARMv8/v9 MMU（Stage1 + Stage2）
-│   │   # omnisim-cpu-riscv/src/mmu.rs  Sv39/Sv48/Sv57
+│   │   # rhetsim-cpu-arm/src/mmu.rs    ARMv8/v9 MMU（Stage1 + Stage2）
+│   │   # rhetsim-cpu-riscv/src/mmu.rs  Sv39/Sv48/Sv57
 │   ├── intc/
-│   │   ├── omnisim-intc-gicv3/     # ARM GICv3（GICD+GICR+GICC+ITS）
-│   │   ├── omnisim-intc-plic/      # RISC-V PLIC
-│   │   └── omnisim-intc-clint/     # RISC-V CLINT（软中断+定时器）
+│   │   ├── rhetsim-intc-gicv3/     # ARM GICv3（GICD+GICR+GICC+ITS）
+│   │   ├── rhetsim-intc-plic/      # RISC-V PLIC
+│   │   └── rhetsim-intc-clint/     # RISC-V CLINT（软中断+定时器）
 │   ├── cache/
-│   │   └── omnisim-cache/          # Cache 统一模型（L1/L2/L3 由容量/延迟参数区分）
+│   │   └── rhetsim-cache/          # Cache 统一模型（L1/L2/L3 由容量/延迟参数区分）
 │   │   #    P2 RTL 协同时如差异过大可再拆分为独立 crate
 
 │   ├── memory/
-│   │   ├── omnisim-mem-dram/       # DRAM（含 TimingBackend）
-│   │   ├── omnisim-mem-sram/       # SRAM（无 timing，低延迟）
-│   │   └── omnisim-mem-gddr/       # GDDR6（GPU 显存，含 TimingBackend）
+│   │   ├── rhetsim-mem-dram/       # DRAM（含 TimingBackend）
+│   │   ├── rhetsim-mem-sram/       # SRAM（无 timing，低延迟）
+│   │   └── rhetsim-mem-gddr/       # GDDR6（GPU 显存，含 TimingBackend）
 │   ├── io/
-│   │   ├── omnisim-io-uart/        # PL011 UART
-│   │   ├── omnisim-io-pcie/        # PCIe Root Complex + EP 框架
-│   │   ├── omnisim-io-dma/         # DMA 引擎（含 Dataflow 接口）
-│   │   ├── omnisim-io-mailbox/     # 片上 Mailbox（双向中断）
-│   │   └── omnisim-io-virtio/      # Virtio 总线 + 设备（blk/net/console）
+│   │   ├── rhetsim-io-uart/        # PL011 UART
+│   │   ├── rhetsim-io-pcie/        # PCIe Root Complex + EP 框架
+│   │   ├── rhetsim-io-dma/         # DMA 引擎（含 Dataflow 接口）
+│   │   ├── rhetsim-io-mailbox/     # 片上 Mailbox（双向中断）
+│   │   └── rhetsim-io-virtio/      # Virtio 总线 + 设备（blk/net/console）
 │   └── accel/
-│       ├── omnisim-accel-gpgpu/    # GPGPU（SM + L2 + VRAM，Composite）
-│       └── omnisim-accel-dpu/      # DPU（网络处理器，Composite）
+│       ├── rhetsim-accel-gpgpu/    # GPGPU（SM + L2 + VRAM，Composite）
+│       └── rhetsim-accel-dpu/      # DPU（网络处理器，Composite）
 │
 ├── profiles/                       # 预置 Platform Profile
 │   ├── embedded/                   # 嵌入式 SoC（RISC-V）
@@ -3109,8 +3109,8 @@ omnisim/
 │   └── extended/                   # 扩展版本功能接口占位（TimingBackend / RTL 协同等）
 │
 ├── tools/
-│   ├── omni-cli/                   # 命令行入口（注册所有组件）
-│   └── omni-dbg/                   # GDB stub
+│   ├── rhetsim-cli/                   # 命令行入口（注册所有组件）
+│   └── rhetsim-dbg/                   # GDB stub
 │
 └── tests/
 ├── common/                     # 测试工具（MinimalPlatform / MockBackend）
@@ -3144,21 +3144,21 @@ omnisim/
 ```
 [workspace]
 members = [
-"crates/omnisim-core",
-"crates/omnisim-manifest",
-"crates/omnisim-runtime",
-"crates/omnisim-tcg",
-"crates/omnisim-compat",
-"components/cpu/omnisim-cpu-arm",
+"crates/rhetsim-core",
+"crates/rhetsim-manifest",
+"crates/rhetsim-runtime",
+"crates/rhetsim-tcg",
+"crates/rhetsim-compat",
+"components/cpu/rhetsim-cpu-arm",
 # ... 所有 components
-"tools/omni-cli",
-"tools/omni-dbg",
+"tools/rhetsim-cli",
+"tools/rhetsim-dbg",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 # 统一管理版本，各 crate 用 { workspace = true }
-omnisim-core     = { path = "crates/omnisim-core" }
+rhetsim-core     = { path = "crates/rhetsim-core" }
 serde            = { version = "1", features = ["derive"] }
 serde_json       = "1"
 thiserror        = "1"
@@ -3183,8 +3183,8 @@ debug = true
 
 | 规则 | 说明 |
 | --- | --- |
-| 组件 crate 只能依赖 omnisim-core | 不允许组件之间相互依赖（通过 deny.toml 中 bans 检查） |
-| omnisim-core 零业务依赖 | 只允许 std + thiserror + bitflags，无业务逻辑依赖 |
+| 组件 crate 只能依赖 rhetsim-core | 不允许组件之间相互依赖（通过 deny.toml 中 bans 检查） |
+| rhetsim-core 零业务依赖 | 只允许 std + thiserror + bitflags，无业务逻辑依赖 |
 | 许可证白名单 | MIT / Apache-2.0 / BSD-2/3 / ISC（不允许 GPL/LGPL 进入核心） |
 | 禁止 unwrap() 在库代码中 | clippy::unwrap_used = deny（通过 .clippy.toml） |
 | 所有 pub 接口有文档 | missing_docs = warn（核心 crate 为 deny） |

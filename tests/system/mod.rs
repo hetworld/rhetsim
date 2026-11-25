@@ -4,7 +4,7 @@
 mod tests {
     #[test]
     fn test_core_prelude_compiles() {
-        use omnisim_core::prelude::*;
+        use rhetsim_core::prelude::*;
         let _ = UnitId::new("test.unit");
     }
 }
