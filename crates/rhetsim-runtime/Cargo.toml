@@ -17,4 +17,5 @@ tracing          = { workspace = true }
 tracing-subscriber = "0.3"
 
 [dev-dependencies]
-rhetsim-cpu-mock = { path = "../../components/cpu/rhetsim-cpu-mock" }
+rhetsim-cpu-mock  = { path = "../../components/cpu/rhetsim-cpu-mock" }
+rhetsim-cpu-riscv = { path = "../../components/cpu/rhetsim-cpu-riscv" }

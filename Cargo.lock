@@ -376,6 +376,7 @@ dependencies = [
  "rhetsim-compat",
  "rhetsim-core",
  "rhetsim-cpu-mock",
+ "rhetsim-cpu-riscv",
  "rhetsim-manifest",
  "tokio",
  "tracing",
