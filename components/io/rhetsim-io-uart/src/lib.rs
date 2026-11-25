@@ -8,16 +8,30 @@ use rhetsim_core::mem::{MemTarget, MemAccessSize};
 
 const THR: u64 = 0x00;
 const RBR: u64 = 0x00;
+const IER: u64 = 0x01;
+const IIR: u64 = 0x02;
+const LCR: u64 = 0x03;
+const MCR: u64 = 0x04;
 const LSR: u64 = 0x05;
+const MSR: u64 = 0x06;
+const SCR: u64 = 0x07;
 
 const LSR_THRE: u8 = 1 << 5;
 const LSR_TEMT: u8 = 1 << 6;
 const LSR_RESET: u8 = LSR_THRE | LSR_TEMT;
 
+const LCR_DLAB: u8 = 0x80;
+
 pub struct Uart {
     id: UnitId,
     output: Mutex<Vec<u8>>,
     lsr: AtomicU8,
+    ier: AtomicU8,
+    lcr: AtomicU8,
+    mcr: AtomicU8,
+    scr: AtomicU8,
+    dll: AtomicU8,
+    dlm: AtomicU8,
 }
 
 impl Uart {
@@ -26,6 +40,12 @@ impl Uart {
             id: UnitId::new(id),
             output: Mutex::new(Vec::new()),
             lsr: AtomicU8::new(LSR_RESET),
+            ier: AtomicU8::new(0),
+            lcr: AtomicU8::new(0),
+            mcr: AtomicU8::new(0),
+            scr: AtomicU8::new(0),
+            dll: AtomicU8::new(0),
+            dlm: AtomicU8::new(0),
         }
     }
 
@@ -45,6 +65,12 @@ impl Unit for Uart {
     fn reset(&mut self) -> OmniResult<()> {
         self.output.lock().expect("uart output lock").clear();
         self.lsr.store(LSR_RESET, Ordering::Relaxed);
+        self.ier.store(0, Ordering::Relaxed);
+        self.lcr.store(0, Ordering::Relaxed);
+        self.mcr.store(0, Ordering::Relaxed);
+        self.scr.store(0, Ordering::Relaxed);
+        self.dll.store(0, Ordering::Relaxed);
+        self.dlm.store(0, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -52,21 +78,41 @@ impl Unit for Uart {
 impl MemTarget for Uart {
     fn target_id(&self) -> u32 { 0 }
     fn base(&self) -> u64 { 0 }
-    fn size(&self) -> u64 { 8 }
+    fn size(&self) -> u64 { 0x100 }
 
     fn read(&self, offset: u64, _size: MemAccessSize) -> OmniResult<u64> {
+        let dlab = self.lcr.load(Ordering::Relaxed) & LCR_DLAB != 0;
         match offset {
-            RBR => Ok(0),
-            LSR => Ok(self.lsr.load(Ordering::Relaxed) as u64),
-            _ => Ok(0),
+            RBR if dlab  => Ok(self.dll.load(Ordering::Relaxed) as u64),
+            RBR          => Ok(0),
+            IER if dlab  => Ok(self.dlm.load(Ordering::Relaxed) as u64),
+            IER          => Ok(self.ier.load(Ordering::Relaxed) as u64),
+            IIR          => Ok(0x01), // no interrupt pending
+            LCR          => Ok(self.lcr.load(Ordering::Relaxed) as u64),
+            MCR          => Ok(self.mcr.load(Ordering::Relaxed) as u64),
+            LSR          => Ok(self.lsr.load(Ordering::Relaxed) as u64),
+            MSR          => Ok(0),
+            SCR          => Ok(self.scr.load(Ordering::Relaxed) as u64),
+            _            => Ok(0),
         }
     }
 
     fn write(&self, offset: u64, _size: MemAccessSize, val: u64) -> OmniResult<()> {
-        if offset == THR {
-            let ch = val as u8;
-            self.output.lock().expect("uart output lock").push(ch);
-            eprint!("{}", ch as char);
+        let v = val as u8;
+        let dlab = self.lcr.load(Ordering::Relaxed) & LCR_DLAB != 0;
+        match offset {
+            THR if dlab  => { self.dll.store(v, Ordering::Relaxed); }
+            THR          => {
+                self.output.lock().expect("uart output lock").push(v);
+                eprint!("{}", v as char);
+            }
+            IER if dlab  => { self.dlm.store(v, Ordering::Relaxed); }
+            IER          => { self.ier.store(v, Ordering::Relaxed); }
+            IIR          => {} // FCR write, ignore
+            LCR          => { self.lcr.store(v, Ordering::Relaxed); }
+            MCR          => { self.mcr.store(v, Ordering::Relaxed); }
+            SCR          => { self.scr.store(v, Ordering::Relaxed); }
+            _            => {}
         }
         Ok(())
     }

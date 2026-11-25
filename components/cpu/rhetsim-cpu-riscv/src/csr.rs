@@ -20,14 +20,35 @@ pub const MEDELEG: u16   = 0x302;
 pub const MIDELEG: u16   = 0x303;
 pub const MIE: u16       = 0x304;
 pub const MTVEC: u16     = 0x305;
+pub const MCOUNTEREN: u16 = 0x306;
 pub const MSCRATCH: u16  = 0x340;
 pub const MEPC: u16      = 0x341;
 pub const MCAUSE: u16    = 0x342;
 pub const MTVAL: u16     = 0x343;
 pub const MIP: u16       = 0x344;
-pub const MHARTID: u16   = 0xF14;
+
+// PMP
+pub const PMPCFG0: u16   = 0x3A0;
+pub const PMPCFG2: u16   = 0x3A2;
+pub const PMPADDR0: u16  = 0x3B0;
+
+// Counters (M-mode)
 pub const MCYCLE: u16    = 0xB00;
 pub const MINSTRET: u16  = 0xB02;
+
+// Counters (S/U-mode readable)
+pub const CYCLE: u16     = 0xC00;
+pub const TIME: u16      = 0xC01;
+pub const INSTRET: u16   = 0xC02;
+
+// Machine info (read-only)
+pub const MVENDORID: u16 = 0xF11;
+pub const MARCHID: u16   = 0xF12;
+pub const MIMPID: u16    = 0xF13;
+pub const MHARTID: u16   = 0xF14;
+
+// S-mode counter enable
+pub const SCOUNTEREN: u16 = 0x106;
 
 // ── mstatus bit positions ─────────────────────────────────────
 
@@ -38,11 +59,16 @@ pub const MSTATUS_MPIE: u64 = 1 << 7;
 pub const MSTATUS_SPP: u64  = 1 << 8;
 pub const MSTATUS_MPP_MASK: u64 = 3 << 11;
 pub const MSTATUS_MPP_M: u64 = 3 << 11;
+pub const MSTATUS_MPRV: u64 = 1 << 17;
 pub const MSTATUS_SUM: u64  = 1 << 18;
 pub const MSTATUS_MXR: u64  = 1 << 19;
+pub const MSTATUS_TVM: u64  = 1 << 20;
+pub const MSTATUS_TW: u64   = 1 << 21;
+pub const MSTATUS_TSR: u64  = 1 << 22;
 
 const MSTATUS_WRITABLE: u64 = MSTATUS_SIE | MSTATUS_MIE | MSTATUS_SPIE | MSTATUS_MPIE
-    | MSTATUS_SPP | MSTATUS_MPP_MASK | MSTATUS_SUM | MSTATUS_MXR;
+    | MSTATUS_SPP | MSTATUS_MPP_MASK | MSTATUS_MPRV | MSTATUS_SUM | MSTATUS_MXR
+    | MSTATUS_TVM | MSTATUS_TW | MSTATUS_TSR;
 
 const SSTATUS_MASK: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP
     | (3 << 13) | (3 << 15) | MSTATUS_SUM | MSTATUS_MXR | (1u64 << 63);
@@ -99,6 +125,7 @@ pub struct CsrFile {
     pub mhartid: u64,
     pub medeleg: u64,
     pub mideleg: u64,
+    pub mcounteren: u64,
     // S-mode
     pub stvec: u64,
     pub sscratch: u64,
@@ -106,6 +133,10 @@ pub struct CsrFile {
     pub scause: u64,
     pub stval: u64,
     pub satp: u64,
+    pub scounteren: u64,
+    // PMP (store-only, no enforcement)
+    pub pmpcfg: [u64; 2],
+    pub pmpaddr: [u64; 16],
 }
 
 impl CsrFile {
@@ -122,12 +153,16 @@ impl CsrFile {
             mhartid: hart_id,
             medeleg: 0,
             mideleg: 0,
+            mcounteren: 0,
             stvec: 0,
             sscratch: 0,
             sepc: 0,
             scause: 0,
             stval: 0,
             satp: 0,
+            scounteren: 0,
+            pmpcfg: [0; 2],
+            pmpaddr: [0; 16],
         }
     }
 
@@ -139,23 +174,34 @@ impl CsrFile {
             MIDELEG   => Some(self.mideleg),
             MIE       => Some(self.mie),
             MTVEC     => Some(self.mtvec),
+            MCOUNTEREN => Some(self.mcounteren),
             MSCRATCH  => Some(self.mscratch),
             MEPC      => Some(self.mepc),
             MCAUSE    => Some(self.mcause),
             MTVAL     => Some(self.mtval),
             MIP       => Some(self.mip),
-            MHARTID   => Some(self.mhartid),
             MCYCLE    => Some(insn_count),
             MINSTRET  => Some(insn_count),
+            MVENDORID => Some(0),
+            MARCHID   => Some(0),
+            MIMPID    => Some(0),
+            MHARTID   => Some(self.mhartid),
+            PMPCFG0   => Some(self.pmpcfg[0]),
+            PMPCFG2   => Some(self.pmpcfg[1]),
+            a @ 0x3B0..=0x3BF => Some(self.pmpaddr[(a - PMPADDR0) as usize]),
             SSTATUS   => Some(self.mstatus & SSTATUS_MASK),
             SIE       => Some(self.mie & SIE_MASK),
             STVEC     => Some(self.stvec),
+            SCOUNTEREN => Some(self.scounteren),
             SSCRATCH  => Some(self.sscratch),
             SEPC      => Some(self.sepc),
             SCAUSE    => Some(self.scause),
             STVAL     => Some(self.stval),
             SIP       => Some(self.mip & SIE_MASK),
             SATP      => Some(self.satp),
+            CYCLE     => Some(insn_count),
+            TIME      => Some(insn_count),
+            INSTRET   => Some(insn_count),
             _ => Some(0),
         }
     }
@@ -167,21 +213,26 @@ impl CsrFile {
             MIDELEG   => self.mideleg = val,
             MIE       => self.mie = val & MIE_ALL,
             MTVEC     => self.mtvec = val,
+            MCOUNTEREN => self.mcounteren = val & 0x7,
             MSCRATCH  => self.mscratch = val,
             MEPC      => self.mepc = val & !1,
             MCAUSE    => self.mcause = val,
             MTVAL     => self.mtval = val,
             MIP       => self.mip = (self.mip & !MIP_MSIP) | (val & MIP_MSIP),
+            PMPCFG0   => self.pmpcfg[0] = val,
+            PMPCFG2   => self.pmpcfg[1] = val,
+            a @ 0x3B0..=0x3BF => self.pmpaddr[(a - PMPADDR0) as usize] = val,
             SSTATUS   => self.mstatus = (self.mstatus & !SSTATUS_WRITABLE) | (val & SSTATUS_WRITABLE),
             SIE       => self.mie = (self.mie & !SIE_MASK) | (val & SIE_MASK),
             STVEC     => self.stvec = val,
+            SCOUNTEREN => self.scounteren = val & 0x7,
             SSCRATCH  => self.sscratch = val,
             SEPC      => self.sepc = val & !1,
             SCAUSE    => self.scause = val,
             STVAL     => self.stval = val,
             SIP       => self.mip = (self.mip & !MIP_SSIP) | (val & MIP_SSIP),
             SATP      => self.satp = val,
-            MISA | MHARTID | MCYCLE | MINSTRET => {}
+            MISA | MVENDORID | MARCHID | MIMPID | MHARTID | MCYCLE | MINSTRET => {}
             _ => {}
         }
     }
@@ -197,12 +248,16 @@ impl CsrFile {
         self.mtval = 0;
         self.medeleg = 0;
         self.mideleg = 0;
+        self.mcounteren = 0;
         self.stvec = 0;
         self.sscratch = 0;
         self.sepc = 0;
         self.scause = 0;
         self.stval = 0;
         self.satp = 0;
+        self.scounteren = 0;
+        self.pmpcfg = [0; 2];
+        self.pmpaddr = [0; 16];
     }
 
     pub fn pending_interrupt(&self, priv_mode: u8) -> Option<u64> {

@@ -104,6 +104,7 @@ impl RiscvCpu {
 
     pub fn pc(&self) -> u64 { self.pc }
     pub fn reg(&self, idx: usize) -> u64 { self.regs[idx] }
+    pub fn set_reg(&mut self, idx: usize, val: u64) { if idx != 0 && idx < 32 { self.regs[idx] = val; } }
     pub fn is_halted(&self) -> bool { self.halted }
     pub fn insn_count(&self) -> u64 { self.insn_count }
     pub fn csr(&self) -> &CsrFile { &self.csr }
@@ -412,18 +413,19 @@ impl RiscvCpu {
                     return;
                 }
                 let old = self.csr.read(csr, self.insn_count).unwrap_or(0);
+                let src = self.regs[rs1 as usize];
                 match funct3 {
                     1 => {
                         self.set_rd(rd, old);
-                        self.csr.write(csr, self.regs[rs1 as usize]);
+                        self.csr.write(csr, src);
                     }
                     2 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 { self.csr.write(csr, old | self.regs[rs1 as usize]); }
+                        if rs1 != 0 { self.csr.write(csr, old | src); }
                     }
                     3 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 { self.csr.write(csr, old & !self.regs[rs1 as usize]); }
+                        if rs1 != 0 { self.csr.write(csr, old & !src); }
                     }
                     5 => {
                         self.set_rd(rd, old);
@@ -479,7 +481,7 @@ impl RiscvCpu {
             Instruction::Ebreak => {
                 self.take_trap(3, self.pc);
             }
-            Instruction::Fence => {
+            Instruction::Fence | Instruction::FenceI => {
                 self.pc += 4;
             }
             Instruction::Unknown(_) => {

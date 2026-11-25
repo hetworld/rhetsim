@@ -22,6 +22,7 @@ pub enum Instruction {
     Sret,
     Wfi,
     Fence,
+    FenceI,
     SfenceVma { rs1: u8, rs2: u8 },
     // Atomics (A extension)
     Amo    { funct5: u8, aq: bool, rl: bool, funct3: u8, rd: u8, rs1: u8, rs2: u8 },
@@ -136,7 +137,9 @@ pub fn decode(insn: u32) -> Instruction {
                 }
             }
         }
-        0x0F => Instruction::Fence,
+        0x0F => {
+            if funct3(insn) == 1 { Instruction::FenceI } else { Instruction::Fence }
+        }
         0x2F => {
             // A extension (atomics)
             let f5 = (insn >> 27) & 0x1F;
