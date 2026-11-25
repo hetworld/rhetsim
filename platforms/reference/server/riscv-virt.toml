@@ -43,6 +43,4 @@ unit = "uart0"
 base = 0x10000000
 
 [boot]
-firmware = "fw_jump.bin"
-kernel   = "Image"
-dtb      = "riscv-virt.dtb"
+dtb = "riscv-virt.dtb"

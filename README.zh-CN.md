@@ -39,23 +39,54 @@ cargo build --workspace
 
 **启动 RISC-V Linux**
 
-准备启动镜像，放在平台 manifest 同目录下：
+安装 RISC-V 交叉编译工具链：
 
 ```bash
-# 需要三个文件放在 platforms/reference/server/ 下：
-#   fw_jump.bin    — OpenSBI 固件（raw binary 或 ELF 格式）
-#   Image          — Linux 内核镜像（raw binary 或 ELF vmlinux）
-#   riscv-virt.dtb — virt 平台的设备树
+# Ubuntu/Debian
+sudo apt install gcc-riscv64-linux-gnu
+
+# Arch Linux
+sudo pacman -S riscv64-linux-gnu-gcc
 ```
+
+编译 OpenSBI 固件：
+
+```bash
+git clone https://github.com/riscv-software-src/opensbi.git ../opensbi
+cd ../opensbi
+make CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP_ADDR=0x80200000
+cd -
+```
+
+编译 Linux 内核（仓库内提供了最小化配置）：
+
+```bash
+git clone --depth 1 --branch v6.1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git ../linux-6.1
+cd ../linux-6.1
+cp ../rhetsim/platforms/reference/server/linux-rv64ima.config .config
+make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc)
+cd -
+```
+
+设备树文件（`riscv-virt.dtb`）已包含在仓库中。
 
 启动模拟器：
 
 ```bash
-# 交互模式（默认）— UART 映射到终端，Ctrl-A X 退出
-cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml
+# 快速启动 — 默认使用 ../opensbi 和 ../linux-6.1
+./run.sh
 
-# 非交互批处理模式 — 执行 N 步后退出
-cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml --batch --steps 100000000
+# 或显式指定路径
+./run.sh --firmware /path/to/fw_jump.bin --kernel /path/to/Image
+
+# 非交互批处理模式
+./run.sh --batch --steps 100000000
+```
+
+也可以通过环境变量覆盖默认路径：
+
+```bash
+RHETSIM_FIRMWARE=/path/to/fw_jump.bin RHETSIM_KERNEL=/path/to/Image ./run.sh
 ```
 
 CLI 选项：

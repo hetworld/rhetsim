@@ -136,7 +136,6 @@ impl MemTarget for Uart {
                     let _ = std::io::stdout().flush();
                 } else {
                     self.output.lock().expect("uart output lock").push(v);
-                    eprint!("{}", v as char);
                 }
             }
             IER if dlab  => { self.dlm.store(v, Ordering::Relaxed); }

@@ -12,6 +12,7 @@ use rhetsim_core::unit::{Unit, UnitCaps};
 use rhetsim_manifest::manifest::{Manifest, UnitDesc, BusDesc};
 use rhetsim_runtime::scheduler::Scheduler;
 use rhetsim_cpu_riscv::csr;
+use tracing::{info, debug, warn};
 use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
 
@@ -25,7 +26,7 @@ fn load_image(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], default_addr: 
     } else {
         let offset = default_addr - dram_base;
         cpu.load_binary(data, offset);
-        eprintln!("  {label:<10} {:>8} bytes -> 0x{:08X} (raw binary)", data.len(), default_addr);
+        info!("  {label:<10} {:>8} bytes -> 0x{:08X} (raw binary)", data.len(), default_addr);
         LoadedImage { entry: None }
     }
 }
@@ -56,7 +57,7 @@ fn load_elf(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], dram_base: u64, 
         lo = lo.min(vaddr);
         hi = hi.max(vaddr + phdr.p_memsz);
     }
-    eprintln!("  {label:<10} {:>8} bytes -> 0x{:08X}..0x{:08X} (ELF, entry 0x{:X})",
+    info!("  {label:<10} {:>8} bytes -> 0x{:08X}..0x{:08X} (ELF, entry 0x{:X})",
         total_loaded, lo, hi, elf.entry);
     LoadedImage { entry: Some(elf.entry) }
 }
@@ -75,6 +76,7 @@ fn main() {
         eprintln!("  --kernel <path>    Override kernel image path");
         eprintln!("  --dtb <path>       Override device tree blob path");
         eprintln!("  --batch         Non-interactive mode (no console I/O)");
+        eprintln!("  --uart-log <path>  Write UART output to file (batch mode)");
         eprintln!("  --list-units    List available unit kinds and exit");
         std::process::exit(1);
     }
@@ -102,7 +104,9 @@ fn main() {
     println!("Units:    {}", manifest.units.len());
     println!("Buses:    {}", manifest.buses.len());
 
-    if manifest.boot.firmware.is_some() {
+    let has_boot = manifest.boot.firmware.is_some()
+        || parse_str_opt(&args, "--firmware").is_some();
+    if has_boot {
         let interactive = !args.iter().any(|a| a == "--batch");
         let max_steps = if interactive { u64::MAX } else { parse_opt(&args, "--steps", 100_000_000u64) };
         boot_riscv_linux(&manifest, manifest_dir, &args, max_steps, interactive);
@@ -182,9 +186,9 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let kernel_addr = boot.kernel_addr.unwrap_or(dram_base + 0x0020_0000);
     let dtb_addr = boot.dtb_addr.unwrap_or(dram_base + 0x0200_0000);
 
-    eprintln!("Boot layout:");
-    eprintln!("  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
-    eprintln!("  CLINT   @ 0x{:08X}", clint_base);
+    info!("Boot layout:");
+    info!("  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
+    info!("  CLINT   @ 0x{:08X}", clint_base);
 
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(&dram_desc.id, dram_size, dram_base));
     let clint = Arc::new(rhetsim_intc_clint::Clint::new(&clint_desc.id, clint_harts, clint_base));
@@ -203,7 +207,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let fw_result = load_image(&mut cpu, &fw_data, fw_addr, dram_base, "Firmware");
     let _kernel_result = load_image(&mut cpu, &kernel_data, kernel_addr, dram_base, "Kernel");
     cpu.load_binary(&dtb_data, dtb_addr - dram_base);
-    eprintln!("  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
+    info!("  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
 
     let entry_pc = fw_result.entry.unwrap_or(fw_addr);
 
@@ -213,14 +217,14 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     cpu.set_reg(10, 0);
     cpu.set_reg(11, dtb_addr);
     cpu.set_pc(entry_pc);
-    eprintln!("  Entry PC  0x{:08X}", entry_pc);
+    info!("  Entry PC  0x{:08X}", entry_pc);
 
     let _raw_guard = if interactive {
-        eprintln!("Booting interactive (Ctrl-A X to quit)...");
+        info!("Booting interactive (Ctrl-A X to quit)...");
         uart.set_console(true);
         Some(RawTermGuard::enter())
     } else {
-        eprintln!("Booting... (max {} steps)", max_steps);
+        info!("Booting... (max {} steps)", max_steps);
         None
     };
 
@@ -290,14 +294,14 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
 
         if !interactive {
             if total_steps % 10_000_000 == 0 {
-                eprintln!("[{}M steps] PC=0x{:X} mode={} uart={}B",
-                    total_steps / 1_000_000, cpu.pc(), cpu.priv_mode(), all_output.len());
+                debug!(steps = total_steps, pc = format_args!("0x{:X}", cpu.pc()),
+                    mode = cpu.priv_mode(), uart_bytes = all_output.len(), "progress");
             }
 
             if all_output.len() > 1000 && cpu.priv_mode() == csr::PRV_M && all_output.len() == last_uart_len {
                 idle_batches += 1;
                 if idle_batches > 100 {
-                    eprintln!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
+                    warn!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
                     break;
                 }
             } else {
@@ -311,18 +315,29 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     if let Some(t) = stdin_thread { let _ = t.join(); }
 
     if interactive {
-        eprintln!("\n--- Exited ({} steps) ---", total_steps);
+        info!("Exited ({} steps)", total_steps);
     } else {
-        let output_str = String::from_utf8_lossy(&all_output);
-        eprintln!("\n=== UART Output ({} bytes) ===\n{}", all_output.len(), output_str);
-        eprintln!("\n--- Result ---");
-        eprintln!("Steps: {}, halted: {}, PC: 0x{:X}, mode: {}",
-            total_steps, cpu.is_halted(), cpu.pc(), cpu.priv_mode());
-
-        if output_str.contains("Run /init as init process") {
-            eprintln!("Boot SUCCESS: Linux reached /init");
+        use std::io::Write;
+        if let Some(log_path) = parse_str_opt(args, "--uart-log") {
+            let mut f = std::fs::File::create(&log_path).unwrap_or_else(|e| {
+                eprintln!("Failed to create UART log '{}': {}", log_path, e);
+                std::process::exit(1);
+            });
+            f.write_all(&all_output).unwrap();
+            eprintln!("UART output written to {} ({} bytes)", log_path, all_output.len());
         } else {
-            eprintln!("Boot INCOMPLETE: did not reach /init ({} bytes output in {} steps)",
+            std::io::stdout().write_all(&all_output).unwrap();
+            let _ = std::io::stdout().flush();
+        }
+
+        info!(steps = total_steps, halted = cpu.is_halted(),
+            pc = format_args!("0x{:X}", cpu.pc()), mode = cpu.priv_mode(), "simulation finished");
+
+        let output_str = String::from_utf8_lossy(&all_output);
+        if output_str.contains("Run /init as init process") {
+            info!("Boot SUCCESS: Linux reached /init");
+        } else {
+            warn!("Boot INCOMPLETE: did not reach /init ({} bytes output in {} steps)",
                 all_output.len(), total_steps);
             std::process::exit(1);
         }

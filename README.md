@@ -39,23 +39,54 @@ cargo build --workspace
 
 **Boot Linux on RISC-V**
 
-Prepare the boot images and place them alongside the platform manifest:
+Install the RISC-V cross-compilation toolchain:
 
 ```bash
-# You need three files in platforms/reference/server/:
-#   fw_jump.bin   — OpenSBI firmware (raw binary or ELF)
-#   Image         — Linux kernel Image (raw binary or ELF vmlinux)
-#   riscv-virt.dtb — Device tree blob for the virt platform
+# Ubuntu/Debian
+sudo apt install gcc-riscv64-linux-gnu
+
+# Arch Linux
+sudo pacman -S riscv64-linux-gnu-gcc
 ```
+
+Build OpenSBI firmware:
+
+```bash
+git clone https://github.com/riscv-software-src/opensbi.git ../opensbi
+cd ../opensbi
+make CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP_ADDR=0x80200000
+cd -
+```
+
+Build the Linux kernel (a minimal config is provided in the repo):
+
+```bash
+git clone --depth 1 --branch v6.1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git ../linux-6.1
+cd ../linux-6.1
+cp ../rhetsim/platforms/reference/server/linux-rv64ima.config .config
+make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc)
+cd -
+```
+
+The device tree blob (`riscv-virt.dtb`) is already included in the repo.
 
 Start the simulator:
 
 ```bash
-# Interactive mode (default) — UART mapped to terminal, Ctrl-A X to quit
-cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml
+# Quick start — uses ../opensbi and ../linux-6.1 by default
+./run.sh
 
-# Non-interactive batch mode — runs up to N steps then exits
-cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml --batch --steps 100000000
+# Or specify paths explicitly
+./run.sh --firmware /path/to/fw_jump.bin --kernel /path/to/Image
+
+# Non-interactive batch mode
+./run.sh --batch --steps 100000000
+```
+
+You can also override default paths via environment variables:
+
+```bash
+RHETSIM_FIRMWARE=/path/to/fw_jump.bin RHETSIM_KERNEL=/path/to/Image ./run.sh
 ```
 
 CLI options:
