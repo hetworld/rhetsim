@@ -21,8 +21,6 @@ RHetSim is an open-source heterogeneous hardware simulation framework written in
 
 ## Getting Started
 
-> 🚧 Coming soon — the project scaffold is in place; runnable examples will be added once core crates reach functional completeness.
-
 **Prerequisites**
 
 ```bash
@@ -39,11 +37,39 @@ cd rhetsim
 cargo build --workspace
 ```
 
-**Run**
+**Boot Linux on RISC-V**
+
+Prepare the boot images and place them alongside the platform manifest:
 
 ```bash
-# TODO: add example profile run command
+# You need three files in platforms/reference/server/:
+#   fw_jump.bin   — OpenSBI firmware (raw binary or ELF)
+#   Image         — Linux kernel Image (raw binary or ELF vmlinux)
+#   riscv-virt.dtb — Device tree blob for the virt platform
 ```
+
+Start the simulator:
+
+```bash
+# Interactive mode (default) — UART mapped to terminal, Ctrl-A X to quit
+cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml
+
+# Non-interactive batch mode — runs up to N steps then exits
+cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml --batch --steps 100000000
+```
+
+CLI options:
+
+| Option | Description |
+|--------|-------------|
+| `--batch` | Non-interactive mode (no console I/O) |
+| `--steps <n>` | Max instruction steps in batch mode (default: 100000000) |
+| `--firmware <path>` | Override firmware binary path |
+| `--kernel <path>` | Override kernel image path |
+| `--dtb <path>` | Override device tree blob path |
+| `--list-units` | List available hardware unit kinds |
+
+Both ELF and raw binary formats are auto-detected. ELF files are loaded by their PT_LOAD segments with the entry point extracted automatically.
 
 ## Documentation
 

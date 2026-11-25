@@ -21,8 +21,6 @@ RhetSim 是一个用 Rust 编写的开源异构硬件仿真框架。通过声明
 
 ## 快速上手
 
-> 🚧 建设中 — 工程骨架已就绪，核心 crate 达到功能完整后将提供可运行示例。
-
 **环境要求**
 
 ```bash
@@ -39,11 +37,39 @@ cd rhetsim
 cargo build --workspace
 ```
 
-**运行**
+**启动 RISC-V Linux**
+
+准备启动镜像，放在平台 manifest 同目录下：
 
 ```bash
-# TODO: 补充示例 profile 运行命令
+# 需要三个文件放在 platforms/reference/server/ 下：
+#   fw_jump.bin    — OpenSBI 固件（raw binary 或 ELF 格式）
+#   Image          — Linux 内核镜像（raw binary 或 ELF vmlinux）
+#   riscv-virt.dtb — virt 平台的设备树
 ```
+
+启动模拟器：
+
+```bash
+# 交互模式（默认）— UART 映射到终端，Ctrl-A X 退出
+cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml
+
+# 非交互批处理模式 — 执行 N 步后退出
+cargo run --release --bin rhetsim-cli -- platforms/reference/server/riscv-virt.toml --batch --steps 100000000
+```
+
+CLI 选项：
+
+| 选项 | 说明 |
+|------|------|
+| `--batch` | 非交互模式（无控制台 I/O） |
+| `--steps <n>` | 批处理模式下最大指令步数（默认 100000000） |
+| `--firmware <path>` | 覆盖固件路径 |
+| `--kernel <path>` | 覆盖内核镜像路径 |
+| `--dtb <path>` | 覆盖设备树路径 |
+| `--list-units` | 列出可用的硬件单元类型 |
+
+ELF 和 raw binary 格式自动检测。ELF 文件按 PT_LOAD 段加载，入口点自动提取。
 
 ## 文档
 
