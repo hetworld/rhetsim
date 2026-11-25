@@ -185,6 +185,7 @@ name = "rhetsim-accel-gpgpu"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "rhetsim-cpu-riscv",
 ]
 
 [[package]]
@@ -324,6 +325,7 @@ name = "rhetsim-io-pcie"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "rhetsim-mem-dram",
 ]
 
 [[package]]

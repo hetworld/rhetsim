@@ -64,16 +64,16 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 - RV64A extension: LR.W/D, SC.W/D, AMO{SWAP,ADD,AND,OR,XOR,MIN,MAX,MINU,MAXU}.W/D
 - End-to-end test: timer interrupt fires, trap handler executes, returns to user code
 
-### Phase 4: GPGPU Compute Path
+### Phase 4: GPGPU Compute Path (Done)
 
 **Goal:** GPGPU can actually execute compute kernels dispatched by CPU.
 
 **Deliverables:**
-- SimtHartBackend (Route A): RISC-V hart array for SM SIMT execution
-- Warp scheduling: round-robin or greedy-then-oldest across warps
-- `rhetsim-mem-gddr`: GDDR memory backing for VRAM
-- `rhetsim-io-pcie`: PCIe bus basic implementation (BAR mapping, config space, TLP routing)
-- End-to-end test: CPU dispatches kernel → GPGPU executes → results in shared memory
+- SimtHartBackend (Route A): RISC-V hart array for SM SIMT execution ✓
+- Warp scheduling: round-robin across warps ✓
+- `rhetsim-mem-gddr`: GDDR memory backing for VRAM ✓
+- `rhetsim-io-pcie`: PCIe bus basic implementation (BAR mapping, config space, TLP routing) ✓
+- End-to-end test: CPU dispatches kernel → GPGPU executes → results in shared memory ✓
 
 ### Phase 5: ARM & Multi-ISA Heterogeneous (Done)
 

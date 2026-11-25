@@ -138,6 +138,64 @@ mod tests {
     }
 
     #[test]
+    fn test_gpgpu_kernel_dispatch() {
+        let mut gpu = Gpgpu::new("gpu0", 0x10000);
+
+        // Load kernel: result[global_tid] = vec_a[global_tid] + vec_b[global_tid]
+        // global_tid = block_id * block_dim + thread_id
+        // a0=tid, a1=block_id, a2=block_dim
+        // vec_a at 0x4000, vec_b at 0x5000, result at 0x6000
+        let kernel: Vec<u32> = vec![
+            0x02C580B3, // MUL  x1, x11, x12     ; x1 = block_id * block_dim
+            0x00A080B3, // ADD  x1, x1, x10      ; x1 = global_tid
+            0x00209113, // SLLI x2, x1, 2         ; x2 = global_tid * 4
+            0x000042B7, // LUI  x5, 0x4
+            0x002282B3, // ADD  x5, x5, x2
+            0x0002A183, // LW   x3, 0(x5)         ; vec_a[gtid]
+            0x00005337, // LUI  x6, 0x5
+            0x00230333, // ADD  x6, x6, x2
+            0x00032203, // LW   x4, 0(x6)         ; vec_b[gtid]
+            0x004183B3, // ADD  x7, x3, x4
+            0x00006437, // LUI  x8, 0x6
+            0x00240433, // ADD  x8, x8, x2
+            0x00742023, // SW   x7, 0(x8)         ; result[gtid]
+            0x00000073, // ECALL
+        ];
+        for (i, &insn) in kernel.iter().enumerate() {
+            gpu.vram().write_u32((i * 4) as u64, insn).unwrap();
+        }
+
+        // Write input vectors
+        let vec_a: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        let vec_b: [u32; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
+        for (i, &v) in vec_a.iter().enumerate() {
+            gpu.vram().write_u32(0x4000 + (i as u64) * 4, v).unwrap();
+        }
+        for (i, &v) in vec_b.iter().enumerate() {
+            gpu.vram().write_u32(0x5000 + (i as u64) * 4, v).unwrap();
+        }
+
+        // Dispatch kernel: 2 blocks × 4 threads
+        gpu.ctrl().write(0x08, MemAccessSize::U32, cmd_proc::OP_KERNEL as u64).unwrap();
+        gpu.ctrl().write(0x1C, MemAccessSize::U32, 0).unwrap();      // kernel at VRAM 0
+        gpu.ctrl().write(0x20, MemAccessSize::U32, 2).unwrap();      // grid_dim = 2
+        gpu.ctrl().write(0x24, MemAccessSize::U32, 4).unwrap();      // block_dim = 4
+        gpu.ctrl().write(0x00, MemAccessSize::U32, 1).unwrap();      // doorbell
+
+        let consumed = gpu.exec(1000).unwrap();
+        assert!(consumed > 0);
+
+        let status = gpu.ctrl().read(0x04, MemAccessSize::U32).unwrap();
+        assert_eq!(status, cmd_proc::STATUS_DONE as u64);
+
+        let expected: [u32; 8] = [11, 22, 33, 44, 55, 66, 77, 88];
+        for (i, &exp) in expected.iter().enumerate() {
+            let val = gpu.vram().read_u32(0x6000 + (i as u64) * 4).unwrap();
+            assert_eq!(val, exp, "mismatch at index {i}");
+        }
+    }
+
+    #[test]
     fn test_gpgpu_vector_mul() {
         let mut gpu = Gpgpu::new("gpu0", 64 * 1024);
 

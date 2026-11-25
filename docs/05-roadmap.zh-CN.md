@@ -64,16 +64,16 @@
 - RV64A 扩展：LR.W/D、SC.W/D、AMO{SWAP,ADD,AND,OR,XOR,MIN,MAX,MINU,MAXU}.W/D
 - 端到端测试：定时器中断触发 → 陷阱处理程序执行 → 返回用户代码
 
-### Phase 4：GPGPU 计算通路（计划中）
+### Phase 4：GPGPU 计算通路（完成）
 
 **目标：** GPGPU 能实际执行 CPU 分发的计算 kernel。
 
 **交付件：**
-- SimtHartBackend（路线 A）：RISC-V hart 阵列 SIMT 执行
-- Warp 调度：round-robin 或 greedy-then-oldest
-- `rhetsim-mem-gddr`：GDDR 内存后端
-- `rhetsim-io-pcie`：PCIe 总线基础实现（BAR 映射、配置空间、TLP 路由）
-- 端到端测试：CPU 分发 kernel → GPGPU 执行 → 结果写回共享内存
+- SimtHartBackend（路线 A）：RISC-V hart 阵列 SIMT 执行 ✓
+- Warp 调度：round-robin ✓
+- `rhetsim-mem-gddr`：GDDR 内存后端 ✓
+- `rhetsim-io-pcie`：PCIe 总线基础实现（BAR 映射、配置空间、TLP 路由）✓
+- 端到端测试：CPU 分发 kernel → GPGPU 执行 → 结果写回共享内存 ✓
 
 ### Phase 5：ARM & 多 ISA 异构（完成）
 
