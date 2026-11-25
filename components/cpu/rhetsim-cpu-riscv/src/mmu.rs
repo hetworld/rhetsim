@@ -139,6 +139,72 @@ fn check_perm(
     Ok(())
 }
 
+const TLB_SIZE: usize = 256;
+
+#[derive(Clone, Copy)]
+struct TlbEntry {
+    va_page: u64,
+    pa_page: u64,
+    perm: u8,
+    valid: bool,
+}
+
+impl TlbEntry {
+    const fn empty() -> Self {
+        Self { va_page: 0, pa_page: 0, perm: 0, valid: false }
+    }
+}
+
+pub struct Tlb {
+    entries: [TlbEntry; TLB_SIZE],
+}
+
+impl Tlb {
+    pub fn new() -> Self {
+        Self { entries: [TlbEntry::empty(); TLB_SIZE] }
+    }
+
+    pub fn flush(&mut self) {
+        for e in &mut self.entries {
+            e.valid = false;
+        }
+    }
+
+    pub fn lookup(&self, va: u64, access: AccessType) -> Option<u64> {
+        let va_page = va >> 12;
+        let idx = (va_page as usize) & (TLB_SIZE - 1);
+        let e = &self.entries[idx];
+        if !e.valid || e.va_page != va_page {
+            return None;
+        }
+        if e.perm & access_mask(access) == 0 {
+            return None;
+        }
+        Some((e.pa_page << 12) | (va & 0xFFF))
+    }
+
+    pub fn fill(&mut self, va: u64, pa: u64, access: AccessType) {
+        let va_page = va >> 12;
+        let pa_page = pa >> 12;
+        let idx = (va_page as usize) & (TLB_SIZE - 1);
+        let mask = access_mask(access);
+        let e = &mut self.entries[idx];
+        if e.valid && e.va_page == va_page {
+            e.perm |= mask;
+        } else {
+            *e = TlbEntry { va_page, pa_page, perm: mask, valid: true };
+        }
+    }
+}
+
+fn access_mask(access: AccessType) -> u8 {
+    match access {
+        AccessType::Load => 1,
+        AccessType::Store => 2,
+        AccessType::Fetch => 4,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

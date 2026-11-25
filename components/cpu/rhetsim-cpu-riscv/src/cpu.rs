@@ -35,6 +35,7 @@ pub struct RiscvCpu {
     priv_mode: u8,
     insn_size: u64,
     jit: Option<JitEngine>,
+    tlb: mmu::Tlb,
 }
 
 impl RiscvCpu {
@@ -56,6 +57,7 @@ impl RiscvCpu {
             priv_mode: csr::PRV_M,
             insn_size: 4,
             jit: Some(JitEngine::new()),
+            tlb: mmu::Tlb::new(),
         }
     }
 
@@ -73,6 +75,7 @@ impl RiscvCpu {
             priv_mode: csr::PRV_M,
             insn_size: 4,
             jit: Some(JitEngine::new()),
+            tlb: mmu::Tlb::new(),
         }
     }
 
@@ -184,7 +187,7 @@ impl RiscvCpu {
 
     // ── Virtual → Physical translation ────────────────────────
 
-    fn translate(&self, va: u64, access: mmu::AccessType) -> Result<u64, mmu::PageFault> {
+    fn translate_walk(&self, va: u64, access: mmu::AccessType) -> Result<u64, mmu::PageFault> {
         mmu::translate_sv39(
             va,
             self.csr.satp,
@@ -193,6 +196,19 @@ impl RiscvCpu {
             self.csr.mstatus,
             &|addr| self.phys_read(addr, 8),
         )
+    }
+
+    fn translate(&mut self, va: u64, access: mmu::AccessType) -> Result<u64, mmu::PageFault> {
+        let mode = (self.csr.satp >> 60) & 0xF;
+        if mode == 0 || self.priv_mode == 3 {
+            return Ok(va);
+        }
+        if let Some(pa) = self.tlb.lookup(va, access) {
+            return Ok(pa);
+        }
+        let pa = self.translate_walk(va, access)?;
+        self.tlb.fill(va, pa, access);
+        Ok(pa)
     }
 
     // ── Trap handling ─────────────────────────────────────────
@@ -231,7 +247,7 @@ impl RiscvCpu {
     // ── JIT helpers ────────────────────────────────────────────
 
     fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize) -> u64 {
-        let cpu = unsafe { &*(cpu_ptr as *const RiscvCpu) };
+        let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
         let pa = match cpu.translate(va, mmu::AccessType::Load) {
             Ok(pa) => pa,
             Err(_) => return 0,
@@ -276,7 +292,7 @@ impl RiscvCpu {
         let satp = self.csr.satp;
 
         let fetch_fn = |pc: u64| -> Result<u64, (u64, u64)> {
-            let cpu = unsafe { &*(self_ptr as *const RiscvCpu) };
+            let cpu = unsafe { &mut *(self_ptr as *mut RiscvCpu) };
             let pa = match cpu.translate(pc, mmu::AccessType::Fetch) {
                 Ok(pa) => pa,
                 Err(fault) => return Err((fault.cause, fault.tval)),
@@ -348,6 +364,7 @@ impl RiscvCpu {
                 self.pc = state.exit_pc;
                 self.pc += 4;
                 self.insn_count += 1;
+                self.tlb.flush();
                 if let Some(jit) = self.jit.as_mut() {
                     jit.invalidate_all();
                 }
@@ -604,6 +621,7 @@ impl RiscvCpu {
                     }
                     _ => {}
                 }
+                if csr == 0x180 { self.tlb.flush(); }
                 self.pc += self.insn_size;
             }
             Instruction::Mret => {
@@ -620,6 +638,7 @@ impl RiscvCpu {
                 self.pc += self.insn_size;
             }
             Instruction::SfenceVma { .. } => {
+                self.tlb.flush();
                 self.pc += self.insn_size;
             }
             Instruction::Amo { funct5, aq: _, rl: _, funct3, rd, rs1, rs2 } => {
@@ -789,6 +808,7 @@ impl Unit for RiscvCpu {
         if let MemBackend::Flat { uart_output, .. } = &mut self.backend {
             uart_output.clear();
         }
+        self.tlb.flush();
         if let Some(jit) = self.jit.as_mut() {
             jit.invalidate_all();
         }
