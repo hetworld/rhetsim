@@ -8,6 +8,7 @@ use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::MemAccessSize;
 use crate::csr::{self, CsrFile};
 use crate::decode::{decode, decode_compressed, Instruction};
+use crate::jit::{JitEngine, JitCpuState, HelperContext};
 use crate::mmu;
 
 enum MemBackend {
@@ -33,6 +34,7 @@ pub struct RiscvCpu {
     reservation: Option<u64>,
     priv_mode: u8,
     insn_size: u64,
+    jit: Option<JitEngine>,
 }
 
 impl RiscvCpu {
@@ -53,6 +55,7 @@ impl RiscvCpu {
             reservation: None,
             priv_mode: csr::PRV_M,
             insn_size: 4,
+            jit: Some(JitEngine::new()),
         }
     }
 
@@ -69,6 +72,7 @@ impl RiscvCpu {
             reservation: None,
             priv_mode: csr::PRV_M,
             insn_size: 4,
+            jit: Some(JitEngine::new()),
         }
     }
 
@@ -224,12 +228,158 @@ impl RiscvCpu {
         }
     }
 
-    // ── Step / Execute ────────────────────────────────────────
+    // ── JIT helpers ────────────────────────────────────────────
 
-    fn step(&mut self) {
-        self.check_interrupt();
-        if self.halted { return; }
+    fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize) -> u64 {
+        let cpu = unsafe { &*(cpu_ptr as *const RiscvCpu) };
+        let pa = match cpu.translate(va, mmu::AccessType::Load) {
+            Ok(pa) => pa,
+            Err(_) => return 0,
+        };
+        cpu.phys_read(pa, size)
+    }
 
+    fn jit_store(cpu_ptr: *mut u8, va: u64, size: usize, val: u64) -> u64 {
+        let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
+        let pa = match cpu.translate(va, mmu::AccessType::Store) {
+            Ok(pa) => pa,
+            Err(_) => return 1,
+        };
+        cpu.phys_write(pa, size, val);
+        0
+    }
+
+    fn jit_step(&mut self) -> bool {
+        let jit = match self.jit.as_mut() {
+            Some(j) => j as *mut JitEngine,
+            None => return false,
+        };
+
+        let mut state = JitCpuState {
+            regs: self.regs,
+            pc: self.pc,
+            exit_reason: 0,
+            exit_pc: 0,
+            _pad: 0,
+            insn_count: 0,
+            raw_insn: 0,
+        };
+
+        let self_ptr = self as *mut RiscvCpu as *mut u8;
+        let mut helper_ctx = HelperContext {
+            cpu_ptr: self_ptr,
+            load_fn: Self::jit_load,
+            store_fn: Self::jit_store,
+        };
+
+        let priv_mode = self.priv_mode;
+        let satp = self.csr.satp;
+
+        let fetch_fn = |pc: u64| -> Result<u64, (u64, u64)> {
+            let cpu = unsafe { &*(self_ptr as *const RiscvCpu) };
+            let pa = match cpu.translate(pc, mmu::AccessType::Fetch) {
+                Ok(pa) => pa,
+                Err(fault) => return Err((fault.cause, fault.tval)),
+            };
+            let lo = cpu.phys_read(pa, 2) as u16;
+            if lo & 0x3 != 0x3 {
+                Ok(lo as u64)
+            } else {
+                let hi = cpu.phys_read(pa + 2, 2) as u16;
+                Ok(((hi as u64) << 16) | lo as u64)
+            }
+        };
+
+        let jit = unsafe { &mut *jit };
+        let ok = jit.execute(&mut state, &mut helper_ctx, priv_mode, satp, &fetch_fn);
+        if !ok { return false; }
+
+        self.regs = state.regs;
+        self.regs[0] = 0;
+        self.insn_count += state.insn_count;
+
+        match state.exit_reason {
+            3 => {
+                // BLOCK_END: normal exit, pc already set
+                self.pc = state.pc;
+            }
+            1 => {
+                // ECALL
+                self.pc = state.exit_pc;
+                let cause = match self.priv_mode {
+                    0 => 8, 1 => 9, 3 => 11, _ => 8,
+                };
+                self.take_trap(cause, 0);
+            }
+            2 => {
+                // TRAP (unknown instruction)
+                self.pc = state.exit_pc;
+                self.take_trap(2, 0);
+            }
+            4 => {
+                // CSR — fall back to interpreter for this instruction
+                self.pc = state.exit_pc;
+                self.step_one_interp();
+            }
+            5 => {
+                // MRET
+                self.pc = state.exit_pc;
+                let (pc, mode) = self.csr.mret();
+                self.pc = pc;
+                self.priv_mode = mode;
+                self.insn_count += 1;
+            }
+            6 => {
+                // SRET
+                self.pc = state.exit_pc;
+                let (pc, mode) = self.csr.sret();
+                self.pc = pc;
+                self.priv_mode = mode;
+                self.insn_count += 1;
+            }
+            7 => {
+                // WFI
+                self.pc = state.exit_pc;
+                self.pc += 4; // WFI is always 4 bytes
+                self.insn_count += 1;
+            }
+            8 => {
+                // SFENCE
+                self.pc = state.exit_pc;
+                self.pc += 4;
+                self.insn_count += 1;
+                if let Some(jit) = self.jit.as_mut() {
+                    jit.invalidate_all();
+                }
+            }
+            9 => {
+                // AMO — fall back to interpreter
+                self.pc = state.exit_pc;
+                self.step_one_interp();
+            }
+            10 => {
+                // FENCE.I
+                self.pc = state.exit_pc;
+                self.pc += 4;
+                self.insn_count += 1;
+                if let Some(jit) = self.jit.as_mut() {
+                    jit.invalidate_all();
+                }
+            }
+            11 => {
+                // EBREAK
+                self.pc = state.exit_pc;
+                self.take_trap(3, self.pc);
+            }
+            _ => {
+                self.pc = state.pc;
+            }
+        }
+
+        true
+    }
+
+    fn step_one_interp(&mut self) {
         let fetch_pa = match self.translate(self.pc, mmu::AccessType::Fetch) {
             Ok(pa) => pa,
             Err(fault) => {
@@ -256,6 +406,8 @@ impl RiscvCpu {
         self.regs[0] = 0;
         self.insn_count += 1;
     }
+
+    // ── Execute ───────────────────────────────────────────────
 
     fn set_rd(&mut self, rd: u8, val: u64) {
         if rd != 0 {
@@ -637,6 +789,9 @@ impl Unit for RiscvCpu {
         if let MemBackend::Flat { uart_output, .. } = &mut self.backend {
             uart_output.clear();
         }
+        if let Some(jit) = self.jit.as_mut() {
+            jit.invalidate_all();
+        }
         Ok(())
     }
 
@@ -649,8 +804,15 @@ impl ExecutionBackend for RiscvCpu {
     fn exec(&mut self, budget_ns: u64) -> OmniResult<u64> {
         let mut executed = 0u64;
         while executed < budget_ns && !self.halted {
-            self.step();
-            executed += 1;
+            self.check_interrupt();
+            if self.halted { break; }
+
+            let before = self.insn_count;
+            if !self.jit_step() {
+                self.step_one_interp();
+            }
+            let ran = self.insn_count - before;
+            executed += ran.max(1);
         }
         Ok(executed)
     }
