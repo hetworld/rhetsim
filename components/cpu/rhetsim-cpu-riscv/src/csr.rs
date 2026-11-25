@@ -231,7 +231,12 @@ impl CsrFile {
             SCAUSE    => self.scause = val,
             STVAL     => self.stval = val,
             SIP       => self.mip = (self.mip & !MIP_SSIP) | (val & MIP_SSIP),
-            SATP      => self.satp = val,
+            SATP      => {
+                let mode = (val >> 60) & 0xF;
+                if mode == 0 || mode == 8 {
+                    self.satp = val;
+                }
+            }
             MISA | MVENDORID | MARCHID | MIMPID | MHARTID | MCYCLE | MINSTRET => {}
             _ => {}
         }

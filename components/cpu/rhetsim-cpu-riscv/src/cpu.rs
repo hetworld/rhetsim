@@ -1,4 +1,4 @@
-//! RiscvCpu — RV64IMA interpreter with M/S privilege modes and Sv39 MMU
+//! RiscvCpu — RV64IMAC interpreter with M/S privilege modes and Sv39 MMU
 
 use std::sync::Arc;
 use rhetsim_core::error::{OmniError, OmniResult};
@@ -7,7 +7,7 @@ use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::MemAccessSize;
 use crate::csr::{self, CsrFile};
-use crate::decode::{decode, Instruction};
+use crate::decode::{decode, decode_compressed, Instruction};
 use crate::mmu;
 
 enum MemBackend {
@@ -32,6 +32,7 @@ pub struct RiscvCpu {
     csr: CsrFile,
     reservation: Option<u64>,
     priv_mode: u8,
+    insn_size: u64,
 }
 
 impl RiscvCpu {
@@ -51,6 +52,7 @@ impl RiscvCpu {
             csr: CsrFile::new(0),
             reservation: None,
             priv_mode: csr::PRV_M,
+            insn_size: 4,
         }
     }
 
@@ -66,6 +68,7 @@ impl RiscvCpu {
             csr: CsrFile::new(0),
             reservation: None,
             priv_mode: csr::PRV_M,
+            insn_size: 4,
         }
     }
 
@@ -235,12 +238,20 @@ impl RiscvCpu {
             }
         };
 
-        let raw = self.phys_read(fetch_pa, 4) as u32;
-        if raw == 0 {
+        let half = self.phys_read(fetch_pa, 2) as u16;
+        if half == 0 {
             self.halted = true;
             return;
         }
-        let insn = decode(raw);
+
+        let insn = if half & 0x3 != 0x3 {
+            self.insn_size = 2;
+            decode_compressed(half)
+        } else {
+            self.insn_size = 4;
+            let raw = (self.phys_read(fetch_pa + 2, 2) as u32) << 16 | half as u32;
+            decode(raw)
+        };
         self.execute(insn);
         self.regs[0] = 0;
         self.insn_count += 1;
@@ -256,19 +267,19 @@ impl RiscvCpu {
         match insn {
             Instruction::Lui { rd, imm } => {
                 self.set_rd(rd, imm as u64);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Auipc { rd, imm } => {
                 self.set_rd(rd, self.pc.wrapping_add(imm as u64));
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Jal { rd, offset } => {
-                self.set_rd(rd, self.pc + 4);
+                self.set_rd(rd, self.pc + self.insn_size);
                 self.pc = self.pc.wrapping_add(offset as u64);
             }
             Instruction::Jalr { rd, rs1, offset } => {
                 let target = (self.regs[rs1 as usize].wrapping_add(offset as u64)) & !1;
-                self.set_rd(rd, self.pc + 4);
+                self.set_rd(rd, self.pc + self.insn_size);
                 self.pc = target;
             }
             Instruction::Branch { funct3, rs1, rs2, offset } => {
@@ -286,7 +297,7 @@ impl RiscvCpu {
                 if taken {
                     self.pc = self.pc.wrapping_add(offset as u64);
                 } else {
-                    self.pc += 4;
+                    self.pc += self.insn_size;
                 }
             }
             Instruction::Load { funct3, rd, rs1, offset } => {
@@ -306,7 +317,7 @@ impl RiscvCpu {
                     _ => 0,
                 };
                 self.set_rd(rd, val);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Store { funct3, rs1, rs2, offset } => {
                 let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
@@ -322,7 +333,7 @@ impl RiscvCpu {
                     3 => self.phys_write(pa, 8, val),
                     _ => {}
                 }
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::OpImm { funct3, rd, rs1, imm, funct7 } => {
                 let src = self.regs[rs1 as usize];
@@ -345,7 +356,7 @@ impl RiscvCpu {
                     _ => 0,
                 };
                 self.set_rd(rd, val);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Op { funct3, funct7, rd, rs1, rs2 } => {
                 let a = self.regs[rs1 as usize];
@@ -368,7 +379,7 @@ impl RiscvCpu {
                     }
                 };
                 self.set_rd(rd, val);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::OpImm32 { funct3, rd, rs1, imm, funct7 } => {
                 let src = self.regs[rs1 as usize] as u32;
@@ -386,7 +397,7 @@ impl RiscvCpu {
                     _ => 0,
                 };
                 self.set_rd(rd, val as i32 as i64 as u64);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Op32 { funct3, funct7, rd, rs1, rs2 } => {
                 let a = self.regs[rs1 as usize] as u32;
@@ -404,7 +415,7 @@ impl RiscvCpu {
                     }
                 };
                 self.set_rd(rd, val as i32 as i64 as u64);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Csr { funct3, rd, rs1, csr } => {
                 let csr_priv = ((csr >> 8) & 0x3) as u8;
@@ -441,7 +452,7 @@ impl RiscvCpu {
                     }
                     _ => {}
                 }
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Mret => {
                 let (pc, mode) = self.csr.mret();
@@ -454,10 +465,10 @@ impl RiscvCpu {
                 self.priv_mode = mode;
             }
             Instruction::Wfi => {
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::SfenceVma { .. } => {
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Amo { funct5, aq: _, rl: _, funct3, rd, rs1, rs2 } => {
                 let va = self.regs[rs1 as usize];
@@ -467,7 +478,7 @@ impl RiscvCpu {
                     Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
                 };
                 self.exec_amo(funct5, funct3, rd, rs2, pa);
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Ecall => {
                 let cause = match self.priv_mode {
@@ -482,7 +493,7 @@ impl RiscvCpu {
                 self.take_trap(3, self.pc);
             }
             Instruction::Fence | Instruction::FenceI => {
-                self.pc += 4;
+                self.pc += self.insn_size;
             }
             Instruction::Unknown(_) => {
                 self.take_trap(2, 0);
@@ -622,6 +633,7 @@ impl Unit for RiscvCpu {
         self.csr.reset();
         self.reservation = None;
         self.priv_mode = csr::PRV_M;
+        self.insn_size = 4;
         if let MemBackend::Flat { uart_output, .. } = &mut self.backend {
             uart_output.clear();
         }
@@ -688,7 +700,7 @@ impl ExecutionBackend for RiscvCpu {
         Ok(())
     }
 
-    fn backend_name(&self) -> &'static str { "rv64ima-interp" }
+    fn backend_name(&self) -> &'static str { "rv64imac-interp" }
 }
 
 #[cfg(test)]

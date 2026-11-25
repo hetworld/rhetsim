@@ -1,4 +1,4 @@
-//! RV64IMAG instruction decoding
+//! RV64IMAC instruction decoding
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
@@ -155,6 +155,250 @@ pub fn decode(insn: u32) -> Instruction {
     }
 }
 
+pub fn decode_compressed(half: u16) -> Instruction {
+    let op = half & 0x3;
+    let funct3_c = (half >> 13) & 0x7;
+
+    match op {
+        0b00 => {
+            let rd_p = (((half >> 2) & 0x7) + 8) as u8;
+            let rs1_p = (((half >> 7) & 0x7) + 8) as u8;
+            match funct3_c {
+                0b000 => {
+                    // C.ADDI4SPN: addi rd', sp, nzuimm
+                    let nzuimm = ((half >> 6) & 0x1) << 2
+                        | ((half >> 5) & 0x1) << 3
+                        | ((half >> 11) & 0x3) << 4
+                        | ((half >> 7) & 0xF) << 6;
+                    if nzuimm == 0 {
+                        return Instruction::Unknown(half as u32);
+                    }
+                    Instruction::OpImm { funct3: 0, rd: rd_p, rs1: 2, imm: nzuimm as i64, funct7: 0 }
+                }
+                0b010 => {
+                    // C.LW: lw rd', offset(rs1')
+                    let off = ((half >> 6) & 0x1) << 2
+                        | ((half >> 10) & 0x7) << 3
+                        | ((half >> 5) & 0x1) << 6;
+                    Instruction::Load { funct3: 2, rd: rd_p, rs1: rs1_p, offset: off as i64 }
+                }
+                0b011 => {
+                    // C.LD: ld rd', offset(rs1')
+                    let off = ((half >> 10) & 0x7) << 3
+                        | ((half >> 5) & 0x3) << 6;
+                    Instruction::Load { funct3: 3, rd: rd_p, rs1: rs1_p, offset: off as i64 }
+                }
+                0b110 => {
+                    // C.SW: sw rs2', offset(rs1')
+                    let rs2_p = rd_p; // same bit field
+                    let off = ((half >> 6) & 0x1) << 2
+                        | ((half >> 10) & 0x7) << 3
+                        | ((half >> 5) & 0x1) << 6;
+                    Instruction::Store { funct3: 2, rs1: rs1_p, rs2: rs2_p, offset: off as i64 }
+                }
+                0b111 => {
+                    // C.SD: sd rs2', offset(rs1')
+                    let rs2_p = rd_p;
+                    let off = ((half >> 10) & 0x7) << 3
+                        | ((half >> 5) & 0x3) << 6;
+                    Instruction::Store { funct3: 3, rs1: rs1_p, rs2: rs2_p, offset: off as i64 }
+                }
+                _ => Instruction::Unknown(half as u32),
+            }
+        }
+        0b01 => {
+            match funct3_c {
+                0b000 => {
+                    // C.NOP / C.ADDI: addi rd, rd, nzimm
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                    let imm = ((imm as i16) << 10 >> 10) as i64; // sign-extend 6-bit
+                    Instruction::OpImm { funct3: 0, rd, rs1: rd, imm, funct7: 0 }
+                }
+                0b001 => {
+                    // C.ADDIW: addiw rd, rd, imm
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                    let imm = ((imm as i16) << 10 >> 10) as i64;
+                    Instruction::OpImm32 { funct3: 0, rd, rs1: rd, imm, funct7: 0 }
+                }
+                0b010 => {
+                    // C.LI: addi rd, x0, imm
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                    let imm = ((imm as i16) << 10 >> 10) as i64;
+                    Instruction::OpImm { funct3: 0, rd, rs1: 0, imm, funct7: 0 }
+                }
+                0b011 => {
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    if rd == 2 {
+                        // C.ADDI16SP: addi sp, sp, nzimm (scaled by 16)
+                        let nzimm = (((half >> 6) & 0x1) << 4)
+                            | (((half >> 2) & 0x1) << 5)
+                            | (((half >> 5) & 0x1) << 6)
+                            | (((half >> 3) & 0x3) << 7)
+                            | (((half >> 12) & 0x1) << 9);
+                        let nzimm = ((nzimm as i16) << 6 >> 6) as i64; // sign-extend 10-bit
+                        if nzimm == 0 {
+                            return Instruction::Unknown(half as u32);
+                        }
+                        Instruction::OpImm { funct3: 0, rd: 2, rs1: 2, imm: nzimm, funct7: 0 }
+                    } else {
+                        // C.LUI: lui rd, nzimm
+                        let nzimm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                        let nzimm = ((nzimm as i32) << 26 >> 26) as i64; // sign-extend 6-bit
+                        if nzimm == 0 {
+                            return Instruction::Unknown(half as u32);
+                        }
+                        let imm = (nzimm << 12) as i64;
+                        Instruction::Lui { rd, imm }
+                    }
+                }
+                0b100 => {
+                    let rd_p = (((half >> 7) & 0x7) + 8) as u8;
+                    let funct2 = (half >> 10) & 0x3;
+                    match funct2 {
+                        0b00 => {
+                            // C.SRLI: srli rd', rd', shamt
+                            let shamt = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                            Instruction::OpImm { funct3: 5, rd: rd_p, rs1: rd_p, imm: shamt as i64, funct7: 0 }
+                        }
+                        0b01 => {
+                            // C.SRAI: srai rd', rd', shamt
+                            let shamt = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                            Instruction::OpImm { funct3: 5, rd: rd_p, rs1: rd_p, imm: shamt as i64, funct7: 0x20 }
+                        }
+                        0b10 => {
+                            // C.ANDI: andi rd', rd', imm
+                            let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                            let imm = ((imm as i16) << 10 >> 10) as i64;
+                            Instruction::OpImm { funct3: 7, rd: rd_p, rs1: rd_p, imm, funct7: 0 }
+                        }
+                        0b11 => {
+                            let rs2_p = (((half >> 2) & 0x7) + 8) as u8;
+                            let funct1 = (half >> 12) & 0x1;
+                            let funct2b = (half >> 5) & 0x3;
+                            match (funct1, funct2b) {
+                                (0, 0b00) => Instruction::Op { funct3: 0, funct7: 0x20, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.SUB
+                                (0, 0b01) => Instruction::Op { funct3: 4, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.XOR
+                                (0, 0b10) => Instruction::Op { funct3: 6, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.OR
+                                (0, 0b11) => Instruction::Op { funct3: 7, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.AND
+                                (1, 0b00) => Instruction::Op32 { funct3: 0, funct7: 0x20, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.SUBW
+                                (1, 0b01) => Instruction::Op32 { funct3: 0, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.ADDW
+                                _ => Instruction::Unknown(half as u32),
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                0b101 => {
+                    // C.J: jal x0, offset
+                    let off = ((half >> 3) & 0x7) << 1
+                        | ((half >> 11) & 0x1) << 4
+                        | ((half >> 2) & 0x1) << 5
+                        | ((half >> 7) & 0x1) << 6
+                        | ((half >> 6) & 0x1) << 7
+                        | ((half >> 9) & 0x3) << 8
+                        | ((half >> 8) & 0x1) << 10
+                        | ((half >> 12) & 0x1) << 11;
+                    let off = ((off as i16) << 4 >> 4) as i64; // sign-extend 12-bit
+                    Instruction::Jal { rd: 0, offset: off }
+                }
+                0b110 => {
+                    // C.BEQZ: beq rs1', x0, offset
+                    let rs1_p = (((half >> 7) & 0x7) + 8) as u8;
+                    let off = ((half >> 3) & 0x3) << 1
+                        | ((half >> 10) & 0x3) << 3
+                        | ((half >> 2) & 0x1) << 5
+                        | ((half >> 5) & 0x3) << 6
+                        | ((half >> 12) & 0x1) << 8;
+                    let off = ((off as i16) << 7 >> 7) as i64; // sign-extend 9-bit
+                    Instruction::Branch { funct3: 0, rs1: rs1_p, rs2: 0, offset: off }
+                }
+                0b111 => {
+                    // C.BNEZ: bne rs1', x0, offset
+                    let rs1_p = (((half >> 7) & 0x7) + 8) as u8;
+                    let off = ((half >> 3) & 0x3) << 1
+                        | ((half >> 10) & 0x3) << 3
+                        | ((half >> 2) & 0x1) << 5
+                        | ((half >> 5) & 0x3) << 6
+                        | ((half >> 12) & 0x1) << 8;
+                    let off = ((off as i16) << 7 >> 7) as i64;
+                    Instruction::Branch { funct3: 1, rs1: rs1_p, rs2: 0, offset: off }
+                }
+                _ => Instruction::Unknown(half as u32),
+            }
+        }
+        0b10 => {
+            match funct3_c {
+                0b000 => {
+                    // C.SLLI: slli rd, rd, shamt
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let shamt = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
+                    Instruction::OpImm { funct3: 1, rd, rs1: rd, imm: shamt as i64, funct7: 0 }
+                }
+                0b010 => {
+                    // C.LWSP: lw rd, offset(sp)
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let off = ((half >> 4) & 0x7) << 2
+                        | ((half >> 12) & 0x1) << 5
+                        | ((half >> 2) & 0x3) << 6;
+                    Instruction::Load { funct3: 2, rd, rs1: 2, offset: off as i64 }
+                }
+                0b011 => {
+                    // C.LDSP: ld rd, offset(sp)
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let off = ((half >> 5) & 0x3) << 3
+                        | ((half >> 12) & 0x1) << 5
+                        | ((half >> 2) & 0x7) << 6;
+                    Instruction::Load { funct3: 3, rd, rs1: 2, offset: off as i64 }
+                }
+                0b100 => {
+                    let bit12 = (half >> 12) & 0x1;
+                    let rd = ((half >> 7) & 0x1F) as u8;
+                    let rs2 = ((half >> 2) & 0x1F) as u8;
+                    if bit12 == 0 {
+                        if rs2 == 0 {
+                            // C.JR: jalr x0, 0(rs1)
+                            Instruction::Jalr { rd: 0, rs1: rd, offset: 0 }
+                        } else {
+                            // C.MV: add rd, x0, rs2
+                            Instruction::Op { funct3: 0, funct7: 0, rd, rs1: 0, rs2 }
+                        }
+                    } else {
+                        if rd == 0 && rs2 == 0 {
+                            // C.EBREAK
+                            Instruction::Ebreak
+                        } else if rs2 == 0 {
+                            // C.JALR: jalr x1, 0(rs1)
+                            Instruction::Jalr { rd: 1, rs1: rd, offset: 0 }
+                        } else {
+                            // C.ADD: add rd, rd, rs2
+                            Instruction::Op { funct3: 0, funct7: 0, rd, rs1: rd, rs2 }
+                        }
+                    }
+                }
+                0b110 => {
+                    // C.SWSP: sw rs2, offset(sp)
+                    let rs2 = ((half >> 2) & 0x1F) as u8;
+                    let off = ((half >> 9) & 0xF) << 2
+                        | ((half >> 7) & 0x3) << 6;
+                    Instruction::Store { funct3: 2, rs1: 2, rs2, offset: off as i64 }
+                }
+                0b111 => {
+                    // C.SDSP: sd rs2, offset(sp)
+                    let rs2 = ((half >> 2) & 0x1F) as u8;
+                    let off = ((half >> 10) & 0x7) << 3
+                        | ((half >> 7) & 0x7) << 6;
+                    Instruction::Store { funct3: 3, rs1: 2, rs2, offset: off as i64 }
+                }
+                _ => Instruction::Unknown(half as u32),
+            }
+        }
+        _ => Instruction::Unknown(half as u32),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +469,76 @@ mod tests {
     fn decode_mret() {
         // MRET: 0x30200073
         assert_eq!(decode(0x30200073), Instruction::Mret);
+    }
+
+    #[test]
+    fn decode_c_addi() {
+        // C.ADDI x15, x15, -1 → 0x17FD (bit12=1, imm[4:0]=0x1F, rd=15)
+        // bits: 000 1 01111 11101 01
+        let insn = decode_compressed(0x17FD);
+        assert_eq!(insn, Instruction::OpImm { funct3: 0, rd: 15, rs1: 15, imm: -1, funct7: 0 });
+    }
+
+    #[test]
+    fn decode_c_li() {
+        // C.LI x10, 7 → addi x10, x0, 7
+        // funct3=010, imm[5]=0, rd=10, imm[4:0]=00111, op=01
+        let half: u16 = (0b010 << 13) | (0 << 12) | (10 << 7) | (0b00111 << 2) | 0b01;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::OpImm { funct3: 0, rd: 10, rs1: 0, imm: 7, funct7: 0 });
+    }
+
+    #[test]
+    fn decode_c_mv() {
+        // C.MV x1, x2 → add x1, x0, x2
+        // funct3=100, bit12=0, rd=1, rs2=2, op=10
+        let half: u16 = (0b100 << 13) | (0 << 12) | (1 << 7) | (2 << 2) | 0b10;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::Op { funct3: 0, funct7: 0, rd: 1, rs1: 0, rs2: 2 });
+    }
+
+    #[test]
+    fn decode_c_jr() {
+        // C.JR x1 → jalr x0, 0(x1)
+        // funct3=100, bit12=0, rs1=1, rs2=0, op=10
+        let half: u16 = (0b100 << 13) | (0 << 12) | (1 << 7) | (0 << 2) | 0b10;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::Jalr { rd: 0, rs1: 1, offset: 0 });
+    }
+
+    #[test]
+    fn decode_c_jalr() {
+        // C.JALR x5 → jalr x1, 0(x5)
+        // funct3=100, bit12=1, rs1=5, rs2=0, op=10
+        let half: u16 = (0b100 << 13) | (1 << 12) | (5 << 7) | (0 << 2) | 0b10;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::Jalr { rd: 1, rs1: 5, offset: 0 });
+    }
+
+    #[test]
+    fn decode_c_add() {
+        // C.ADD x1, x1, x2 → add x1, x1, x2
+        // funct3=100, bit12=1, rd=1, rs2=2, op=10
+        let half: u16 = (0b100 << 13) | (1 << 12) | (1 << 7) | (2 << 2) | 0b10;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::Op { funct3: 0, funct7: 0, rd: 1, rs1: 1, rs2: 2 });
+    }
+
+    #[test]
+    fn decode_c_lwsp() {
+        // C.LWSP x10, 4(sp) → lw x10, 4(x2)
+        // offset=4: offset[4:2]=001 → bits[6:4]=001, offset[5]=0 → bit12=0, offset[7:6]=00 → bits[3:2]=00
+        let half: u16 = (0b010 << 13) | (0 << 12) | (10 << 7) | (0b001 << 4) | (0b00 << 2) | 0b10;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::Load { funct3: 2, rd: 10, rs1: 2, offset: 4 });
+    }
+
+    #[test]
+    fn decode_c_ebreak() {
+        // C.EBREAK: funct3=100, bit12=1, rd=0, rs2=0, op=10
+        let half: u16 = (0b100 << 13) | (1 << 12) | (0 << 7) | (0 << 2) | 0b10;
+        let insn = decode_compressed(half);
+        assert_eq!(insn, Instruction::Ebreak);
     }
 
     #[test]
