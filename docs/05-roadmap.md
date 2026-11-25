@@ -75,7 +75,7 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 - `rhetsim-io-pcie`: PCIe bus basic implementation (BAR mapping, config space, TLP routing)
 - End-to-end test: CPU dispatches kernel → GPGPU executes → results in shared memory
 
-### Phase 5: ARM & Multi-ISA Heterogeneous (Active)
+### Phase 5: ARM & Multi-ISA Heterogeneous (Done)
 
 **Goal:** Second real CPU architecture; three-way heterogeneous platform runs.
 
@@ -85,8 +85,8 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 - `rhetsim-intc-gicv3`: GICv3 interrupt controller (Distributor, Redistributor, CPU interface) ✓
 - AArch64 CPU ↔ GICv3 wiring (ICC system registers, IRQ exception vectoring, ERET) ✓
 - End-to-end test: ARM CPU + GICv3 interrupt-driven program ✓
-- `rhetsim-io-dma`: DMA controller for cross-device bulk memory transfer
-- End-to-end test: ARM + RISC-V + GPGPU on a single platform
+- `rhetsim-io-dma`: DMA controller for cross-device bulk memory transfer ✓
+- End-to-end test: ARM + RISC-V + GPGPU on a single platform ✓
 
 ### Phase 6: Ecosystem & Usability
 

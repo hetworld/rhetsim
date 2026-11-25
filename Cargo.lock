@@ -309,6 +309,7 @@ name = "rhetsim-io-dma"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "rhetsim-mem-dram",
 ]
 
 [[package]]
@@ -384,6 +385,7 @@ dependencies = [
  "rhetsim-cpu-riscv",
  "rhetsim-intc-clint",
  "rhetsim-intc-gicv3",
+ "rhetsim-io-dma",
  "rhetsim-io-uart",
  "rhetsim-manifest",
  "rhetsim-mem-dram",

@@ -75,7 +75,7 @@
 - `rhetsim-io-pcie`：PCIe 总线基础实现（BAR 映射、配置空间、TLP 路由）
 - 端到端测试：CPU 分发 kernel → GPGPU 执行 → 结果写回共享内存
 
-### Phase 5：ARM & 多 ISA 异构（进行中）
+### Phase 5：ARM & 多 ISA 异构（完成）
 
 **目标：** 第二个真实 CPU 架构；三体异构平台可运行。
 
@@ -85,8 +85,8 @@
 - `rhetsim-intc-gicv3`：GICv3 中断控制器（Distributor、Redistributor、CPU 接口）✓
 - AArch64 CPU ↔ GICv3 对接（ICC 系统寄存器、IRQ 异常向量化、ERET）✓
 - 端到端测试：ARM CPU + GICv3 中断驱动程序 ✓
-- `rhetsim-io-dma`：DMA 控制器，支持跨设备批量内存搬运
-- 端到端测试：ARM + RISC-V + GPGPU 同平台运行
+- `rhetsim-io-dma`：DMA 控制器，支持跨设备批量内存搬运 ✓
+- 端到端测试：ARM + RISC-V + GPGPU 同平台运行 ✓
 
 ### Phase 6：生态 & 可用性（计划中）
 
