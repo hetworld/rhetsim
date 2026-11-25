@@ -51,7 +51,7 @@
 
 ## 计划阶段
 
-### Phase 3：中断子系统 & RISC-V 补全（进行中）
+### Phase 3：中断子系统 & RISC-V 补全（已完成）
 
 **目标：** CPU 能响应中断；RISC-V 支持更广泛的裸机程序。
 
@@ -75,12 +75,13 @@
 - `rhetsim-io-pcie`：PCIe 总线基础实现（BAR 映射、配置空间、TLP 路由）
 - 端到端测试：CPU 分发 kernel → GPGPU 执行 → 结果写回共享内存
 
-### Phase 5：ARM & 多 ISA 异构（计划中）
+### Phase 5：ARM & 多 ISA 异构（进行中）
 
 **目标：** 第二个真实 CPU 架构；三体异构平台可运行。
 
 **交付件：**
-- `rhetsim-cpu-arm`：AArch64 解释器（核心整数子集，参照 RV64I 实现模式）
+- `rhetsim-cpu-arm`：AArch64 解释器（核心整数子集，参照 RV64I 实现模式）✓
+- 端到端测试：ARM 主机 + RISC-V 协处理器共享 MemBus ✓
 - `rhetsim-intc-gicv3`：GICv3 中断控制器（Distributor、Redistributor、CPU 接口）
 - `rhetsim-io-dma`：DMA 控制器，支持跨设备批量内存搬运
 - 端到端测试：ARM + RISC-V + GPGPU 同平台运行

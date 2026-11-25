@@ -23,3 +23,4 @@ rhetsim-mem-dram   = { path = "../../components/memory/rhetsim-mem-dram" }
 rhetsim-io-uart    = { path = "../../components/io/rhetsim-io-uart" }
 rhetsim-accel-gpgpu = { path = "../../components/accel/rhetsim-accel-gpgpu" }
 rhetsim-intc-clint  = { path = "../../components/intc/rhetsim-intc-clint" }
+rhetsim-cpu-arm     = { path = "../../components/cpu/rhetsim-cpu-arm" }

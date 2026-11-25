@@ -250,6 +250,7 @@ name = "rhetsim-cpu-arm"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "rhetsim-mem-dram",
 ]
 
 [[package]]
@@ -377,6 +378,7 @@ dependencies = [
  "rhetsim-accel-gpgpu",
  "rhetsim-compat",
  "rhetsim-core",
+ "rhetsim-cpu-arm",
  "rhetsim-cpu-mock",
  "rhetsim-cpu-riscv",
  "rhetsim-intc-clint",

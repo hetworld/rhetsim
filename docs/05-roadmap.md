@@ -51,7 +51,7 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 
 ## Planned Phases
 
-### Phase 3: Interrupt Subsystem & RISC-V Completion (Active)
+### Phase 3: Interrupt Subsystem & RISC-V Completion (Done)
 
 **Goal:** CPU can respond to interrupts; RISC-V supports a broader set of real-world binaries.
 
@@ -75,12 +75,13 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 - `rhetsim-io-pcie`: PCIe bus basic implementation (BAR mapping, config space, TLP routing)
 - End-to-end test: CPU dispatches kernel → GPGPU executes → results in shared memory
 
-### Phase 5: ARM & Multi-ISA Heterogeneous
+### Phase 5: ARM & Multi-ISA Heterogeneous (Active)
 
 **Goal:** Second real CPU architecture; three-way heterogeneous platform runs.
 
 **Deliverables:**
-- `rhetsim-cpu-arm`: AArch64 interpreter (core integer subset, following RV64I pattern)
+- `rhetsim-cpu-arm`: AArch64 interpreter (core integer subset, following RV64I pattern) ✓
+- End-to-end test: ARM host + RISC-V coprocessor on shared MemBus ✓
 - `rhetsim-intc-gicv3`: GICv3 interrupt controller (Distributor, Redistributor, CPU interface)
 - `rhetsim-io-dma`: DMA controller for cross-device bulk memory transfer
 - End-to-end test: ARM + RISC-V + GPGPU on a single platform
