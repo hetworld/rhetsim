@@ -72,7 +72,7 @@ rhetsim/
 │   ├── memory/              # DRAM、SRAM、GDDR
 │   ├── io/                  # UART、PCIe、DMA、Mailbox、VirtIO
 │   └── accel/               # GPGPU、DPU
-├── profiles/                # 预置平台 Profile（TOML/JSON）
+├── platforms/                # 预置平台 Profile（TOML/JSON）
 ├── tools/                   # rhetsim-cli、rhetsim-dbg（GDB stub）
 ├── tests/                   # 集成与系统测试（16 个场景）
 └── docs/                    # 技术文档

@@ -3101,7 +3101,7 @@ rhetsim/
 │       ├── rhetsim-accel-gpgpu/    # GPGPU (SM + L2 + VRAM; Composite)
 │       └── rhetsim-accel-dpu/      # DPU (network processor; Composite)
 │
-├── profiles/                       # pre-built Platform Profiles
+├── platforms/                       # pre-built Platform Profiles
 │   ├── embedded/                   # embedded SoC (RISC-V)
 │   ├── server/                     # ARM server
 │   ├── hetero/                     # heterogeneous acceleration platform

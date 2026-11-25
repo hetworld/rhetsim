@@ -3102,7 +3102,7 @@ rhetsim/
 │       ├── rhetsim-accel-gpgpu/    # GPGPU（SM + L2 + VRAM，Composite）
 │       └── rhetsim-accel-dpu/      # DPU（网络处理器，Composite）
 │
-├── profiles/                       # 预置 Platform Profile
+├── platforms/                       # 预置 Platform Profile
 │   ├── embedded/                   # 嵌入式 SoC（RISC-V）
 │   ├── server/                     # ARM 服务器
 │   ├── hetero/                     # 异构加速平台

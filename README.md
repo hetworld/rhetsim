@@ -72,7 +72,7 @@ rhetsim/
 │   ├── memory/              # DRAM, SRAM, GDDR
 │   ├── io/                  # UART, PCIe, DMA, Mailbox, VirtIO
 │   └── accel/               # GPGPU, DPU
-├── profiles/                # Pre-built platform profiles (TOML/JSON)
+├── platforms/                # Pre-built platform profiles (TOML/JSON)
 ├── tools/                   # rhetsim-cli, rhetsim-dbg (GDB stub)
 ├── tests/                   # Integration and system tests (16 scenarios)
 └── docs/                    # Technical documentation
