@@ -389,6 +389,7 @@ dependencies = [
  "rhetsim-intc-clint",
  "rhetsim-intc-gicv3",
  "rhetsim-io-dma",
+ "rhetsim-io-pcie",
  "rhetsim-io-uart",
  "rhetsim-manifest",
  "rhetsim-mem-dram",
