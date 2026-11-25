@@ -27,6 +27,11 @@ impl Dram {
             data: RwLock::new(vec![0u8; size]),
         }
     }
+
+    pub fn host_info(&self) -> (*mut u8, u64, u64) {
+        let data = self.data.read().unwrap();
+        (data.as_ptr() as *mut u8, self.base, data.len() as u64)
+    }
 }
 
 impl Unit for Dram {

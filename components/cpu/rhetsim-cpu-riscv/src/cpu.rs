@@ -8,7 +8,7 @@ use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::MemAccessSize;
 use crate::csr::{self, CsrFile};
 use crate::decode::{decode, decode_compressed, Instruction};
-use crate::jit::{JitEngine, JitCpuState, HelperContext};
+use crate::jit::{JitEngine, JitCpuState, HelperContext, FastTlbEntry, FAST_TLB_SIZE};
 use crate::mmu;
 
 enum MemBackend {
@@ -36,7 +36,13 @@ pub struct RiscvCpu {
     insn_size: u64,
     jit: Option<JitEngine>,
     tlb: mmu::Tlb,
+    read_fast_tlb: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
+    write_fast_tlb: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
+    dram_host_ptr: Option<(*mut u8, u64, u64)>,
 }
+
+unsafe impl Send for RiscvCpu {}
+unsafe impl Sync for RiscvCpu {}
 
 impl RiscvCpu {
     pub fn new(id: &str, mem_size: usize, mem_base: u64) -> Self {
@@ -58,6 +64,9 @@ impl RiscvCpu {
             insn_size: 4,
             jit: Some(JitEngine::new()),
             tlb: mmu::Tlb::new(),
+            read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
+            write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
+            dram_host_ptr: None,
         }
     }
 
@@ -76,6 +85,9 @@ impl RiscvCpu {
             insn_size: 4,
             jit: Some(JitEngine::new()),
             tlb: mmu::Tlb::new(),
+            read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
+            write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
+            dram_host_ptr: None,
         }
     }
 
@@ -121,6 +133,15 @@ impl RiscvCpu {
     pub fn csr_mut(&mut self) -> &mut CsrFile { &mut self.csr }
     pub fn priv_mode(&self) -> u8 { self.priv_mode }
     pub fn set_priv_mode(&mut self, mode: u8) { self.priv_mode = mode; }
+
+    pub fn set_dram_direct(&mut self, ptr: *mut u8, base: u64, size: u64) {
+        self.dram_host_ptr = Some((ptr, base, size));
+    }
+
+    fn flush_fast_tlb(&mut self) {
+        for e in self.read_fast_tlb.iter_mut() { e.tag = u64::MAX; }
+        for e in self.write_fast_tlb.iter_mut() { e.tag = u64::MAX; }
+    }
 
     // ── Physical memory access (no MMU translation) ───────────
 
@@ -246,12 +267,31 @@ impl RiscvCpu {
 
     // ── JIT helpers ────────────────────────────────────────────
 
+    fn fill_fast_tlb(
+        tlb: &mut [FastTlbEntry; FAST_TLB_SIZE],
+        va: u64, pa: u64,
+        dram: Option<(*mut u8, u64, u64)>,
+    ) {
+        if let Some((host_ptr, base, dram_size)) = dram {
+            if pa >= base && pa < base + dram_size {
+                let va_page = va >> 12;
+                let idx = (va_page as usize) & (FAST_TLB_SIZE - 1);
+                let addend = (host_ptr as u64)
+                    .wrapping_sub(base)
+                    .wrapping_add(pa & !0xFFF)
+                    .wrapping_sub(va & !0xFFF);
+                tlb[idx] = FastTlbEntry { tag: va_page, addend };
+            }
+        }
+    }
+
     fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
         let pa = match cpu.translate(va, mmu::AccessType::Load) {
             Ok(pa) => pa,
             Err(_) => return 0,
         };
+        Self::fill_fast_tlb(&mut cpu.read_fast_tlb, va, pa, cpu.dram_host_ptr);
         cpu.phys_read(pa, size)
     }
 
@@ -261,6 +301,7 @@ impl RiscvCpu {
             Ok(pa) => pa,
             Err(_) => return 1,
         };
+        Self::fill_fast_tlb(&mut cpu.write_fast_tlb, va, pa, cpu.dram_host_ptr);
         cpu.phys_write(pa, size, val);
         0
     }
@@ -270,6 +311,12 @@ impl RiscvCpu {
             Some(j) => j as *mut JitEngine,
             None => return false,
         };
+
+        if self.dram_host_ptr.is_none() {
+            if let MemBackend::Flat { memory, .. } = &self.backend {
+                self.dram_host_ptr = Some((memory.as_ptr() as *mut u8, self.mem_base, memory.len() as u64));
+            }
+        }
 
         let mut state = JitCpuState {
             regs: self.regs,
@@ -282,10 +329,14 @@ impl RiscvCpu {
         };
 
         let self_ptr = self as *mut RiscvCpu as *mut u8;
+        let read_tlb_ptr = self.read_fast_tlb.as_mut_ptr();
+        let write_tlb_ptr = self.write_fast_tlb.as_mut_ptr();
         let mut helper_ctx = HelperContext {
             cpu_ptr: self_ptr,
             load_fn: Self::jit_load,
             store_fn: Self::jit_store,
+            read_tlb: read_tlb_ptr,
+            write_tlb: write_tlb_ptr,
         };
 
         let priv_mode = self.priv_mode;
@@ -365,6 +416,7 @@ impl RiscvCpu {
                 self.pc += 4;
                 self.insn_count += 1;
                 self.tlb.flush();
+                self.flush_fast_tlb();
                 if let Some(jit) = self.jit.as_mut() {
                     jit.invalidate_all();
                 }
@@ -621,7 +673,7 @@ impl RiscvCpu {
                     }
                     _ => {}
                 }
-                if csr == 0x180 { self.tlb.flush(); }
+                if csr == 0x180 { self.tlb.flush(); self.flush_fast_tlb(); }
                 self.pc += self.insn_size;
             }
             Instruction::Mret => {
@@ -639,6 +691,7 @@ impl RiscvCpu {
             }
             Instruction::SfenceVma { .. } => {
                 self.tlb.flush();
+                self.flush_fast_tlb();
                 self.pc += self.insn_size;
             }
             Instruction::Amo { funct5, aq: _, rl: _, funct3, rd, rs1, rs2 } => {
@@ -809,6 +862,7 @@ impl Unit for RiscvCpu {
             uart_output.clear();
         }
         self.tlb.flush();
+        self.flush_fast_tlb();
         if let Some(jit) = self.jit.as_mut() {
             jit.invalidate_all();
         }

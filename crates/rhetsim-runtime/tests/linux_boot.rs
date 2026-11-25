@@ -63,6 +63,9 @@ fn linux_boot() {
     cpu.load_binary(&kernel_data, KERNEL_ADDR - DRAM_BASE);
     cpu.load_binary(&dtb_data, DTB_ADDR - DRAM_BASE);
 
+    let (dram_ptr, dram_base, dram_sz) = dram.host_info();
+    cpu.set_dram_direct(dram_ptr, dram_base, dram_sz);
+
     cpu.set_reg(10, 0);
     cpu.set_reg(11, DTB_ADDR);
     cpu.set_pc(DRAM_BASE);

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::*;
-use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, MemFlagsData, Signature, UserFuncName};
+use cranelift_codegen::ir::{AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, UserFuncName};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
@@ -46,11 +46,28 @@ extern "C" fn helper_store(mem_ctx: *mut u8, addr: u64, size: u64, val: u64) -> 
     (ctx.store_fn)(ctx.cpu_ptr, addr, size as usize, val)
 }
 
+pub const FAST_TLB_SIZE: usize = 256;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FastTlbEntry {
+    pub tag: u64,
+    pub addend: u64,
+}
+
+impl FastTlbEntry {
+    pub const fn invalid() -> Self {
+        Self { tag: u64::MAX, addend: 0 }
+    }
+}
+
 #[repr(C)]
 pub struct HelperContext {
     pub cpu_ptr: *mut u8,
     pub load_fn: fn(*mut u8, u64, usize) -> u64,
     pub store_fn: fn(*mut u8, u64, usize, u64) -> u64,
+    pub read_tlb: *mut FastTlbEntry,
+    pub write_tlb: *mut FastTlbEntry,
 }
 
 #[derive(Clone, Copy, Hash, Eq, PartialEq)]
@@ -239,6 +256,9 @@ impl JitEngine {
             let state_ptr = builder.block_params(entry_block)[0];
             let mem_ctx = builder.block_params(entry_block)[1];
 
+            let read_tlb_base = builder.ins().load(I64, memflags(), mem_ctx, 24);
+            let write_tlb_base = builder.ins().load(I64, memflags(), mem_ctx, 32);
+
             let exit_block = builder.create_block();
 
             for (idx, &(ref insn, insn_pc, insn_size, raw)) in insns.iter().enumerate() {
@@ -419,9 +439,47 @@ impl JitEngine {
                         let off_val = builder.ins().iconst(I64, *offset);
                         let va = builder.ins().iadd(base, off_val);
                         let size_val = match funct3 { 0|4 => 1i64, 1|5 => 2, 2|6 => 4, 3 => 8, _ => 1 };
+
+                        let twelve = builder.ins().iconst(I64, 12);
+                        let va_page = builder.ins().ushr(va, twelve);
+                        let mask_ff = builder.ins().iconst(I64, 0xFF);
+                        let idx = builder.ins().band(va_page, mask_ff);
+                        let four = builder.ins().iconst(I64, 4);
+                        let entry_offset = builder.ins().ishl(idx, four);
+                        let entry_ptr = builder.ins().iadd(read_tlb_base, entry_offset);
+                        let tag = builder.ins().load(I64, memflags(), entry_ptr, 0);
+                        let hit = builder.ins().icmp(IntCC::Equal, tag, va_page);
+
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, I64);
+                        builder.ins().brif(hit, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let addend = builder.ins().load(I64, memflags(), entry_ptr, 8);
+                        let host_addr = builder.ins().iadd(addend, va);
+                        let raw_fast = match size_val {
+                            2 => { let v = builder.ins().load(I16, memflags(), host_addr, 0); builder.ins().uextend(I64, v) }
+                            4 => { let v = builder.ins().load(I32, memflags(), host_addr, 0); builder.ins().uextend(I64, v) }
+                            8 => builder.ins().load(I64, memflags(), host_addr, 0),
+                            _ => { let v = builder.ins().load(I8, memflags(), host_addr, 0); builder.ins().uextend(I64, v) }
+                        };
+                        let arg_fast = BlockArg::Value(raw_fast);
+                        builder.ins().jump(merge_block, &[arg_fast]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let size_arg = builder.ins().iconst(I64, size_val);
                         let call = builder.ins().call(load_ref, &[mem_ctx, va, size_arg]);
-                        let raw_val = builder.inst_results(call)[0];
+                        let raw_slow = builder.inst_results(call)[0];
+                        let arg_slow = BlockArg::Value(raw_slow);
+                        builder.ins().jump(merge_block, &[arg_slow]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        let raw_val = builder.block_params(merge_block)[0];
 
                         if *rd != 0 {
                             let val = match funct3 {
@@ -444,8 +502,42 @@ impl JitEngine {
                         let va = builder.ins().iadd(base, off_val);
                         let val = load_reg(&mut builder, state_ptr, *rs2);
                         let size_val = match funct3 { 0 => 1i64, 1 => 2, 2 => 4, 3 => 8, _ => 1 };
+
+                        let twelve = builder.ins().iconst(I64, 12);
+                        let va_page = builder.ins().ushr(va, twelve);
+                        let mask_ff = builder.ins().iconst(I64, 0xFF);
+                        let idx = builder.ins().band(va_page, mask_ff);
+                        let four = builder.ins().iconst(I64, 4);
+                        let entry_offset = builder.ins().ishl(idx, four);
+                        let entry_ptr = builder.ins().iadd(write_tlb_base, entry_offset);
+                        let tag = builder.ins().load(I64, memflags(), entry_ptr, 0);
+                        let hit = builder.ins().icmp(IntCC::Equal, tag, va_page);
+
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let cont_block = builder.create_block();
+                        builder.ins().brif(hit, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let addend = builder.ins().load(I64, memflags(), entry_ptr, 8);
+                        let host_addr = builder.ins().iadd(addend, va);
+                        match funct3 {
+                            1 => { let v = builder.ins().ireduce(I16, val); builder.ins().store(memflags(), v, host_addr, 0); }
+                            2 => { let v = builder.ins().ireduce(I32, val); builder.ins().store(memflags(), v, host_addr, 0); }
+                            3 => { builder.ins().store(memflags(), val, host_addr, 0); }
+                            _ => { let v = builder.ins().ireduce(I8, val); builder.ins().store(memflags(), v, host_addr, 0); }
+                        };
+                        builder.ins().jump(cont_block, &[]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let size_arg = builder.ins().iconst(I64, size_val);
                         builder.ins().call(store_ref, &[mem_ctx, va, size_arg, val]);
+                        builder.ins().jump(cont_block, &[]);
+
+                        builder.switch_to_block(cont_block);
+                        builder.seal_block(cont_block);
                     }
 
                     Instruction::Jal { rd, offset } => {
