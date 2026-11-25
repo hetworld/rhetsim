@@ -88,15 +88,15 @@
 - `rhetsim-io-dma`：DMA 控制器，支持跨设备批量内存搬运 ✓
 - 端到端测试：ARM + RISC-V + GPGPU 同平台运行 ✓
 
-### Phase 6：生态 & 可用性（计划中）
+### Phase 6：生态 & 可用性（完成）
 
 **目标：** 用户可通过 CLI 加载 manifest、运行仿真、进行基础调试。
 
 **交付件：**
-- `rhetsim-cli`：功能化 CLI（加载 manifest → 实例化平台 → 运行）
-- `rhetsim-compat` QMP 服务器：最小 VM 生命周期子集（query-status、quit、stop、cont）
-- `rhetsim-io-virtio`：VirtIO 控制台设备（UART 的标准化替代）
-- `rhetsim-dbg`：基础调试器（单步、寄存器/内存 dump、断点）
+- `rhetsim-cli`：功能化 CLI（加载 manifest → 实例化平台 → 运行）✓
+- `rhetsim-compat` QMP 服务器：最小 VM 生命周期子集（query-status、quit、stop、cont）✓
+- `rhetsim-io-virtio`：VirtIO 控制台设备（UART 的标准化替代）✓
+- `rhetsim-dbg`：基础调试器（单步、寄存器/内存 dump、断点）✓
 
 ### Phase 7：性能建模（计划中）
 

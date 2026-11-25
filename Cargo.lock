@@ -221,6 +221,7 @@ dependencies = [
  "rhetsim-mem-gddr",
  "rhetsim-mem-sram",
  "rhetsim-runtime",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

@@ -88,15 +88,15 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 - `rhetsim-io-dma`: DMA controller for cross-device bulk memory transfer ✓
 - End-to-end test: ARM + RISC-V + GPGPU on a single platform ✓
 
-### Phase 6: Ecosystem & Usability
+### Phase 6: Ecosystem & Usability (Done)
 
 **Goal:** Users can load manifests via CLI, run simulations, and perform basic debugging.
 
 **Deliverables:**
-- `rhetsim-cli`: functional CLI (load manifest → instantiate platform → run)
-- `rhetsim-compat` QMP server: minimal VM lifecycle subset (query-status, quit, stop, cont)
-- `rhetsim-io-virtio`: VirtIO console device (standardized alternative to bare UART)
-- `rhetsim-dbg`: basic debugger (single-step, register/memory dump, breakpoints)
+- `rhetsim-cli`: functional CLI (load manifest → instantiate platform → run) ✓
+- `rhetsim-compat` QMP server: minimal VM lifecycle subset (query-status, quit, stop, cont) ✓
+- `rhetsim-io-virtio`: VirtIO console device (standardized alternative to bare UART) ✓
+- `rhetsim-dbg`: basic debugger (single-step, register/memory dump, breakpoints) ✓
 
 ### Phase 7: Performance Modeling
 
