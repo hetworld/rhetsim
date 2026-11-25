@@ -10,6 +10,54 @@ use rhetsim_core::unit::{Unit, UnitCaps};
 use rhetsim_manifest::manifest::{Manifest, UnitDesc, BusDesc};
 use rhetsim_runtime::scheduler::Scheduler;
 use rhetsim_cpu_riscv::csr;
+use goblin::elf::Elf;
+use goblin::elf::program_header::PT_LOAD;
+
+struct LoadedImage {
+    entry: Option<u64>,
+}
+
+fn load_image(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], default_addr: u64, dram_base: u64, label: &str) -> LoadedImage {
+    if data.len() >= 4 && &data[..4] == b"\x7fELF" {
+        load_elf(cpu, data, dram_base, label)
+    } else {
+        let offset = default_addr - dram_base;
+        cpu.load_binary(data, offset);
+        eprintln!("  {label:<10} {:>8} bytes -> 0x{:08X} (raw binary)", data.len(), default_addr);
+        LoadedImage { entry: None }
+    }
+}
+
+fn load_elf(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], dram_base: u64, label: &str) -> LoadedImage {
+    let elf = Elf::parse(data).unwrap_or_else(|e| {
+        eprintln!("Failed to parse {label} ELF: {e}");
+        std::process::exit(1);
+    });
+    let mut total_loaded = 0usize;
+    let mut lo = u64::MAX;
+    let mut hi = 0u64;
+    for phdr in &elf.program_headers {
+        if phdr.p_type != PT_LOAD || phdr.p_filesz == 0 {
+            continue;
+        }
+        let file_off = phdr.p_offset as usize;
+        let file_end = file_off + phdr.p_filesz as usize;
+        if file_end > data.len() {
+            eprintln!("{label} ELF: PT_LOAD segment exceeds file size");
+            std::process::exit(1);
+        }
+        let seg_data = &data[file_off..file_end];
+        let vaddr = phdr.p_vaddr;
+        let offset = vaddr - dram_base;
+        cpu.load_binary(seg_data, offset);
+        total_loaded += seg_data.len();
+        lo = lo.min(vaddr);
+        hi = hi.max(vaddr + phdr.p_memsz);
+    }
+    eprintln!("  {label:<10} {:>8} bytes -> 0x{:08X}..0x{:08X} (ELF, entry 0x{:X})",
+        total_loaded, lo, hi, elf.entry);
+    LoadedImage { entry: Some(elf.entry) }
+}
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -126,15 +174,13 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let clint_base = cfg_u64(&clint_desc.config, "base", 0x0200_0000);
     let mem_base = cfg_u64(&cpu_desc.config, "mem_base", dram_base);
 
-    let kernel_addr = dram_base + 0x0020_0000;
-    let dtb_addr = dram_base + 0x0200_0000;
+    let fw_addr = boot.firmware_addr.unwrap_or(dram_base);
+    let kernel_addr = boot.kernel_addr.unwrap_or(dram_base + 0x0020_0000);
+    let dtb_addr = boot.dtb_addr.unwrap_or(dram_base + 0x0200_0000);
 
     eprintln!("Boot layout:");
     eprintln!("  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
     eprintln!("  CLINT   @ 0x{:08X}", clint_base);
-    eprintln!("  Firmware  {:>8} bytes -> 0x{:08X}", fw_data.len(), dram_base);
-    eprintln!("  Kernel    {:>8} bytes -> 0x{:08X}", kernel_data.len(), kernel_addr);
-    eprintln!("  DTB       {:>8} bytes -> 0x{:08X}", dtb_data.len(), dtb_addr);
 
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(&dram_desc.id, dram_size, dram_base));
     let clint = Arc::new(rhetsim_intc_clint::Clint::new(&clint_desc.id, clint_harts, clint_base));
@@ -149,16 +195,21 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let bus = Arc::new(bus);
 
     let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus(&cpu_desc.id, bus, mem_base);
-    cpu.load_binary(&fw_data, 0);
-    cpu.load_binary(&kernel_data, kernel_addr - dram_base);
+
+    let fw_result = load_image(&mut cpu, &fw_data, fw_addr, dram_base, "Firmware");
+    let _kernel_result = load_image(&mut cpu, &kernel_data, kernel_addr, dram_base, "Kernel");
     cpu.load_binary(&dtb_data, dtb_addr - dram_base);
+    eprintln!("  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
+
+    let entry_pc = fw_result.entry.unwrap_or(fw_addr);
 
     let (dram_ptr, dram_host_base, dram_sz) = dram.host_info();
     cpu.set_dram_direct(dram_ptr, dram_host_base, dram_sz);
 
     cpu.set_reg(10, 0);
     cpu.set_reg(11, dtb_addr);
-    cpu.set_pc(dram_base);
+    cpu.set_pc(entry_pc);
+    eprintln!("  Entry PC  0x{:08X}", entry_pc);
 
     eprintln!("Booting... (max {} steps)", max_steps);
 

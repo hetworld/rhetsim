@@ -33,3 +33,4 @@ rhetsim-accel-dpu   = { path = "../../components/accel/rhetsim-accel-dpu" }
 serde_json         = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = "0.3"
+goblin             = { workspace = true }
