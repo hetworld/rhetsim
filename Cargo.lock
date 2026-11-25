@@ -379,6 +379,7 @@ dependencies = [
  "rhetsim-core",
  "rhetsim-cpu-mock",
  "rhetsim-cpu-riscv",
+ "rhetsim-intc-clint",
  "rhetsim-io-uart",
  "rhetsim-manifest",
  "rhetsim-mem-dram",

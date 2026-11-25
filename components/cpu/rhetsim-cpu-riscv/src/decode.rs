@@ -1,4 +1,4 @@
-//! RV64I instruction decoding
+//! RV64IMAG instruction decoding
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
@@ -13,9 +13,16 @@ pub enum Instruction {
     Op     { funct3: u8, funct7: u8, rd: u8, rs1: u8, rs2: u8 },
     OpImm32 { funct3: u8, rd: u8, rs1: u8, imm: i64, funct7: u8 },
     Op32   { funct3: u8, funct7: u8, rd: u8, rs1: u8, rs2: u8 },
+    // CSR instructions
+    Csr    { funct3: u8, rd: u8, rs1: u8, csr: u16 },
+    // System
     Ecall,
     Ebreak,
+    Mret,
+    Wfi,
     Fence,
+    // Atomics (A extension)
+    Amo    { funct5: u8, aq: bool, rl: bool, funct3: u8, rd: u8, rs1: u8, rs2: u8 },
     Unknown(u32),
 }
 
@@ -74,10 +81,21 @@ pub fn decode(insn: u32) -> Instruction {
             funct3: funct3(insn), rd: rd(insn), rs1: rs1(insn), imm: i_imm(insn),
             funct7: funct7(insn),
         },
-        0x33 => Instruction::Op {
-            funct3: funct3(insn), funct7: funct7(insn),
-            rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
-        },
+        0x33 => {
+            let f7 = funct7(insn);
+            if f7 == 0x01 {
+                // M extension (RV64M)
+                Instruction::Op {
+                    funct3: funct3(insn), funct7: f7,
+                    rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+                }
+            } else {
+                Instruction::Op {
+                    funct3: funct3(insn), funct7: f7,
+                    rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+                }
+            }
+        }
         0x1B => Instruction::OpImm32 {
             funct3: funct3(insn), rd: rd(insn), rs1: rs1(insn), imm: i_imm(insn),
             funct7: funct7(insn),
@@ -87,14 +105,40 @@ pub fn decode(insn: u32) -> Instruction {
             rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
         },
         0x73 => {
-            let imm = (insn >> 20) & 0xFFF;
-            match imm {
-                0 => Instruction::Ecall,
-                1 => Instruction::Ebreak,
-                _ => Instruction::Unknown(insn),
+            let f3 = funct3(insn);
+            if f3 == 0 {
+                let imm = insn >> 20;
+                match imm {
+                    0x000 => Instruction::Ecall,
+                    0x001 => Instruction::Ebreak,
+                    0x302 => Instruction::Mret,
+                    0x105 => Instruction::Wfi,
+                    _ => Instruction::Unknown(insn),
+                }
+            } else {
+                // CSR instructions: funct3 1-3 = CSRRW/CSRRS/CSRRC
+                //                   funct3 5-7 = CSRRWI/CSRRSI/CSRRCI
+                let csr_addr = ((insn >> 20) & 0xFFF) as u16;
+                Instruction::Csr {
+                    funct3: f3,
+                    rd: rd(insn),
+                    rs1: rs1(insn), // for Imm variants, this is uimm
+                    csr: csr_addr,
+                }
             }
         }
         0x0F => Instruction::Fence,
+        0x2F => {
+            // A extension (atomics)
+            let f5 = (insn >> 27) & 0x1F;
+            let aq = (insn >> 26) & 1 != 0;
+            let rl = (insn >> 25) & 1 != 0;
+            Instruction::Amo {
+                funct5: f5 as u8, aq, rl,
+                funct3: funct3(insn),
+                rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+            }
+        }
         _ => Instruction::Unknown(insn),
     }
 }
@@ -105,9 +149,7 @@ mod tests {
 
     #[test]
     fn decode_addi() {
-        // ADDI x1, x0, 42 => 0x02A00093
         let insn = decode(0x02A00093);
-        // funct7 overlaps with imm for I-type; only matters for shifts
         match insn {
             Instruction::OpImm { funct3: 0, rd: 1, rs1: 0, imm: 42, .. } => {}
             other => panic!("unexpected: {:?}", other),
@@ -116,26 +158,19 @@ mod tests {
 
     #[test]
     fn decode_lui() {
-        // LUI x5, 0x12345 => 0x12345_2B7
         let insn = decode(0x123452B7);
         assert_eq!(insn, Instruction::Lui { rd: 5, imm: 0x12345000 });
     }
 
     #[test]
     fn decode_sw() {
-        // SW x1, 0(x2) => 0x00112023
         let insn = decode(0x00112023);
         assert_eq!(insn, Instruction::Store { funct3: 2, rs1: 2, rs2: 1, offset: 0 });
     }
 
     #[test]
     fn decode_beq() {
-        // BEQ x1, x0, +8:
-        // B-type: imm[12|10:5] | rs2 | rs1 | funct3 | imm[4:1|11] | opcode
-        // offset=8: b4_1=0100, rest 0
-        // 0_000000_00000_00001_000_0100_0_1100011 = 0x00008463
         let insn = decode(0x00008463);
-        // funct3=000 (BEQ), rs1=1, rs2=0, offset=8
         assert_eq!(insn, Instruction::Branch { funct3: 0, rs1: 1, rs2: 0, offset: 8 });
     }
 
@@ -146,18 +181,49 @@ mod tests {
 
     #[test]
     fn decode_jal() {
-        // JAL x1, +0 => 0x000000EF
         let insn = decode(0x000000EF);
         assert_eq!(insn, Instruction::Jal { rd: 1, offset: 0 });
     }
 
     #[test]
     fn decode_negative_imm() {
-        // ADDI x1, x0, -1 => imm = 0xFFF => sign-extended to -1
-        // 111111111111_00000_000_00001_0010011 = 0xFFF00093
         let insn = decode(0xFFF00093);
         assert_eq!(insn, Instruction::OpImm {
             funct3: 0, rd: 1, rs1: 0, imm: -1, funct7: 0x7F,
         });
+    }
+
+    #[test]
+    fn decode_csrrw() {
+        // CSRRW x1, mstatus(0x300), x2
+        // funct3=001, csr=0x300, rs1=x2, rd=x1
+        // 0011_0000_0000_00010_001_00001_1110011
+        let raw = 0x300_11_0_73u32;
+        // Let me construct properly:
+        // [31:20]=0x300, [19:15]=rs1=2, [14:12]=001, [11:7]=rd=1, [6:0]=0x73
+        let raw = (0x300 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
+        let insn = decode(raw);
+        match insn {
+            Instruction::Csr { funct3: 1, rd: 1, rs1: 2, csr: 0x300 } => {}
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn decode_mret() {
+        // MRET: 0x30200073
+        assert_eq!(decode(0x30200073), Instruction::Mret);
+    }
+
+    #[test]
+    fn decode_amo_add_w() {
+        // AMOADD.W rd=1, rs1=2, rs2=3, aq=0, rl=0
+        // funct5=00000, aq=0, rl=0, rs2=3, rs1=2, funct3=010, rd=1, opcode=0101111
+        let raw = (0b00000 << 27) | (3 << 20) | (2 << 15) | (0b010 << 12) | (1 << 7) | 0x2F;
+        let insn = decode(raw);
+        match insn {
+            Instruction::Amo { funct5: 0, aq: false, rl: false, funct3: 2, rd: 1, rs1: 2, rs2: 3 } => {}
+            other => panic!("unexpected: {:?}", other),
+        }
     }
 }

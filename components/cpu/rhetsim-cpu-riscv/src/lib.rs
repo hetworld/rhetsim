@@ -1,6 +1,7 @@
-//! RISC-V RV64I CPU component
+//! RISC-V RV64IMA CPU component
 
 pub mod cpu;
+pub mod csr;
 pub mod decode;
 pub mod mmu;
 

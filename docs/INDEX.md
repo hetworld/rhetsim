@@ -14,6 +14,7 @@ This index covers all RhetSim technical documents. Each document is available in
 | 02 | Interface Specification | [02-interface-spec.md](./02-interface-spec.md) | [02-interface-spec.zh-CN.md](./02-interface-spec.zh-CN.md) |
 | 03 | Component Development Guide | [03-component-dev-guide.md](./03-component-dev-guide.md) | [03-component-dev-guide.zh-CN.md](./03-component-dev-guide.zh-CN.md) |
 | 04 | Use Case Handbook | [04-use-case-handbook.md](./04-use-case-handbook.md) | [04-use-case-handbook.zh-CN.md](./04-use-case-handbook.zh-CN.md) |
+| 05 | Roadmap | [05-roadmap.md](./05-roadmap.md) | [05-roadmap.zh-CN.md](./05-roadmap.zh-CN.md) |
 
 ## Document Descriptions
 
@@ -28,6 +29,9 @@ Step-by-step guide to implementing a hardware component: project layout, trait i
 
 **04 — Use Case Handbook**
 Sixteen end-to-end simulation scenarios covering heterogeneous SoC, PCIe accelerators, embedded systems, AI servers, nested virtualization, and more. Each scenario includes a Manifest example and notes on key configuration points.
+
+**05 — Roadmap**
+Phase-by-phase implementation roadmap: completed phases (0–2), current work (Phase 3), and planned phases (4–9). Includes dependency graph and mapping to the original M0–M6 milestones.
 
 ## Recommended Reading Order
 

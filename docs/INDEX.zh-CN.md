@@ -14,6 +14,7 @@
 | 02 | 接口规范 | [02-interface-spec.md](./02-interface-spec.md) | [02-interface-spec.zh-CN.md](./02-interface-spec.zh-CN.md) |
 | 03 | 组件开发指南 | [03-component-dev-guide.md](./03-component-dev-guide.md) | [03-component-dev-guide.zh-CN.md](./03-component-dev-guide.zh-CN.md) |
 | 04 | 应用场景手册 | [04-use-case-handbook.md](./04-use-case-handbook.md) | [04-use-case-handbook.zh-CN.md](./04-use-case-handbook.zh-CN.md) |
+| 05 | 路线图 | [05-roadmap.md](./05-roadmap.md) | [05-roadmap.zh-CN.md](./05-roadmap.zh-CN.md) |
 
 ## 文档说明
 
@@ -28,6 +29,9 @@ RhetSim 的顶层设计：四层架构（L1–L4）、五个核心抽象（Unit�
 
 **04 — 应用场景手册**
 十六个端到端仿真场景，涵盖异构 SoC、PCIe 加速器、嵌入式系统、AI 服务器、嵌套虚拟化等。每个场景包含完整 Manifest 示例及关键配置说明。
+
+**05 — 路线图**
+逐阶段实现路线图：已完成阶段（0–2）、当前工作（Phase 3）、计划阶段（4–9）。包含依赖关系图和与原始 M0–M6 里程碑的对照表。
 
 ## 建议阅读顺序
 
