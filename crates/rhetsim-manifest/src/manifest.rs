@@ -9,9 +9,11 @@ pub struct Manifest {
     pub name:      String,
     #[serde(default)]
     pub templates: Vec<UnitDesc>,
+    #[serde(default)]
     pub units:     Vec<UnitDesc>,
     #[serde(default)]
     pub buses:     Vec<BusDesc>,
+    #[serde(default)]
     pub boot:      BootDesc,
 }
 

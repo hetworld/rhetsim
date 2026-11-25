@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "RhetSim core interfaces — L1+L2 abstractions, zero business dependencies"
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 thiserror = { workspace = true }
 bitflags  = { workspace = true }
+serde     = { workspace = true, optional = true }
 
 [lints.rust]
 missing_docs = "warn"

@@ -30,4 +30,5 @@ rhetsim-io-mailbox = { path = "../../components/io/rhetsim-io-mailbox" }
 rhetsim-io-virtio  = { path = "../../components/io/rhetsim-io-virtio" }
 rhetsim-accel-gpgpu = { path = "../../components/accel/rhetsim-accel-gpgpu" }
 rhetsim-accel-dpu   = { path = "../../components/accel/rhetsim-accel-dpu" }
+tracing            = { workspace = true }
 tracing-subscriber = "0.3"

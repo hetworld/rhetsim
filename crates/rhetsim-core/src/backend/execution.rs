@@ -71,6 +71,8 @@ pub enum StepResult {
 
 /// Backend 类型标识
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum BackendKind {
     /// 功能仿真（默认）
     #[default]

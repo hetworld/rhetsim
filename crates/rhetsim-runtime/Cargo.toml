@@ -15,3 +15,6 @@ tokio            = { workspace = true }
 log              = { workspace = true }
 tracing          = { workspace = true }
 tracing-subscriber = "0.3"
+
+[dev-dependencies]
+rhetsim-cpu-mock = { path = "../../components/cpu/rhetsim-cpu-mock" }

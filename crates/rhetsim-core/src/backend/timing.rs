@@ -18,6 +18,8 @@ pub trait TimingModel: Send + Sync {
 
 /// 时序精度级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum TimingKind {
     /// 无时序（功能仿真，默认）
     #[default]

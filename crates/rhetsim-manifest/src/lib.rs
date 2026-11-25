@@ -6,3 +6,4 @@ pub mod loader;
 
 pub use manifest::{Manifest, UnitDesc, BusDesc, BootDesc};
 pub use realizer::{Realizer, ComponentRegistry, Platform};
+pub use loader::{load_from_file, load_from_str};

@@ -50,6 +50,9 @@ pub enum OmniError {
     #[error("invalid config: {0}")]
     InvalidConfig(String),
 
+    #[error("internal error: {0}")]
+    Internal(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

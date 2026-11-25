@@ -39,10 +39,10 @@ impl ReadySignal {
         let guard = lock.lock().unwrap();
         if *guard { return Ok(()); }
         match timeout_ns {
-            None => { let _ = cvar.wait(guard); Ok(()) }
+            None => { let _guard = cvar.wait(guard).unwrap(); Ok(()) }
             Some(ns) => {
                 let dur = std::time::Duration::from_nanos(ns);
-                let (_, timed_out) = cvar.wait_timeout(guard, dur).unwrap();
+                let (_guard, timed_out) = cvar.wait_timeout(guard, dur).unwrap();
                 if timed_out.timed_out() {
                     Err(crate::error::OmniError::Timeout("ready signal".into()))
                 } else {
