@@ -391,6 +391,7 @@ dependencies = [
  "rhetsim-io-dma",
  "rhetsim-io-pcie",
  "rhetsim-io-uart",
+ "rhetsim-io-virtio",
  "rhetsim-manifest",
  "rhetsim-mem-dram",
  "tokio",

@@ -3,30 +3,71 @@ name = "aarch64-virt"
 [[units]]
 id      = "arm-core0"
 kind    = "rhetsim-cpu-arm"
-backend = "kvm"
 [units.config]
-model = "cortex-a78"
+mem_base = 0x00000000
 
 [[units]]
 id   = "gicv3"
 kind = "rhetsim-intc-gicv3"
 [units.config]
 num_cpus = 1
+num_spis = 64
+base     = 0x08000000
 
 [[units]]
 id   = "dram0"
 kind = "rhetsim-mem-dram"
 [units.config]
-size_mb = 4096
+size_bytes = 134217728
+base       = 0x00000000
+
+[[units]]
+id   = "uart0"
+kind = "uart-16550"
+
+[[units]]
+id   = "dma0"
+kind = "dma-engine"
+[units.config]
+base = 0x0A000000
+
+[[units]]
+id   = "vcon0"
+kind = "virtio-console"
+[units.config]
+base = 0x0B000000
+
+[[units]]
+id   = "pcie0"
+kind = "pcie-root-complex"
+[units.config]
+ecam_base = 0x10000000
 
 [[buses]]
 kind       = "mem"
-id         = "mem-bus"
-initiators = ["arm-core0"]
+id         = "sys-bus"
+initiators = ["arm-core0", "dma0"]
+
 [[buses.targets]]
 unit = "dram0"
-base = 0x40000000
+base = 0x00000000
 
-[boot]
-kernel = "Image"
-dtb    = "virt.dtb"
+[[buses.targets]]
+unit = "gicv3"
+base = 0x08000000
+
+[[buses.targets]]
+unit = "uart0"
+base = 0x09000000
+
+[[buses.targets]]
+unit = "dma0"
+base = 0x0A000000
+
+[[buses.targets]]
+unit = "vcon0"
+base = 0x0B000000
+
+[[buses.targets]]
+unit = "pcie0"
+base = 0x10000000

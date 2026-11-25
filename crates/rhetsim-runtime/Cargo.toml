@@ -27,3 +27,4 @@ rhetsim-intc-gicv3  = { path = "../../components/intc/rhetsim-intc-gicv3" }
 rhetsim-io-dma      = { path = "../../components/io/rhetsim-io-dma" }
 rhetsim-cpu-arm     = { path = "../../components/cpu/rhetsim-cpu-arm" }
 rhetsim-io-pcie     = { path = "../../components/io/rhetsim-io-pcie" }
+rhetsim-io-virtio   = { path = "../../components/io/rhetsim-io-virtio" }
