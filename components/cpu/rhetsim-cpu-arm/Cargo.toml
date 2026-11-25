@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 rhetsim-core = { workspace = true }
+rhetsim-intc-gicv3 = { path = "../../intc/rhetsim-intc-gicv3" }
 
 [dev-dependencies]
 rhetsim-mem-dram = { path = "../../memory/rhetsim-mem-dram" }

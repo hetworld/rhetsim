@@ -6,7 +6,19 @@ use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::MemAccessSize;
+use rhetsim_intc_gicv3::Gicv3;
 use crate::decode::{decode, Instruction, ShiftType, Cond, WriteBack};
+
+const SYSREG_NZCV: u16        = 0xDA10;
+const SYSREG_DAIF: u16        = 0xDA11;
+const SYSREG_VBAR_EL1: u16    = 0xC600;
+const SYSREG_ELR_EL1: u16     = 0xC201;
+const SYSREG_SPSR_EL1: u16    = 0xC200;
+const SYSREG_ICC_IAR1: u16    = 0xC660;
+const SYSREG_ICC_PMR: u16     = 0xC230;
+const SYSREG_ICC_EOIR1: u16   = 0xC661;
+const SYSREG_ICC_BPR1: u16    = 0xC663;
+const SYSREG_ICC_IGRPEN1: u16 = 0xC667;
 
 enum MemBackend {
     Flat { memory: Vec<u8> },
@@ -19,10 +31,16 @@ pub struct ArmCpu {
     sp: u64,
     pc: u64,
     nzcv: u32,       // bits [31:28] = N,Z,C,V
+    daif: u32,        // bits [9:6] = D,A,I,F
+    vbar_el1: u64,
+    elr_el1: u64,
+    spsr_el1: u64,
     halted: bool,
     mem_base: u64,
     insn_count: u64,
     backend: MemBackend,
+    gic: Option<Arc<Gicv3>>,
+    cpu_id: usize,
 }
 
 impl ArmCpu {
@@ -33,10 +51,16 @@ impl ArmCpu {
             sp: mem_base + mem_size as u64,
             pc: mem_base,
             nzcv: 0,
+            daif: 0,
+            vbar_el1: 0,
+            elr_el1: 0,
+            spsr_el1: 0,
             halted: false,
             mem_base,
             insn_count: 0,
             backend: MemBackend::Flat { memory: vec![0u8; mem_size] },
+            gic: None,
+            cpu_id: 0,
         }
     }
 
@@ -47,11 +71,22 @@ impl ArmCpu {
             sp: 0,
             pc: mem_base,
             nzcv: 0,
+            daif: 0,
+            vbar_el1: 0,
+            elr_el1: 0,
+            spsr_el1: 0,
             halted: false,
             mem_base,
             insn_count: 0,
             backend: MemBackend::Bus { bus },
+            gic: None,
+            cpu_id: 0,
         }
+    }
+
+    pub fn attach_gic(&mut self, gic: Arc<Gicv3>, cpu_id: usize) {
+        self.gic = Some(gic);
+        self.cpu_id = cpu_id;
     }
 
     pub fn load_binary(&mut self, data: &[u8], offset: u64) {
@@ -235,7 +270,25 @@ impl ArmCpu {
         val & 0xFFFF_FFFF
     }
 
+    fn check_interrupt(&mut self) -> bool {
+        if self.daif & (1 << 7) != 0 { return false; }
+        if let Some(ref gic) = self.gic {
+            if gic.pending_irq(self.cpu_id).is_some() {
+                self.elr_el1 = self.pc;
+                self.spsr_el1 = (self.nzcv as u64) | (self.daif as u64);
+                self.daif |= 1 << 7;
+                self.pc = self.vbar_el1 + 0x480;
+                return true;
+            }
+        }
+        false
+    }
+
     fn step(&mut self) {
+        if self.check_interrupt() {
+            self.insn_count += 1;
+            return;
+        }
         let raw = self.mem_read(self.pc, 4) as u32;
         if raw == 0 {
             self.halted = true;
@@ -645,7 +698,16 @@ impl ArmCpu {
             }
             Instruction::Mrs { rt, sysreg } => {
                 let val = match sysreg {
-                    0x5A10 => self.nzcv as u64, // NZCV
+                    SYSREG_NZCV => self.nzcv as u64,
+                    SYSREG_DAIF => self.daif as u64,
+                    SYSREG_VBAR_EL1 => self.vbar_el1,
+                    SYSREG_ELR_EL1 => self.elr_el1,
+                    SYSREG_SPSR_EL1 => self.spsr_el1,
+                    SYSREG_ICC_IAR1 | SYSREG_ICC_PMR | SYSREG_ICC_BPR1 | SYSREG_ICC_IGRPEN1 => {
+                        if let Some(ref gic) = self.gic {
+                            gic.read_icc_reg(self.cpu_id, sysreg)
+                        } else { 0 }
+                    }
                     _ => 0,
                 };
                 self.write_gpr(rt, val);
@@ -654,10 +716,24 @@ impl ArmCpu {
             Instruction::Msr { rt, sysreg } => {
                 let val = self.read_gpr(rt);
                 match sysreg {
-                    0x5A10 => self.nzcv = (val as u32) & 0xF000_0000,
+                    SYSREG_NZCV => self.nzcv = (val as u32) & 0xF000_0000,
+                    SYSREG_DAIF => self.daif = (val as u32) & 0x3C0,
+                    SYSREG_VBAR_EL1 => self.vbar_el1 = val,
+                    SYSREG_ELR_EL1 => self.elr_el1 = val,
+                    SYSREG_SPSR_EL1 => self.spsr_el1 = val,
+                    SYSREG_ICC_PMR | SYSREG_ICC_EOIR1 | SYSREG_ICC_BPR1 | SYSREG_ICC_IGRPEN1 => {
+                        if let Some(ref gic) = self.gic {
+                            gic.write_icc_reg(self.cpu_id, sysreg, val);
+                        }
+                    }
                     _ => {}
                 }
                 self.pc += 4;
+            }
+            Instruction::Eret => {
+                self.pc = self.elr_el1;
+                self.nzcv = (self.spsr_el1 as u32) & 0xF000_0000;
+                self.daif = (self.spsr_el1 as u32) & 0x3C0;
             }
             Instruction::Nop => { self.pc += 4; }
             Instruction::Wfi => { self.pc += 4; }
@@ -676,6 +752,10 @@ impl Unit for ArmCpu {
         self.sp = 0;
         self.pc = self.mem_base;
         self.nzcv = 0;
+        self.daif = 0;
+        self.vbar_el1 = 0;
+        self.elr_el1 = 0;
+        self.spsr_el1 = 0;
         self.halted = false;
         self.insn_count = 0;
         Ok(())

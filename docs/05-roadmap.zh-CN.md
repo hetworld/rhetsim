@@ -82,7 +82,9 @@
 **交付件：**
 - `rhetsim-cpu-arm`：AArch64 解释器（核心整数子集，参照 RV64I 实现模式）✓
 - 端到端测试：ARM 主机 + RISC-V 协处理器共享 MemBus ✓
-- `rhetsim-intc-gicv3`：GICv3 中断控制器（Distributor、Redistributor、CPU 接口）
+- `rhetsim-intc-gicv3`：GICv3 中断控制器（Distributor、Redistributor、CPU 接口）✓
+- AArch64 CPU ↔ GICv3 对接（ICC 系统寄存器、IRQ 异常向量化、ERET）✓
+- 端到端测试：ARM CPU + GICv3 中断驱动程序 ✓
 - `rhetsim-io-dma`：DMA 控制器，支持跨设备批量内存搬运
 - 端到端测试：ARM + RISC-V + GPGPU 同平台运行
 

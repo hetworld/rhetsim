@@ -73,6 +73,7 @@ pub enum Instruction {
     Svc     { imm: u16 },
     Mrs     { rt: u8, sysreg: u16 },
     Msr     { rt: u8, sysreg: u16 },
+    Eret,
     Nop,
     Wfi,
     // Address generation
@@ -189,6 +190,7 @@ pub fn decode(insn: u32) -> Instruction {
             0b0000 => Instruction::Br { rn: rn_val },
             0b0001 => Instruction::Blr { rn: rn_val },
             0b0010 => Instruction::Ret { rn: rn_val },
+            0b0100 => Instruction::Eret,
             _ => Instruction::Unknown(insn),
         };
     }
@@ -203,12 +205,12 @@ pub fn decode(insn: u32) -> Instruction {
     }
     // MRS: 1101010100 1 ...
     if (insn >> 20) & 0xFFF == 0xD53 {
-        let sysreg = ((insn >> 5) & 0x7FFF) as u16;
+        let sysreg = ((insn >> 5) & 0xFFFF) as u16;
         return Instruction::Mrs { rt: rd(insn), sysreg };
     }
     // MSR: 1101010100 0 ...
     if (insn >> 20) & 0xFFF == 0xD51 {
-        let sysreg = ((insn >> 5) & 0x7FFF) as u16;
+        let sysreg = ((insn >> 5) & 0xFFFF) as u16;
         return Instruction::Msr { rt: rd(insn), sysreg };
     }
 

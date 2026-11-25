@@ -82,7 +82,9 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 **Deliverables:**
 - `rhetsim-cpu-arm`: AArch64 interpreter (core integer subset, following RV64I pattern) ✓
 - End-to-end test: ARM host + RISC-V coprocessor on shared MemBus ✓
-- `rhetsim-intc-gicv3`: GICv3 interrupt controller (Distributor, Redistributor, CPU interface)
+- `rhetsim-intc-gicv3`: GICv3 interrupt controller (Distributor, Redistributor, CPU interface) ✓
+- AArch64 CPU ↔ GICv3 wiring (ICC system registers, IRQ exception vectoring, ERET) ✓
+- End-to-end test: ARM CPU + GICv3 interrupt-driven program ✓
 - `rhetsim-io-dma`: DMA controller for cross-device bulk memory transfer
 - End-to-end test: ARM + RISC-V + GPGPU on a single platform
 
