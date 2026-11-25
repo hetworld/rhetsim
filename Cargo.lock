@@ -516,6 +516,7 @@ name = "rhetsim-cli"
 version = "0.1.0"
 dependencies = [
  "goblin",
+ "libc",
  "rhetsim-accel-dpu",
  "rhetsim-accel-gpgpu",
  "rhetsim-cache",

@@ -1,7 +1,9 @@
 //! Minimal 16550-style UART component.
 
+use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use rhetsim_core::error::OmniResult;
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::mem::{MemTarget, MemAccessSize};
@@ -16,6 +18,7 @@ const LSR: u64 = 0x05;
 const MSR: u64 = 0x06;
 const SCR: u64 = 0x07;
 
+const LSR_DR:   u8 = 1 << 0;
 const LSR_THRE: u8 = 1 << 5;
 const LSR_TEMT: u8 = 1 << 6;
 const LSR_RESET: u8 = LSR_THRE | LSR_TEMT;
@@ -25,6 +28,8 @@ const LCR_DLAB: u8 = 0x80;
 pub struct Uart {
     id: UnitId,
     output: Mutex<Vec<u8>>,
+    input: Mutex<VecDeque<u8>>,
+    console: AtomicBool,
     lsr: AtomicU8,
     ier: AtomicU8,
     lcr: AtomicU8,
@@ -39,6 +44,8 @@ impl Uart {
         Self {
             id: UnitId::new(id),
             output: Mutex::new(Vec::new()),
+            input: Mutex::new(VecDeque::new()),
+            console: AtomicBool::new(false),
             lsr: AtomicU8::new(LSR_RESET),
             ier: AtomicU8::new(0),
             lcr: AtomicU8::new(0),
@@ -53,6 +60,19 @@ impl Uart {
         let mut buf = self.output.lock().expect("uart output lock");
         std::mem::take(&mut *buf)
     }
+
+    pub fn push_input(&self, data: &[u8]) {
+        let mut fifo = self.input.lock().expect("uart input lock");
+        fifo.extend(data);
+    }
+
+    pub fn has_input(&self) -> bool {
+        !self.input.lock().expect("uart input lock").is_empty()
+    }
+
+    pub fn set_console(&self, enable: bool) {
+        self.console.store(enable, Ordering::Relaxed);
+    }
 }
 
 impl Unit for Uart {
@@ -64,6 +84,7 @@ impl Unit for Uart {
 
     fn reset(&mut self) -> OmniResult<()> {
         self.output.lock().expect("uart output lock").clear();
+        self.input.lock().expect("uart input lock").clear();
         self.lsr.store(LSR_RESET, Ordering::Relaxed);
         self.ier.store(0, Ordering::Relaxed);
         self.lcr.store(0, Ordering::Relaxed);
@@ -84,13 +105,20 @@ impl MemTarget for Uart {
         let dlab = self.lcr.load(Ordering::Relaxed) & LCR_DLAB != 0;
         match offset {
             RBR if dlab  => Ok(self.dll.load(Ordering::Relaxed) as u64),
-            RBR          => Ok(0),
+            RBR          => {
+                let mut fifo = self.input.lock().expect("uart input lock");
+                Ok(fifo.pop_front().unwrap_or(0) as u64)
+            }
             IER if dlab  => Ok(self.dlm.load(Ordering::Relaxed) as u64),
             IER          => Ok(self.ier.load(Ordering::Relaxed) as u64),
-            IIR          => Ok(0x01), // no interrupt pending
+            IIR          => Ok(0x01),
             LCR          => Ok(self.lcr.load(Ordering::Relaxed) as u64),
             MCR          => Ok(self.mcr.load(Ordering::Relaxed) as u64),
-            LSR          => Ok(self.lsr.load(Ordering::Relaxed) as u64),
+            LSR          => {
+                let base = self.lsr.load(Ordering::Relaxed);
+                let dr = if self.has_input() { LSR_DR } else { 0 };
+                Ok((base | dr) as u64)
+            }
             MSR          => Ok(0),
             SCR          => Ok(self.scr.load(Ordering::Relaxed) as u64),
             _            => Ok(0),
@@ -103,8 +131,13 @@ impl MemTarget for Uart {
         match offset {
             THR if dlab  => { self.dll.store(v, Ordering::Relaxed); }
             THR          => {
-                self.output.lock().expect("uart output lock").push(v);
-                eprint!("{}", v as char);
+                if self.console.load(Ordering::Relaxed) {
+                    let _ = std::io::stdout().write_all(&[v]);
+                    let _ = std::io::stdout().flush();
+                } else {
+                    self.output.lock().expect("uart output lock").push(v);
+                    eprint!("{}", v as char);
+                }
             }
             IER if dlab  => { self.dlm.store(v, Ordering::Relaxed); }
             IER          => { self.ier.store(v, Ordering::Relaxed); }

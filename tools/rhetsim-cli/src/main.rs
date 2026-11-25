@@ -1,7 +1,9 @@
 //! rhetsim-cli — load manifest, instantiate platform, run simulation
 
 use std::collections::HashMap;
+use std::io::Read as IoRead;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
@@ -72,6 +74,7 @@ fn main() {
         eprintln!("  --firmware <path>  Override firmware binary path");
         eprintln!("  --kernel <path>    Override kernel image path");
         eprintln!("  --dtb <path>       Override device tree blob path");
+        eprintln!("  --batch         Non-interactive mode (no console I/O)");
         eprintln!("  --list-units    List available unit kinds and exit");
         std::process::exit(1);
     }
@@ -100,8 +103,9 @@ fn main() {
     println!("Buses:    {}", manifest.buses.len());
 
     if manifest.boot.firmware.is_some() {
-        let max_steps = parse_opt(&args, "--steps", 100_000_000u64);
-        boot_riscv_linux(&manifest, manifest_dir, &args, max_steps);
+        let interactive = !args.iter().any(|a| a == "--batch");
+        let max_steps = if interactive { u64::MAX } else { parse_opt(&args, "--steps", 100_000_000u64) };
+        boot_riscv_linux(&manifest, manifest_dir, &args, max_steps, interactive);
         return;
     }
 
@@ -149,7 +153,7 @@ fn main() {
 
 // ── Boot path: firmware + kernel direct execution ─────────────
 
-fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], max_steps: u64) {
+fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], max_steps: u64, interactive: bool) {
     let boot = &manifest.boot;
 
     let fw_path = resolve_path(args, "--firmware", boot.firmware.as_deref(), manifest_dir);
@@ -211,7 +215,49 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     cpu.set_pc(entry_pc);
     eprintln!("  Entry PC  0x{:08X}", entry_pc);
 
-    eprintln!("Booting... (max {} steps)", max_steps);
+    let _raw_guard = if interactive {
+        eprintln!("Booting interactive (Ctrl-A X to quit)...");
+        uart.set_console(true);
+        Some(RawTermGuard::enter())
+    } else {
+        eprintln!("Booting... (max {} steps)", max_steps);
+        None
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stdin_thread = if interactive {
+        let uart_ref = uart.clone();
+        let stop_ref = stop.clone();
+        Some(std::thread::spawn(move || {
+            let mut stdin = std::io::stdin().lock();
+            let mut buf = [0u8; 64];
+            let mut ctrl_a = false;
+            loop {
+                if stop_ref.load(Ordering::Relaxed) { break; }
+                match stdin.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        for &b in &buf[..n] {
+                            if ctrl_a {
+                                ctrl_a = false;
+                                if b == b'x' || b == b'X' {
+                                    stop_ref.store(true, Ordering::Relaxed);
+                                    return;
+                                }
+                                uart_ref.push_input(&[0x01, b]);
+                                continue;
+                            }
+                            if b == 0x01 { ctrl_a = true; continue; }
+                            uart_ref.push_input(&[b]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     let batch = 10_000u64;
     let mut total_steps = 0u64;
@@ -219,7 +265,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let mut idle_batches = 0u32;
     let mut last_uart_len = 0usize;
 
-    while !cpu.is_halted() && total_steps < max_steps {
+    while !cpu.is_halted() && total_steps < max_steps && !stop.load(Ordering::Relaxed) {
         clint.tick(batch);
         if clint.timer_pending(0) {
             cpu.csr_mut().mip |= csr::MIP_MTIP;
@@ -235,40 +281,51 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         cpu.exec(batch).unwrap();
         total_steps += batch;
 
-        let out = uart.take_output();
-        if !out.is_empty() {
-            all_output.extend_from_slice(&out);
-        }
-
-        if total_steps % 10_000_000 == 0 {
-            eprintln!("[{}M steps] PC=0x{:X} mode={} uart={}B",
-                total_steps / 1_000_000, cpu.pc(), cpu.priv_mode(), all_output.len());
-        }
-
-        if all_output.len() > 1000 && cpu.priv_mode() == csr::PRV_M && all_output.len() == last_uart_len {
-            idle_batches += 1;
-            if idle_batches > 100 {
-                eprintln!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
-                break;
+        if !interactive {
+            let out = uart.take_output();
+            if !out.is_empty() {
+                all_output.extend_from_slice(&out);
             }
-        } else {
-            idle_batches = 0;
         }
-        last_uart_len = all_output.len();
+
+        if !interactive {
+            if total_steps % 10_000_000 == 0 {
+                eprintln!("[{}M steps] PC=0x{:X} mode={} uart={}B",
+                    total_steps / 1_000_000, cpu.pc(), cpu.priv_mode(), all_output.len());
+            }
+
+            if all_output.len() > 1000 && cpu.priv_mode() == csr::PRV_M && all_output.len() == last_uart_len {
+                idle_batches += 1;
+                if idle_batches > 100 {
+                    eprintln!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
+                    break;
+                }
+            } else {
+                idle_batches = 0;
+            }
+            last_uart_len = all_output.len();
+        }
     }
 
-    let output_str = String::from_utf8_lossy(&all_output);
-    eprintln!("\n=== UART Output ({} bytes) ===\n{}", all_output.len(), output_str);
-    eprintln!("\n--- Result ---");
-    eprintln!("Steps: {}, halted: {}, PC: 0x{:X}, mode: {}",
-        total_steps, cpu.is_halted(), cpu.pc(), cpu.priv_mode());
+    drop(_raw_guard);
+    if let Some(t) = stdin_thread { let _ = t.join(); }
 
-    if output_str.contains("Run /init as init process") {
-        eprintln!("Boot SUCCESS: Linux reached /init");
+    if interactive {
+        eprintln!("\n--- Exited ({} steps) ---", total_steps);
     } else {
-        eprintln!("Boot INCOMPLETE: did not reach /init ({} bytes output in {} steps)",
-            all_output.len(), total_steps);
-        std::process::exit(1);
+        let output_str = String::from_utf8_lossy(&all_output);
+        eprintln!("\n=== UART Output ({} bytes) ===\n{}", all_output.len(), output_str);
+        eprintln!("\n--- Result ---");
+        eprintln!("Steps: {}, halted: {}, PC: 0x{:X}, mode: {}",
+            total_steps, cpu.is_halted(), cpu.pc(), cpu.priv_mode());
+
+        if output_str.contains("Run /init as init process") {
+            eprintln!("Boot SUCCESS: Linux reached /init");
+        } else {
+            eprintln!("Boot INCOMPLETE: did not reach /init ({} bytes output in {} steps)",
+                all_output.len(), total_steps);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -509,4 +566,31 @@ fn cfg_u64(config: &serde_json::Value, key: &str, default: u64) -> u64 {
 
 fn cfg_usize(config: &serde_json::Value, key: &str, default: usize) -> usize {
     config.get(key).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(default)
+}
+
+// ── Raw terminal mode ─────────────────────────────────────────
+
+struct RawTermGuard {
+    orig: libc::termios,
+}
+
+impl RawTermGuard {
+    fn enter() -> Self {
+        unsafe {
+            let mut orig: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(libc::STDIN_FILENO, &mut orig);
+            let mut raw = orig;
+            libc::cfmakeraw(&mut raw);
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw);
+            Self { orig }
+        }
+    }
+}
+
+impl Drop for RawTermGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.orig);
+        }
+    }
 }
