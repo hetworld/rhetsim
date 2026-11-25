@@ -19,8 +19,10 @@ pub enum Instruction {
     Ecall,
     Ebreak,
     Mret,
+    Sret,
     Wfi,
     Fence,
+    SfenceVma { rs1: u8, rs2: u8 },
     // Atomics (A extension)
     Amo    { funct5: u8, aq: bool, rl: bool, funct3: u8, rd: u8, rs1: u8, rs2: u8 },
     Unknown(u32),
@@ -111,9 +113,16 @@ pub fn decode(insn: u32) -> Instruction {
                 match imm {
                     0x000 => Instruction::Ecall,
                     0x001 => Instruction::Ebreak,
+                    0x102 => Instruction::Sret,
                     0x302 => Instruction::Mret,
                     0x105 => Instruction::Wfi,
-                    _ => Instruction::Unknown(insn),
+                    _ => {
+                        if (insn >> 25) == 0x09 {
+                            Instruction::SfenceVma { rs1: rs1(insn), rs2: rs2(insn) }
+                        } else {
+                            Instruction::Unknown(insn)
+                        }
+                    }
                 }
             } else {
                 // CSR instructions: funct3 1-3 = CSRRW/CSRRS/CSRRC

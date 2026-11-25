@@ -72,6 +72,7 @@ fn build_main_code() -> Vec<u32> {
 
         // After returning from interrupt handler:
         0x02A00593, // ADDI x11, x0, 42
+        csrrw(0x305, 0, 0), // clear mtvec so ECALL halts
         0x00000073, // ECALL
     ]
 }

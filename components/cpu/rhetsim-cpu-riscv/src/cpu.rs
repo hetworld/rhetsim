@@ -1,4 +1,4 @@
-//! RiscvCpu — RV64IMA interpreter with M-mode CSR and trap delivery
+//! RiscvCpu — RV64IMA interpreter with M/S privilege modes and Sv39 MMU
 
 use std::sync::Arc;
 use rhetsim_core::error::{OmniError, OmniResult};
@@ -8,6 +8,7 @@ use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::MemAccessSize;
 use crate::csr::{self, CsrFile};
 use crate::decode::{decode, Instruction};
+use crate::mmu;
 
 enum MemBackend {
     Flat {
@@ -30,6 +31,7 @@ pub struct RiscvCpu {
     backend: MemBackend,
     csr: CsrFile,
     reservation: Option<u64>,
+    priv_mode: u8,
 }
 
 impl RiscvCpu {
@@ -48,6 +50,7 @@ impl RiscvCpu {
             },
             csr: CsrFile::new(0),
             reservation: None,
+            priv_mode: csr::PRV_M,
         }
     }
 
@@ -62,6 +65,7 @@ impl RiscvCpu {
             backend: MemBackend::Bus { bus },
             csr: CsrFile::new(0),
             reservation: None,
+            priv_mode: csr::PRV_M,
         }
     }
 
@@ -104,8 +108,12 @@ impl RiscvCpu {
     pub fn insn_count(&self) -> u64 { self.insn_count }
     pub fn csr(&self) -> &CsrFile { &self.csr }
     pub fn csr_mut(&mut self) -> &mut CsrFile { &mut self.csr }
+    pub fn priv_mode(&self) -> u8 { self.priv_mode }
+    pub fn set_priv_mode(&mut self, mode: u8) { self.priv_mode = mode; }
 
-    fn mem_read(&self, addr: u64, size: usize) -> u64 {
+    // ── Physical memory access (no MMU translation) ───────────
+
+    fn phys_read(&self, addr: u64, size: usize) -> u64 {
         match &self.backend {
             MemBackend::Flat { memory, uart_addr, .. } => {
                 if *uart_addr != 0 && addr == *uart_addr + 5 {
@@ -137,7 +145,7 @@ impl RiscvCpu {
         }
     }
 
-    fn mem_write(&mut self, addr: u64, size: usize, val: u64) {
+    fn phys_write(&mut self, addr: u64, size: usize, val: u64) {
         match &mut self.backend {
             MemBackend::Flat { memory, uart_output, uart_addr } => {
                 if *uart_addr != 0 && addr == *uart_addr {
@@ -166,20 +174,67 @@ impl RiscvCpu {
         }
     }
 
+    // ── Virtual → Physical translation ────────────────────────
+
+    fn translate(&self, va: u64, access: mmu::AccessType) -> Result<u64, mmu::PageFault> {
+        mmu::translate_sv39(
+            va,
+            self.csr.satp,
+            access,
+            self.priv_mode,
+            self.csr.mstatus,
+            &|addr| self.phys_read(addr, 8),
+        )
+    }
+
+    // ── Trap handling ─────────────────────────────────────────
+
+    fn take_trap(&mut self, cause: u64, tval: u64) {
+        let delegated = self.priv_mode <= csr::PRV_S && self.csr.is_delegated(cause);
+
+        if delegated {
+            let target = self.csr.trap_enter_s(self.pc, cause, tval, self.priv_mode);
+            if target == 0 {
+                self.halted = true;
+            } else {
+                self.pc = target;
+                self.priv_mode = csr::PRV_S;
+            }
+        } else {
+            let target = self.csr.trap_enter_m(self.pc, cause, tval, self.priv_mode);
+            if target == 0 {
+                self.halted = true;
+            } else {
+                self.pc = target;
+                self.priv_mode = csr::PRV_M;
+            }
+        }
+    }
+
     fn check_interrupt(&mut self) -> bool {
-        if let Some(cause) = self.csr.pending_interrupt() {
-            let target = self.csr.trap_enter(self.pc, csr::MCAUSE_INTERRUPT | cause, 0);
-            self.pc = target;
+        if let Some(cause) = self.csr.pending_interrupt(self.priv_mode) {
+            self.take_trap(csr::MCAUSE_INTERRUPT | cause, 0);
             true
         } else {
             false
         }
     }
 
+    // ── Step / Execute ────────────────────────────────────────
+
     fn step(&mut self) {
         self.check_interrupt();
+        if self.halted { return; }
 
-        let raw = self.mem_read(self.pc, 4) as u32;
+        let fetch_pa = match self.translate(self.pc, mmu::AccessType::Fetch) {
+            Ok(pa) => pa,
+            Err(fault) => {
+                self.take_trap(fault.cause, fault.tval);
+                return;
+            }
+        };
+
+        let raw = self.phys_read(fetch_pa, 4) as u32;
         if raw == 0 {
             self.halted = true;
             return;
@@ -219,12 +274,12 @@ impl RiscvCpu {
                 let a = self.regs[rs1 as usize];
                 let b = self.regs[rs2 as usize];
                 let taken = match funct3 {
-                    0 => a == b,                            // BEQ
-                    1 => a != b,                            // BNE
-                    4 => (a as i64) < (b as i64),           // BLT
-                    5 => (a as i64) >= (b as i64),          // BGE
-                    6 => a < b,                             // BLTU
-                    7 => a >= b,                            // BGEU
+                    0 => a == b,
+                    1 => a != b,
+                    4 => (a as i64) < (b as i64),
+                    5 => (a as i64) >= (b as i64),
+                    6 => a < b,
+                    7 => a >= b,
                     _ => false,
                 };
                 if taken {
@@ -234,28 +289,36 @@ impl RiscvCpu {
                 }
             }
             Instruction::Load { funct3, rd, rs1, offset } => {
-                let addr = self.regs[rs1 as usize].wrapping_add(offset as u64);
+                let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
+                let pa = match self.translate(va, mmu::AccessType::Load) {
+                    Ok(pa) => pa,
+                    Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
+                };
                 let val = match funct3 {
-                    0 => self.mem_read(addr, 1) as i8 as i64 as u64,   // LB
-                    1 => self.mem_read(addr, 2) as i16 as i64 as u64,  // LH
-                    2 => self.mem_read(addr, 4) as i32 as i64 as u64,  // LW
-                    3 => self.mem_read(addr, 8),                        // LD
-                    4 => self.mem_read(addr, 1),                        // LBU
-                    5 => self.mem_read(addr, 2),                        // LHU
-                    6 => self.mem_read(addr, 4),                        // LWU
+                    0 => self.phys_read(pa, 1) as i8 as i64 as u64,
+                    1 => self.phys_read(pa, 2) as i16 as i64 as u64,
+                    2 => self.phys_read(pa, 4) as i32 as i64 as u64,
+                    3 => self.phys_read(pa, 8),
+                    4 => self.phys_read(pa, 1),
+                    5 => self.phys_read(pa, 2),
+                    6 => self.phys_read(pa, 4),
                     _ => 0,
                 };
                 self.set_rd(rd, val);
                 self.pc += 4;
             }
             Instruction::Store { funct3, rs1, rs2, offset } => {
-                let addr = self.regs[rs1 as usize].wrapping_add(offset as u64);
+                let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
+                let pa = match self.translate(va, mmu::AccessType::Store) {
+                    Ok(pa) => pa,
+                    Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
+                };
                 let val = self.regs[rs2 as usize];
                 match funct3 {
-                    0 => self.mem_write(addr, 1, val), // SB
-                    1 => self.mem_write(addr, 2, val), // SH
-                    2 => self.mem_write(addr, 4, val), // SW
-                    3 => self.mem_write(addr, 8, val), // SD
+                    0 => self.phys_write(pa, 1, val),
+                    1 => self.phys_write(pa, 2, val),
+                    2 => self.phys_write(pa, 4, val),
+                    3 => self.phys_write(pa, 8, val),
                     _ => {}
                 }
                 self.pc += 4;
@@ -264,20 +327,20 @@ impl RiscvCpu {
                 let src = self.regs[rs1 as usize];
                 let shamt = (imm as u64) & 0x3F;
                 let val = match funct3 {
-                    0 => src.wrapping_add(imm as u64),               // ADDI
-                    1 => src << shamt,                                // SLLI
-                    2 => ((src as i64) < (imm as i64)) as u64,       // SLTI
-                    3 => (src < (imm as u64)) as u64,                // SLTIU
-                    4 => src ^ (imm as u64),                         // XORI
+                    0 => src.wrapping_add(imm as u64),
+                    1 => src << shamt,
+                    2 => ((src as i64) < (imm as i64)) as u64,
+                    3 => (src < (imm as u64)) as u64,
+                    4 => src ^ (imm as u64),
                     5 => {
                         if funct7 & 0x20 != 0 {
-                            ((src as i64) >> shamt) as u64            // SRAI
+                            ((src as i64) >> shamt) as u64
                         } else {
-                            src >> shamt                               // SRLI
+                            src >> shamt
                         }
                     }
-                    6 => src | (imm as u64),                         // ORI
-                    7 => src & (imm as u64),                         // ANDI
+                    6 => src | (imm as u64),
+                    7 => src & (imm as u64),
                     _ => 0,
                 };
                 self.set_rd(rd, val);
@@ -287,20 +350,19 @@ impl RiscvCpu {
                 let a = self.regs[rs1 as usize];
                 let b = self.regs[rs2 as usize];
                 let val = if funct7 == 0x01 {
-                    // M extension
                     self.exec_m(funct3, a, b)
                 } else {
                     match (funct3, funct7) {
-                        (0, 0x00) => a.wrapping_add(b),                  // ADD
-                        (0, 0x20) => a.wrapping_sub(b),                  // SUB
-                        (1, 0x00) => a << (b & 0x3F),                    // SLL
-                        (2, 0x00) => ((a as i64) < (b as i64)) as u64,   // SLT
-                        (3, 0x00) => (a < b) as u64,                     // SLTU
-                        (4, 0x00) => a ^ b,                              // XOR
-                        (5, 0x00) => a >> (b & 0x3F),                    // SRL
-                        (5, 0x20) => ((a as i64) >> (b & 0x3F)) as u64,  // SRA
-                        (6, 0x00) => a | b,                              // OR
-                        (7, 0x00) => a & b,                              // AND
+                        (0, 0x00) => a.wrapping_add(b),
+                        (0, 0x20) => a.wrapping_sub(b),
+                        (1, 0x00) => a << (b & 0x3F),
+                        (2, 0x00) => ((a as i64) < (b as i64)) as u64,
+                        (3, 0x00) => (a < b) as u64,
+                        (4, 0x00) => a ^ b,
+                        (5, 0x00) => a >> (b & 0x3F),
+                        (5, 0x20) => ((a as i64) >> (b & 0x3F)) as u64,
+                        (6, 0x00) => a | b,
+                        (7, 0x00) => a & b,
                         _ => 0,
                     }
                 };
@@ -311,13 +373,13 @@ impl RiscvCpu {
                 let src = self.regs[rs1 as usize] as u32;
                 let shamt = (imm as u32) & 0x1F;
                 let val = match funct3 {
-                    0 => src.wrapping_add(imm as u32),               // ADDIW
-                    1 => src << shamt,                                // SLLIW
+                    0 => src.wrapping_add(imm as u32),
+                    1 => src << shamt,
                     5 => {
                         if funct7 & 0x20 != 0 {
-                            ((src as i32) >> shamt) as u32            // SRAIW
+                            ((src as i32) >> shamt) as u32
                         } else {
-                            src >> shamt                               // SRLIW
+                            src >> shamt
                         }
                     }
                     _ => 0,
@@ -329,15 +391,14 @@ impl RiscvCpu {
                 let a = self.regs[rs1 as usize] as u32;
                 let b = self.regs[rs2 as usize] as u32;
                 let val = if funct7 == 0x01 {
-                    // M extension (W variants)
                     self.exec_m32(funct3, a, b)
                 } else {
                     match (funct3, funct7) {
-                        (0, 0x00) => a.wrapping_add(b),                  // ADDW
-                        (0, 0x20) => a.wrapping_sub(b),                  // SUBW
-                        (1, 0x00) => a << (b & 0x1F),                    // SLLW
-                        (5, 0x00) => a >> (b & 0x1F),                    // SRLW
-                        (5, 0x20) => ((a as i32) >> (b & 0x1F)) as u32,  // SRAW
+                        (0, 0x00) => a.wrapping_add(b),
+                        (0, 0x20) => a.wrapping_sub(b),
+                        (1, 0x00) => a << (b & 0x1F),
+                        (5, 0x00) => a >> (b & 0x1F),
+                        (5, 0x20) => ((a as i32) >> (b & 0x1F)) as u32,
                         _ => 0,
                     }
                 };
@@ -345,198 +406,201 @@ impl RiscvCpu {
                 self.pc += 4;
             }
             Instruction::Csr { funct3, rd, rs1, csr } => {
+                let csr_priv = ((csr >> 8) & 0x3) as u8;
+                if csr_priv > self.priv_mode {
+                    self.take_trap(2, 0);
+                    return;
+                }
                 let old = self.csr.read(csr, self.insn_count).unwrap_or(0);
                 match funct3 {
-                    1 => { // CSRRW
+                    1 => {
                         self.set_rd(rd, old);
                         self.csr.write(csr, self.regs[rs1 as usize]);
                     }
-                    2 => { // CSRRS
+                    2 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 {
-                            self.csr.write(csr, old | self.regs[rs1 as usize]);
-                        }
+                        if rs1 != 0 { self.csr.write(csr, old | self.regs[rs1 as usize]); }
                     }
-                    3 => { // CSRRC
+                    3 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 {
-                            self.csr.write(csr, old & !self.regs[rs1 as usize]);
-                        }
+                        if rs1 != 0 { self.csr.write(csr, old & !self.regs[rs1 as usize]); }
                     }
-                    5 => { // CSRRWI
+                    5 => {
                         self.set_rd(rd, old);
                         self.csr.write(csr, rs1 as u64);
                     }
-                    6 => { // CSRRSI
+                    6 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 {
-                            self.csr.write(csr, old | rs1 as u64);
-                        }
+                        if rs1 != 0 { self.csr.write(csr, old | rs1 as u64); }
                     }
-                    7 => { // CSRRCI
+                    7 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 {
-                            self.csr.write(csr, old & !(rs1 as u64));
-                        }
+                        if rs1 != 0 { self.csr.write(csr, old & !(rs1 as u64)); }
                     }
                     _ => {}
                 }
                 self.pc += 4;
             }
             Instruction::Mret => {
-                self.pc = self.csr.mret();
+                let (pc, mode) = self.csr.mret();
+                self.pc = pc;
+                self.priv_mode = mode;
+            }
+            Instruction::Sret => {
+                let (pc, mode) = self.csr.sret();
+                self.pc = pc;
+                self.priv_mode = mode;
             }
             Instruction::Wfi => {
                 self.pc += 4;
             }
-            Instruction::Amo { funct5, aq: _, rl: _, funct3, rd, rs1, rs2 } => {
-                self.exec_amo(funct5, funct3, rd, rs1, rs2);
+            Instruction::SfenceVma { .. } => {
                 self.pc += 4;
             }
-            Instruction::Ecall | Instruction::Ebreak => {
-                self.halted = true;
+            Instruction::Amo { funct5, aq: _, rl: _, funct3, rd, rs1, rs2 } => {
+                let va = self.regs[rs1 as usize];
+                let access = if funct5 == 0x02 { mmu::AccessType::Load } else { mmu::AccessType::Store };
+                let pa = match self.translate(va, access) {
+                    Ok(pa) => pa,
+                    Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
+                };
+                self.exec_amo(funct5, funct3, rd, rs2, pa);
+                self.pc += 4;
+            }
+            Instruction::Ecall => {
+                let cause = match self.priv_mode {
+                    0 => 8,
+                    1 => 9,
+                    3 => 11,
+                    _ => 8,
+                };
+                self.take_trap(cause, 0);
+            }
+            Instruction::Ebreak => {
+                self.take_trap(3, self.pc);
             }
             Instruction::Fence => {
                 self.pc += 4;
             }
             Instruction::Unknown(_) => {
-                self.halted = true;
+                self.take_trap(2, 0);
             }
         }
     }
 
-    // RV64M: 64-bit multiply/divide
     fn exec_m(&self, funct3: u8, a: u64, b: u64) -> u64 {
         match funct3 {
-            0 => a.wrapping_mul(b),                                           // MUL
-            1 => ((a as i64 as i128).wrapping_mul(b as i64 as i128) >> 64) as u64, // MULH
-            2 => {                                                             // MULHSU
+            0 => a.wrapping_mul(b),
+            1 => ((a as i64 as i128).wrapping_mul(b as i64 as i128) >> 64) as u64,
+            2 => {
                 let sa = a as i64 as i128;
                 let ub = b as u128 as i128;
                 (sa.wrapping_mul(ub) >> 64) as u64
             }
-            3 => ((a as u128).wrapping_mul(b as u128) >> 64) as u64,          // MULHU
-            4 => {                                                             // DIV
+            3 => ((a as u128).wrapping_mul(b as u128) >> 64) as u64,
+            4 => {
                 let sa = a as i64;
                 let sb = b as i64;
                 if sb == 0 { u64::MAX }
                 else if sa == i64::MIN && sb == -1 { sa as u64 }
                 else { sa.wrapping_div(sb) as u64 }
             }
-            5 => {                                                             // DIVU
-                if b == 0 { u64::MAX } else { a / b }
-            }
-            6 => {                                                             // REM
+            5 => { if b == 0 { u64::MAX } else { a / b } }
+            6 => {
                 let sa = a as i64;
                 let sb = b as i64;
                 if sb == 0 { a }
                 else if sa == i64::MIN && sb == -1 { 0 }
                 else { sa.wrapping_rem(sb) as u64 }
             }
-            7 => {                                                             // REMU
-                if b == 0 { a } else { a % b }
-            }
+            7 => { if b == 0 { a } else { a % b } }
             _ => 0,
         }
     }
 
-    // RV64M: 32-bit multiply/divide (W variants)
     fn exec_m32(&self, funct3: u8, a: u32, b: u32) -> u32 {
         match funct3 {
-            0 => a.wrapping_mul(b),                                           // MULW
-            4 => {                                                             // DIVW
+            0 => a.wrapping_mul(b),
+            4 => {
                 let sa = a as i32;
                 let sb = b as i32;
                 if sb == 0 { u32::MAX }
                 else if sa == i32::MIN && sb == -1 { sa as u32 }
                 else { sa.wrapping_div(sb) as u32 }
             }
-            5 => {                                                             // DIVUW
-                if b == 0 { u32::MAX } else { a / b }
-            }
-            6 => {                                                             // REMW
+            5 => { if b == 0 { u32::MAX } else { a / b } }
+            6 => {
                 let sa = a as i32;
                 let sb = b as i32;
                 if sb == 0 { a }
                 else if sa == i32::MIN && sb == -1 { 0 }
                 else { sa.wrapping_rem(sb) as u32 }
             }
-            7 => {                                                             // REMUW
-                if b == 0 { a } else { a % b }
-            }
+            7 => { if b == 0 { a } else { a % b } }
             _ => 0,
         }
     }
 
-    // RV64A: atomic memory operations
-    fn exec_amo(&mut self, funct5: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
-        let addr = self.regs[rs1 as usize];
+    fn exec_amo(&mut self, funct5: u8, funct3: u8, rd: u8, rs2: u8, pa: u64) {
         let src2 = self.regs[rs2 as usize];
-        let is_word = funct3 == 2; // 010 = W, 011 = D
+        let is_word = funct3 == 2;
 
         match funct5 {
             0x02 => { // LR
                 let val = if is_word {
-                    self.mem_read(addr, 4) as i32 as i64 as u64
+                    self.phys_read(pa, 4) as i32 as i64 as u64
                 } else {
-                    self.mem_read(addr, 8)
+                    self.phys_read(pa, 8)
                 };
                 self.set_rd(rd, val);
-                self.reservation = Some(addr);
+                self.reservation = Some(pa);
             }
             0x03 => { // SC
-                if self.reservation == Some(addr) {
-                    if is_word {
-                        self.mem_write(addr, 4, src2);
-                    } else {
-                        self.mem_write(addr, 8, src2);
-                    }
-                    self.set_rd(rd, 0); // success
+                if self.reservation == Some(pa) {
+                    if is_word { self.phys_write(pa, 4, src2); }
+                    else { self.phys_write(pa, 8, src2); }
+                    self.set_rd(rd, 0);
                 } else {
-                    self.set_rd(rd, 1); // failure
+                    self.set_rd(rd, 1);
                 }
                 self.reservation = None;
             }
             _ => {
-                // AMO operations: load old, compute, store new, write old to rd
                 let (old, new_val) = if is_word {
-                    let old = self.mem_read(addr, 4) as i32 as i64 as u64;
+                    let old = self.phys_read(pa, 4) as i32 as i64 as u64;
                     let s2 = src2 as i32;
                     let o = old as i32;
                     let nv = match funct5 {
-                        0x01 => src2 as u32,                                       // AMOSWAP
-                        0x00 => o.wrapping_add(s2) as u32,                         // AMOADD
-                        0x04 => (old as u32) ^ (src2 as u32),                      // AMOXOR
-                        0x0C => (old as u32) & (src2 as u32),                      // AMOAND
-                        0x08 => (old as u32) | (src2 as u32),                      // AMOOR
-                        0x10 => o.min(s2) as u32,                                  // AMOMIN
-                        0x14 => o.max(s2) as u32,                                  // AMOMAX
-                        0x18 => (old as u32).min(src2 as u32),                     // AMOMINU
-                        0x1C => (old as u32).max(src2 as u32),                     // AMOMAXU
+                        0x01 => src2 as u32,
+                        0x00 => o.wrapping_add(s2) as u32,
+                        0x04 => (old as u32) ^ (src2 as u32),
+                        0x0C => (old as u32) & (src2 as u32),
+                        0x08 => (old as u32) | (src2 as u32),
+                        0x10 => o.min(s2) as u32,
+                        0x14 => o.max(s2) as u32,
+                        0x18 => (old as u32).min(src2 as u32),
+                        0x1C => (old as u32).max(src2 as u32),
                         _ => old as u32,
                     };
                     (old, nv as i32 as i64 as u64)
                 } else {
-                    let old = self.mem_read(addr, 8);
+                    let old = self.phys_read(pa, 8);
                     let nv = match funct5 {
-                        0x01 => src2,                                              // AMOSWAP
-                        0x00 => (old as i64).wrapping_add(src2 as i64) as u64,     // AMOADD
-                        0x04 => old ^ src2,                                        // AMOXOR
-                        0x0C => old & src2,                                        // AMOAND
-                        0x08 => old | src2,                                        // AMOOR
-                        0x10 => (old as i64).min(src2 as i64) as u64,              // AMOMIN
-                        0x14 => (old as i64).max(src2 as i64) as u64,              // AMOMAX
-                        0x18 => old.min(src2),                                     // AMOMINU
-                        0x1C => old.max(src2),                                     // AMOMAXU
+                        0x01 => src2,
+                        0x00 => (old as i64).wrapping_add(src2 as i64) as u64,
+                        0x04 => old ^ src2,
+                        0x0C => old & src2,
+                        0x08 => old | src2,
+                        0x10 => (old as i64).min(src2 as i64) as u64,
+                        0x14 => (old as i64).max(src2 as i64) as u64,
+                        0x18 => old.min(src2),
+                        0x1C => old.max(src2),
                         _ => old,
                     };
                     (old, nv)
                 };
-                if is_word {
-                    self.mem_write(addr, 4, new_val);
-                } else {
-                    self.mem_write(addr, 8, new_val);
-                }
+                if is_word { self.phys_write(pa, 4, new_val); }
+                else { self.phys_write(pa, 8, new_val); }
                 self.set_rd(rd, old);
             }
         }
@@ -555,6 +619,7 @@ impl Unit for RiscvCpu {
         self.insn_count = 0;
         self.csr.reset();
         self.reservation = None;
+        self.priv_mode = csr::PRV_M;
         if let MemBackend::Flat { uart_output, .. } = &mut self.backend {
             uart_output.clear();
         }
@@ -582,12 +647,13 @@ impl ExecutionBackend for RiscvCpu {
 
     fn save_state(&self) -> OmniResult<Vec<u8>> {
         let csr_data = self.csr.save();
-        let mut state = Vec::with_capacity(32 * 8 + 8 + 1 + csr_data.len());
+        let mut state = Vec::with_capacity(32 * 8 + 8 + 1 + 1 + csr_data.len());
         for r in &self.regs {
             state.extend_from_slice(&r.to_le_bytes());
         }
         state.extend_from_slice(&self.pc.to_le_bytes());
         state.push(self.halted as u8);
+        state.push(self.priv_mode);
         state.extend_from_slice(&csr_data);
         Ok(state)
     }
@@ -607,8 +673,15 @@ impl ExecutionBackend for RiscvCpu {
         buf.copy_from_slice(&data[256..264]);
         self.pc = u64::from_le_bytes(buf);
         self.halted = data[264] != 0;
-        if data.len() >= min_size + CsrFile::state_size() {
-            self.csr.load(&data[min_size..]);
+        if data.len() > 265 {
+            self.priv_mode = data[265];
+        }
+        let csr_offset = 266;
+        if data.len() >= csr_offset + CsrFile::state_size() {
+            self.csr.load(&data[csr_offset..]);
+        } else if data.len() >= min_size + 1 + 8 * 8 {
+            // Legacy format
+            self.csr.load(&data[min_size + 1..]);
         }
         Ok(())
     }
@@ -685,11 +758,8 @@ mod tests {
     #[test]
     fn test_branch_taken() {
         let mut cpu = cpu_with(&[
-            0x00A00093, // ADDI x1, x0, 10
-            0x00A00113, // ADDI x2, x0, 10
-            0x00208463, // BEQ x1, x2, +8
-            0x06400093, // ADDI x1, x0, 100
-            0x00000073, // ECALL
+            0x00A00093, 0x00A00113, 0x00208463, 0x06400093,
+            0x00000073,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(1), 10);
@@ -698,11 +768,8 @@ mod tests {
     #[test]
     fn test_branch_not_taken() {
         let mut cpu = cpu_with(&[
-            0x00A00093, // ADDI x1, x0, 10
-            0x01400113, // ADDI x2, x0, 20
-            0x00208463, // BEQ x1, x2, +8
-            0x06400093, // ADDI x1, x0, 100
-            0x00000073, // ECALL
+            0x00A00093, 0x01400113, 0x00208463, 0x06400093,
+            0x00000073,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(1), 100);
@@ -711,9 +778,7 @@ mod tests {
     #[test]
     fn test_jal() {
         let mut cpu = cpu_with(&[
-            0x008000EF, // JAL x1, +8
-            0x06400093, // ADDI x1, x0, 100
-            0x00000073, // ECALL
+            0x008000EF, 0x06400093, 0x00000073,
         ]);
         let base = cpu.pc();
         cpu.exec(10).unwrap();
@@ -726,10 +791,7 @@ mod tests {
         let mut cpu = RiscvCpu::new("test", 4096, 0x8000_0000);
         cpu.set_uart_addr(uart_addr);
         let insns: Vec<u32> = vec![
-            0x10000137, // LUI x2, 0x10000
-            0x04800093, // ADDI x1, x0, 72
-            0x00110023, // SB x1, 0(x2)
-            0x00000073, // ECALL
+            0x10000137, 0x04800093, 0x00110023, 0x00000073,
         ];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
@@ -741,8 +803,7 @@ mod tests {
     #[test]
     fn test_save_load_state() {
         let mut cpu = cpu_with(&[
-            0x02A00093, // ADDI x1, x0, 42
-            0x00000073, // ECALL
+            0x02A00093, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
         let state = cpu.save_state().unwrap();
@@ -755,10 +816,7 @@ mod tests {
     #[test]
     fn test_loop_countdown() {
         let mut cpu = cpu_with(&[
-            0x00500093, // ADDI x1, x0, 5
-            0xFFF08093, // ADDI x1, x1, -1
-            0xFE009EE3, // BNE x1, x0, -4
-            0x00000073, // ECALL
+            0x00500093, 0xFFF08093, 0xFE009EE3, 0x00000073,
         ]);
         cpu.exec(100).unwrap();
         assert_eq!(cpu.reg(1), 0);
@@ -768,8 +826,7 @@ mod tests {
     #[test]
     fn test_x0_always_zero() {
         let mut cpu = cpu_with(&[
-            0x02A00013, // ADDI x0, x0, 42
-            0x00000073, // ECALL
+            0x02A00013, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(0), 0);
@@ -786,72 +843,48 @@ mod tests {
         let bus = Arc::new(bus);
 
         let mut cpu = RiscvCpu::with_bus("rv-core0", bus.clone(), 0);
-
         let insns: Vec<u32> = vec![
-            0x06300093, // ADDI x1, x0, 99
-            0x10000113, // ADDI x2, x0, 256
-            0x00112023, // SW x1, 0(x2)
-            0x00012183, // LW x3, 0(x2)
-            0x00000073, // ECALL
+            0x06300093, 0x10000113, 0x00112023, 0x00012183,
+            0x00000073,
         ];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
         cpu.set_pc(0);
         cpu.exec(10).unwrap();
-
         assert_eq!(cpu.reg(1), 99);
         assert_eq!(cpu.reg(3), 99);
         assert!(cpu.is_halted());
-
         let val = bus.read(0x100, MemAccessSize::U32, 0).unwrap();
         assert_eq!(val, 99);
     }
 
-    // ── CSR tests ──────────────────────────────────────────────
-
     #[test]
     fn test_csrrw() {
-        // CSRRW x1, mscratch, x2: write x2 to mscratch, old mscratch to x1
-        // mscratch = 0x340
-        // [31:20]=0x340, [19:15]=rs1=2, [14:12]=001, [11:7]=rd=1, [6:0]=0x73
         let csrrw = (0x340 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
         let mut cpu = cpu_with(&[
-            0x06400113, // ADDI x2, x0, 100
-            csrrw,
-            0x00000073, // ECALL
+            0x06400113, csrrw, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
-        assert_eq!(cpu.reg(1), 0); // old mscratch was 0
+        assert_eq!(cpu.reg(1), 0);
         assert_eq!(cpu.csr().mscratch, 100);
     }
 
     #[test]
     fn test_csrrs_mie() {
-        // Enable machine timer interrupt via CSRRS mie, x1
-        // mie = 0x304
-        // Set x1 = MIP_MTIP (1<<7 = 128)
         let csrrs = (0x304 << 20) | (1 << 15) | (2 << 12) | (2 << 7) | 0x73;
         let mut cpu = cpu_with(&[
-            0x08000093, // ADDI x1, x0, 128  (MIP_MTIP)
-            csrrs,       // CSRRS x2, mie, x1
-            0x00000073, // ECALL
+            0x08000093, csrrs, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.csr().mie, 128);
     }
 
-    // ── M extension tests ──────────────────────────────────────
-
     #[test]
     fn test_mul() {
-        // MUL x3, x1, x2: funct7=0x01, funct3=0, opcode=0x33
         let mul = (0x01 << 25) | (2 << 20) | (1 << 15) | (0 << 12) | (3 << 7) | 0x33;
         let mut cpu = cpu_with(&[
-            0x00700093, // ADDI x1, x0, 7
-            0x00600113, // ADDI x2, x0, 6
-            mul,
-            0x00000073, // ECALL
+            0x00700093, 0x00600113, mul, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(3), 42);
@@ -859,13 +892,9 @@ mod tests {
 
     #[test]
     fn test_div() {
-        // DIV x3, x1, x2: funct7=0x01, funct3=4, opcode=0x33
         let div = (0x01 << 25) | (2 << 20) | (1 << 15) | (4 << 12) | (3 << 7) | 0x33;
         let mut cpu = cpu_with(&[
-            0x02A00093, // ADDI x1, x0, 42
-            0x00700113, // ADDI x2, x0, 7
-            div,
-            0x00000073, // ECALL
+            0x02A00093, 0x00700113, div, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(3), 6);
@@ -875,162 +904,149 @@ mod tests {
     fn test_div_by_zero() {
         let div = (0x01 << 25) | (2 << 20) | (1 << 15) | (4 << 12) | (3 << 7) | 0x33;
         let mut cpu = cpu_with(&[
-            0x02A00093, // ADDI x1, x0, 42
-            0x00000113, // ADDI x2, x0, 0
-            div,
-            0x00000073, // ECALL
+            0x02A00093, 0x00000113, div, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
-        assert_eq!(cpu.reg(3), u64::MAX); // -1 per spec
+        assert_eq!(cpu.reg(3), u64::MAX);
     }
 
     #[test]
     fn test_rem() {
-        // REM x3, x1, x2: funct7=0x01, funct3=6, opcode=0x33
         let rem = (0x01 << 25) | (2 << 20) | (1 << 15) | (6 << 12) | (3 << 7) | 0x33;
         let mut cpu = cpu_with(&[
-            0x02B00093, // ADDI x1, x0, 43
-            0x00700113, // ADDI x2, x0, 7
-            rem,
-            0x00000073, // ECALL
+            0x02B00093, 0x00700113, rem, 0x00000073,
         ]);
         cpu.exec(10).unwrap();
-        assert_eq!(cpu.reg(3), 1); // 43 % 7 = 1
+        assert_eq!(cpu.reg(3), 1);
     }
-
-    // ── A extension tests ──────────────────────────────────────
 
     #[test]
     fn test_lr_sc_w() {
         let mut cpu = RiscvCpu::new("test", 8192, 0);
-        // Store 42 at addr 0x100, then LR.W + SC.W
-        // ADDI x1, x0, 42;  ADDI x2, x0, 0x100;  SW x1, 0(x2)
-        // LR.W x3, (x2);  ADDI x4, x0, 99;  SC.W x5, x4, (x2)
-        // LW x6, 0(x2);  ECALL
         let sw     = (0 << 25) | (1 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x23;
         let lr_w   = (0x02 << 27) | (0 << 20) | (2 << 15) | (2 << 12) | (3 << 7) | 0x2F;
         let sc_w   = (0x03 << 27) | (4 << 20) | (2 << 15) | (2 << 12) | (5 << 7) | 0x2F;
         let lw_x6  = (0 << 20) | (2 << 15) | (2 << 12) | (6 << 7) | 0x03;
         let insns: Vec<u32> = vec![
-            0x02A00093, // ADDI x1, x0, 42
-            0x10000113, // ADDI x2, x0, 256
-            sw,          // SW x1, 0(x2)
-            lr_w,        // LR.W x3, (x2)
-            0x06300213, // ADDI x4, x0, 99
-            sc_w,        // SC.W x5, x4, (x2)
-            lw_x6,       // LW x6, 0(x2)
-            0x00000073, // ECALL
+            0x02A00093, 0x10000113, sw, lr_w, 0x06300213, sc_w, lw_x6,
+            0x00000073,
         ];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
         cpu.set_pc(0);
         cpu.exec(20).unwrap();
-        assert_eq!(cpu.reg(3), 42); // LR loaded 42
-        assert_eq!(cpu.reg(5), 0);  // SC succeeded
-        assert_eq!(cpu.reg(6), 99); // memory updated to 99
+        assert_eq!(cpu.reg(3), 42);
+        assert_eq!(cpu.reg(5), 0);
+        assert_eq!(cpu.reg(6), 99);
     }
 
     #[test]
     fn test_amoadd_w() {
         let mut cpu = RiscvCpu::new("test", 8192, 0);
-        // Store 10 at addr 0x100, then AMOADD.W x3, x4, (x2)
         let sw       = (0 << 25) | (1 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x23;
         let amoadd_w = (0x00 << 27) | (4 << 20) | (2 << 15) | (2 << 12) | (3 << 7) | 0x2F;
         let lw_x5    = (0 << 20) | (2 << 15) | (2 << 12) | (5 << 7) | 0x03;
         let insns: Vec<u32> = vec![
-            0x00A00093, // ADDI x1, x0, 10
-            0x10000113, // ADDI x2, x0, 256
-            sw,          // SW x1, 0(x2)
-            0x00500213, // ADDI x4, x0, 5
-            amoadd_w,    // AMOADD.W x3, x4, (x2)
-            lw_x5,       // LW x5, 0(x2)
-            0x00000073, // ECALL
+            0x00A00093, 0x10000113, sw, 0x00500213, amoadd_w, lw_x5,
+            0x00000073,
         ];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
         cpu.set_pc(0);
         cpu.exec(20).unwrap();
-        assert_eq!(cpu.reg(3), 10); // old value
-        assert_eq!(cpu.reg(5), 15); // 10 + 5
+        assert_eq!(cpu.reg(3), 10);
+        assert_eq!(cpu.reg(5), 15);
     }
-
-    // ── Trap delivery test ─────────────────────────────────────
 
     #[test]
     fn test_trap_delivery_and_mret() {
-        // Set up:
-        // 1. Set mtvec to trap handler address
-        // 2. Enable interrupts (mstatus.MIE, mie.MTIE)
-        // 3. Force mip.MTIP pending
-        // 4. Next step should trap
-        // 5. Handler sets x10=1 and does MRET
         let mut cpu = RiscvCpu::new("test", 8192, 0);
-
-        // Main code at 0x0000:
-        //   ADDI x1, x0, 0x100       ; x1 = handler addr
-        //   CSRRW x0, mtvec, x1      ; mtvec = 0x100
-        //   ADDI x2, x0, 128         ; x2 = 1<<7 = MTIE
-        //   CSRRS x0, mie, x2        ; enable MTIE
-        //   ADDI x3, x0, 8           ; x3 = 1<<3 = MIE
-        //   CSRRS x0, mstatus, x3    ; enable global MIE
-        //   ADDI x11, x0, 42         ; x11 = 42 (should execute after MRET)
-        //   ECALL
         let csrrw_mtvec    = (0x305 << 20) | (1 << 15) | (1 << 12) | (0 << 7) | 0x73;
         let csrrs_mie      = (0x304 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x73;
         let csrrs_mstatus  = (0x300 << 20) | (3 << 15) | (2 << 12) | (0 << 7) | 0x73;
-
         let main_code: Vec<u32> = vec![
-            0x10000093, // ADDI x1, x0, 256
-            csrrw_mtvec,
-            0x08000113, // ADDI x2, x0, 128
-            csrrs_mie,
-            0x00800193, // ADDI x3, x0, 8
-            csrrs_mstatus,
-            // At this point, interrupts enabled but no pending interrupt yet.
-            // After next step, we set MIP.MTIP externally, and the step after will trap.
-            0x02A00593, // ADDI x11, x0, 42
-            0x00000073, // ECALL
+            0x10000093, csrrw_mtvec, 0x08000113, csrrs_mie,
+            0x00800193, csrrs_mstatus,
+            0x02A00593, 0x00000073,
         ];
         for (i, insn) in main_code.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
-
-        // Handler code at 0x100:
-        //   ADDI x10, x0, 1          ; x10 = 1 (marker)
-        //   ADDI x9, x0, 128         ; x9 = MTIE bit
-        //   CSRRC x0, mie, x9        ; clear MTIE to prevent re-trap
-        //   MRET
         let mret = 0x30200073u32;
         let csrrc_mie = (0x304u32 << 20) | (9 << 15) | (3 << 12) | (0 << 7) | 0x73;
         let handler: Vec<u32> = vec![
-            0x00100513, // ADDI x10, x0, 1
-            0x08000493, // ADDI x9, x0, 128
-            csrrc_mie,   // CSRRC x0, mie, x9
-            mret,
+            0x00100513, 0x08000493, csrrc_mie, mret,
         ];
+        for (i, insn) in handler.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (0x100 + i * 4) as u64);
+        }
+        cpu.set_pc(0);
+        cpu.exec(6).unwrap();
+        assert!(!cpu.is_halted());
+        cpu.csr_mut().mip |= csr::MIP_MTIP;
+        cpu.exec(10).unwrap();
+        assert_eq!(cpu.reg(10), 1);
+        assert_eq!(cpu.reg(11), 42);
+    }
+
+    // ── Privilege mode tests ──────────────────────────────────
+
+    #[test]
+    fn test_m_to_s_mode_transition() {
+        // M-mode code: set mepc, set MPP=S, MRET → enter S-mode
+        // S-mode code: set x10 = 1, ECALL → back to M-mode
+        // M-mode handler: set x11 = 1, halt
+        let mut cpu = RiscvCpu::new("test", 0x10000, 0);
+
+        // mepc = 0x200 (S-mode entry)
+        let csrrw_mepc = (0x341u32 << 20) | (1 << 15) | (1 << 12) | (0 << 7) | 0x73;
+        // mstatus: set MPP to S-mode (01 << 11) and MIE
+        let csrrw_mstatus = (0x300u32 << 20) | (2 << 15) | (1 << 12) | (0 << 7) | 0x73;
+        // mtvec = 0x100 (M-mode trap handler)
+        let csrrw_mtvec = (0x305u32 << 20) | (3 << 15) | (1 << 12) | (0 << 7) | 0x73;
+        let mret = 0x30200073u32;
+
+        let m_code: Vec<u32> = vec![
+            0x20000093,         // ADDI x1, x0, 0x200 (S-mode entry)
+            csrrw_mepc,         // CSRRW x0, mepc, x1
+            0x00800113,         // ADDI x2, x0, 0x008 (MIE bit)
+            // MPP = S-mode (1 << 11 = 0x800)
+            0x00001137,         // LUI x2, 0x1
+            0x80010113,         // ADDI x2, x2, -0x800 → x2 = 0x800
+            csrrw_mstatus,      // CSRRW x0, mstatus, x2
+            0x10000193,         // ADDI x3, x0, 0x100 (handler)
+            csrrw_mtvec,        // CSRRW x0, mtvec, x3
+            mret,               // MRET → S-mode at 0x200
+        ];
+        for (i, insn) in m_code.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
+        }
+
+        // S-mode code at 0x200
+        let s_code: Vec<u32> = vec![
+            0x00100513,         // ADDI x10, x0, 1
+            0x00000073,         // ECALL → trap to M-mode (cause 9)
+        ];
+        for (i, insn) in s_code.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (0x200 + i * 4) as u64);
+        }
+
+        // M-mode trap handler at 0x100
+        let handler: Vec<u32> = vec![
+            0x00100593,         // ADDI x11, x0, 1
+        ];
+        // After this instruction, next is 0x104 which is 0 → halt
         for (i, insn) in handler.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (0x100 + i * 4) as u64);
         }
 
         cpu.set_pc(0);
+        cpu.exec(50).unwrap();
 
-        // Execute up to and including the CSRRS mstatus (6 instructions)
-        cpu.exec(6).unwrap();
-        assert!(!cpu.is_halted());
-
-        // Now set MTIP pending
-        cpu.csr_mut().mip |= csr::MIP_MTIP;
-
-        // Next step should detect interrupt and jump to handler
-        cpu.exec(1).unwrap();
-        // We should now be in the handler or just after trap entry
-        // The trap handler writes x10=1
-        // We need a few more steps to complete handler + MRET + continue
-        cpu.exec(10).unwrap();
-
-        assert_eq!(cpu.reg(10), 1);  // handler executed
-        assert_eq!(cpu.reg(11), 42); // returned from handler, continued execution
+        assert_eq!(cpu.reg(10), 1);  // S-mode executed
+        assert_eq!(cpu.reg(11), 1);  // M-mode handler executed
+        assert_eq!(cpu.csr().mcause, 9);  // ecall from S-mode
     }
 }
