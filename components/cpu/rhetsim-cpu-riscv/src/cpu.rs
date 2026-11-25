@@ -1,20 +1,32 @@
 //! RiscvCpu — minimal RV64I interpreter
 
+use std::sync::Arc;
 use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::mem::MemAccessSize;
 use crate::decode::{decode, Instruction};
+
+enum MemBackend {
+    Flat {
+        memory: Vec<u8>,
+        uart_output: Vec<u8>,
+        uart_addr: u64,
+    },
+    Bus {
+        bus: Arc<MemBus>,
+    },
+}
 
 pub struct RiscvCpu {
     id: UnitId,
     regs: [u64; 32],
     pc: u64,
     halted: bool,
-    memory: Vec<u8>,
     mem_base: u64,
     insn_count: u64,
-    uart_output: Vec<u8>,
-    uart_addr: u64,
+    backend: MemBackend,
 }
 
 impl RiscvCpu {
@@ -24,64 +36,123 @@ impl RiscvCpu {
             regs: [0; 32],
             pc: mem_base,
             halted: false,
-            memory: vec![0u8; mem_size],
             mem_base,
             insn_count: 0,
-            uart_output: Vec::new(),
-            uart_addr: 0,
+            backend: MemBackend::Flat {
+                memory: vec![0u8; mem_size],
+                uart_output: Vec::new(),
+                uart_addr: 0,
+            },
+        }
+    }
+
+    pub fn with_bus(id: &str, bus: Arc<MemBus>, mem_base: u64) -> Self {
+        Self {
+            id: UnitId::new(id),
+            regs: [0; 32],
+            pc: mem_base,
+            halted: false,
+            mem_base,
+            insn_count: 0,
+            backend: MemBackend::Bus { bus },
         }
     }
 
     pub fn load_binary(&mut self, data: &[u8], offset: u64) {
-        let start = offset as usize;
-        let end = start + data.len();
-        if end <= self.memory.len() {
-            self.memory[start..end].copy_from_slice(data);
+        match &mut self.backend {
+            MemBackend::Flat { memory, .. } => {
+                let start = offset as usize;
+                let end = start + data.len();
+                if end <= memory.len() {
+                    memory[start..end].copy_from_slice(data);
+                }
+            }
+            MemBackend::Bus { bus } => {
+                let addr = self.mem_base + offset;
+                for (i, &byte) in data.iter().enumerate() {
+                    let _ = bus.write(addr + i as u64, MemAccessSize::U8, byte as u64, 0);
+                }
+            }
         }
     }
 
     pub fn set_pc(&mut self, pc: u64) { self.pc = pc; }
-    pub fn set_uart_addr(&mut self, addr: u64) { self.uart_addr = addr; }
-    pub fn uart_output(&self) -> &[u8] { &self.uart_output }
+
+    pub fn set_uart_addr(&mut self, addr: u64) {
+        if let MemBackend::Flat { uart_addr, .. } = &mut self.backend {
+            *uart_addr = addr;
+        }
+    }
+
+    pub fn uart_output(&self) -> &[u8] {
+        match &self.backend {
+            MemBackend::Flat { uart_output, .. } => uart_output,
+            MemBackend::Bus { .. } => &[],
+        }
+    }
+
     pub fn pc(&self) -> u64 { self.pc }
     pub fn reg(&self, idx: usize) -> u64 { self.regs[idx] }
     pub fn is_halted(&self) -> bool { self.halted }
     pub fn insn_count(&self) -> u64 { self.insn_count }
 
-    fn mem_offset(&self, addr: u64) -> Option<usize> {
-        if addr >= self.mem_base && addr < self.mem_base + self.memory.len() as u64 {
-            Some((addr - self.mem_base) as usize)
-        } else {
-            None
-        }
-    }
-
     fn mem_read(&self, addr: u64, size: usize) -> u64 {
-        if self.uart_addr != 0 && addr == self.uart_addr + 5 {
-            return 0x60; // LSR: TX empty + TX holding empty
-        }
-        match self.mem_offset(addr) {
-            Some(off) => {
-                let end = (off + size).min(self.memory.len());
-                let mut val = 0u64;
-                for i in 0..(end - off) {
-                    val |= (self.memory[off + i] as u64) << (i * 8);
+        match &self.backend {
+            MemBackend::Flat { memory, uart_addr, .. } => {
+                if *uart_addr != 0 && addr == *uart_addr + 5 {
+                    return 0x60;
                 }
-                val
+                let mem_end = self.mem_base + memory.len() as u64;
+                if addr >= self.mem_base && addr < mem_end {
+                    let off = (addr - self.mem_base) as usize;
+                    let end = (off + size).min(memory.len());
+                    let mut val = 0u64;
+                    for i in 0..(end - off) {
+                        val |= (memory[off + i] as u64) << (i * 8);
+                    }
+                    val
+                } else {
+                    0
+                }
             }
-            None => 0,
+            MemBackend::Bus { bus } => {
+                let access_size = match size {
+                    1 => MemAccessSize::U8,
+                    2 => MemAccessSize::U16,
+                    4 => MemAccessSize::U32,
+                    8 => MemAccessSize::U64,
+                    _ => MemAccessSize::U8,
+                };
+                bus.read(addr, access_size, 0).unwrap_or(0)
+            }
         }
     }
 
     fn mem_write(&mut self, addr: u64, size: usize, val: u64) {
-        if self.uart_addr != 0 && addr == self.uart_addr {
-            self.uart_output.push(val as u8);
-            return;
-        }
-        if let Some(off) = self.mem_offset(addr) {
-            let end = (off + size).min(self.memory.len());
-            for i in 0..(end - off) {
-                self.memory[off + i] = (val >> (i * 8)) as u8;
+        match &mut self.backend {
+            MemBackend::Flat { memory, uart_output, uart_addr } => {
+                if *uart_addr != 0 && addr == *uart_addr {
+                    uart_output.push(val as u8);
+                    return;
+                }
+                let mem_end = self.mem_base + memory.len() as u64;
+                if addr >= self.mem_base && addr < mem_end {
+                    let off = (addr - self.mem_base) as usize;
+                    let end = (off + size).min(memory.len());
+                    for i in 0..(end - off) {
+                        memory[off + i] = (val >> (i * 8)) as u8;
+                    }
+                }
+            }
+            MemBackend::Bus { bus } => {
+                let access_size = match size {
+                    1 => MemAccessSize::U8,
+                    2 => MemAccessSize::U16,
+                    4 => MemAccessSize::U32,
+                    8 => MemAccessSize::U64,
+                    _ => MemAccessSize::U8,
+                };
+                let _ = bus.write(addr, access_size, val, 0);
             }
         }
     }
@@ -265,7 +336,9 @@ impl Unit for RiscvCpu {
         self.pc = self.mem_base;
         self.halted = false;
         self.insn_count = 0;
-        self.uart_output.clear();
+        if let MemBackend::Flat { uart_output, .. } = &mut self.backend {
+            uart_output.clear();
+        }
         Ok(())
     }
 
@@ -495,5 +568,64 @@ mod tests {
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(0), 0);
+    }
+
+    #[test]
+    fn test_bus_backed_read_write() {
+        use rhetsim_core::mem::{MemAttrs, MemAccessSize};
+
+        let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", 64 * 1024, 0x8000_0000));
+        let mut bus = MemBus::new("sys-bus");
+        bus.map(dram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+                0x8000_0000, MemAttrs::rw(), None).unwrap();
+        let bus = Arc::new(bus);
+
+        let mut cpu = RiscvCpu::with_bus("rv-core0", bus, 0x8000_0000);
+
+        // ADDI x1, x0, 99;  SW x1, 256(x0) => store 99 at bus addr 0x80000100;
+        // LW x2, 256(x0);   ECALL
+        // But x0=0, so SW 0(x0) goes to addr 0 which is unmapped.
+        // Use ADDI to put 0x80000000 in x3 via LUI, then SW x1, 0x100(x3)
+        let insns: Vec<u32> = vec![
+            0x06300093, // ADDI x1, x0, 99         x1 = 99
+            0x800001B7, // LUI x3, 0x80000         x3 = 0x80000000
+            0x00118213, // ADDI x4, x3, 1  -- wrong, need 0x100 offset
+        ];
+        // Actually simpler: use LUI+SW with offset
+        // LUI x3, 0x80000 => x3 = 0x80000000 (but this is negative in 32-bit... in RV64 it's 0xFFFFFFFF80000000)
+        // Hmm, LUI sign-extends the 32-bit result into 64 bits. 0x80000 << 12 = 0x80000000
+        // which is negative as i32, so sign-extended to 0xFFFFFFFF80000000 in RV64.
+        // Need a different approach. Use ADDI chain or put program at base 0.
+
+        // Simpler: use mem_base=0, map DRAM at 0
+        drop(cpu);
+        let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", 64 * 1024, 0));
+        let mut bus = MemBus::new("sys-bus");
+        bus.map(dram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+                0, MemAttrs::rw(), None).unwrap();
+        let bus = Arc::new(bus);
+
+        let mut cpu = RiscvCpu::with_bus("rv-core0", bus.clone(), 0);
+
+        let insns: Vec<u32> = vec![
+            0x06300093, // ADDI x1, x0, 99         x1 = 99
+            0x10000113, // ADDI x2, x0, 256        x2 = 0x100
+            0x00112023, // SW x1, 0(x2)            mem[0x100] = 99
+            0x00012183, // LW x3, 0(x2)            x3 = mem[0x100]
+            0x00000073, // ECALL
+        ];
+        for (i, insn) in insns.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
+        }
+        cpu.set_pc(0);
+        cpu.exec(10).unwrap();
+
+        assert_eq!(cpu.reg(1), 99);
+        assert_eq!(cpu.reg(3), 99);
+        assert!(cpu.is_halted());
+
+        // Verify data is visible in DRAM through the bus
+        let val = bus.read(0x100, MemAccessSize::U32, 0).unwrap();
+        assert_eq!(val, 99);
     }
 }

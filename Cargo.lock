@@ -264,6 +264,7 @@ name = "rhetsim-cpu-riscv"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "rhetsim-mem-dram",
 ]
 
 [[package]]
@@ -373,11 +374,14 @@ name = "rhetsim-runtime"
 version = "0.1.0"
 dependencies = [
  "log",
+ "rhetsim-accel-gpgpu",
  "rhetsim-compat",
  "rhetsim-core",
  "rhetsim-cpu-mock",
  "rhetsim-cpu-riscv",
+ "rhetsim-io-uart",
  "rhetsim-manifest",
+ "rhetsim-mem-dram",
  "tokio",
  "tracing",
  "tracing-subscriber",
