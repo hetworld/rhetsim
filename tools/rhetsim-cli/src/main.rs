@@ -107,6 +107,7 @@ fn main() {
         eprintln!("  --log-file <path>    Write simulator logs to file (default: stderr)");
         eprintln!("  --trace <items>      Execution trace categories: exec,cpu,jit,int,plic,clint,uart,loader,all");
         eprintln!("  --trace-file <path>  Write execution trace to file (default: stderr)");
+        eprintln!("  --no-jit             Disable the JIT (interpreter only; useful for debugging)");
         eprintln!("  --list-units    List available unit kinds and exit");
         std::process::exit(1);
     }
@@ -279,6 +280,12 @@ fn boot_riscv_linux(
     // Per-instruction trace must not run through cached JIT basic blocks.
     if diag.trace_enabled(TraceCategory::Exec) || diag.trace_enabled(TraceCategory::Cpu) {
         info!(target: "boot", "instruction trace enabled; JIT disabled");
+        for cpu in &mut cpus {
+            cpu.set_jit_enabled(false);
+        }
+    }
+    if args.iter().any(|a| a == "--no-jit") {
+        info!(target: "boot", "JIT disabled by --no-jit");
         for cpu in &mut cpus {
             cpu.set_jit_enabled(false);
         }
