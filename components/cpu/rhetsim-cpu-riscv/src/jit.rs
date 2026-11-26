@@ -22,6 +22,7 @@ const EXIT_SFENCE: u64 = 8;
 const EXIT_AMO: u64 = 9;
 const EXIT_FENCEI: u64 = 10;
 const EXIT_EBREAK: u64 = 11;
+const EXIT_FAULT: u64 = 12;
 
 #[repr(C)]
 pub struct JitCpuState {
@@ -37,13 +38,15 @@ pub struct JitCpuState {
 pub type JitBlockFn = unsafe extern "C" fn(*mut JitCpuState, *mut u8);
 
 extern "C" fn helper_load(mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
-    let ctx = unsafe { &*(mem_ctx as *const HelperContext) };
-    (ctx.load_fn)(ctx.cpu_ptr, addr, size as usize)
+    let ctx = unsafe { &mut *(mem_ctx as *mut HelperContext) };
+    ctx.fault = 0;
+    (ctx.load_fn)(ctx.cpu_ptr, addr, size as usize, &mut ctx.fault)
 }
 
 extern "C" fn helper_store(mem_ctx: *mut u8, addr: u64, size: u64, val: u64) -> u64 {
-    let ctx = unsafe { &*(mem_ctx as *const HelperContext) };
-    (ctx.store_fn)(ctx.cpu_ptr, addr, size as usize, val)
+    let ctx = unsafe { &mut *(mem_ctx as *mut HelperContext) };
+    ctx.fault = 0;
+    (ctx.store_fn)(ctx.cpu_ptr, addr, size as usize, val, &mut ctx.fault)
 }
 
 pub const FAST_TLB_SIZE: usize = 256;
@@ -64,11 +67,21 @@ impl FastTlbEntry {
 #[repr(C)]
 pub struct HelperContext {
     pub cpu_ptr: *mut u8,
-    pub load_fn: fn(*mut u8, u64, usize) -> u64,
-    pub store_fn: fn(*mut u8, u64, usize, u64) -> u64,
+    pub load_fn: fn(*mut u8, u64, usize, *mut u64) -> u64,
+    pub store_fn: fn(*mut u8, u64, usize, u64, *mut u64) -> u64,
     pub read_tlb: *mut FastTlbEntry,
     pub write_tlb: *mut FastTlbEntry,
+    /// Set by the helpers when the access raised a guest page fault; the
+    /// translated block checks this and exits with `EXIT_FAULT`.
+    pub fault: u64,
 }
+
+// The generated code loads these fields at hard-coded offsets.
+const _: () = {
+    assert!(std::mem::offset_of!(HelperContext, read_tlb) == 24);
+    assert!(std::mem::offset_of!(HelperContext, write_tlb) == 32);
+    assert!(std::mem::offset_of!(HelperContext, fault) == 40);
+};
 
 #[derive(Clone, Copy, Hash, Eq, PartialEq)]
 struct TbKey {
@@ -443,9 +456,9 @@ impl JitEngine {
                         let twelve = builder.ins().iconst(I64, 12);
                         let va_page = builder.ins().ushr(va, twelve);
                         let mask_ff = builder.ins().iconst(I64, 0xFF);
-                        let idx = builder.ins().band(va_page, mask_ff);
+                        let tlb_idx = builder.ins().band(va_page, mask_ff);
                         let four = builder.ins().iconst(I64, 4);
-                        let entry_offset = builder.ins().ishl(idx, four);
+                        let entry_offset = builder.ins().ishl(tlb_idx, four);
                         let entry_ptr = builder.ins().iadd(read_tlb_base, entry_offset);
                         let tag = builder.ins().load(I64, memflags(), entry_ptr, 0);
                         let hit = builder.ins().icmp(IntCC::Equal, tag, va_page);
@@ -474,6 +487,19 @@ impl JitEngine {
                         let size_arg = builder.ins().iconst(I64, size_val);
                         let call = builder.ins().call(load_ref, &[mem_ctx, va, size_arg]);
                         let raw_slow = builder.inst_results(call)[0];
+                        let fault_ptr = builder.ins().iadd_imm(mem_ctx, 40);
+                        let fault = builder.ins().load(I64, memflags(), fault_ptr, 0);
+                        let zero = builder.ins().iconst(I64, 0);
+                        let faulted = builder.ins().icmp(IntCC::NotEqual, fault, zero);
+                        let fault_block = builder.create_block();
+                        let ok_block = builder.create_block();
+                        builder.ins().brif(faulted, fault_block, &[], ok_block, &[]);
+                        builder.switch_to_block(fault_block);
+                        builder.seal_block(fault_block);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_FAULT, idx + 1, 0);
+                        builder.ins().jump(exit_block, &[]);
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
                         let arg_slow = BlockArg::Value(raw_slow);
                         builder.ins().jump(merge_block, &[arg_slow]);
 
@@ -506,9 +532,9 @@ impl JitEngine {
                         let twelve = builder.ins().iconst(I64, 12);
                         let va_page = builder.ins().ushr(va, twelve);
                         let mask_ff = builder.ins().iconst(I64, 0xFF);
-                        let idx = builder.ins().band(va_page, mask_ff);
+                        let tlb_idx = builder.ins().band(va_page, mask_ff);
                         let four = builder.ins().iconst(I64, 4);
-                        let entry_offset = builder.ins().ishl(idx, four);
+                        let entry_offset = builder.ins().ishl(tlb_idx, four);
                         let entry_ptr = builder.ins().iadd(write_tlb_base, entry_offset);
                         let tag = builder.ins().load(I64, memflags(), entry_ptr, 0);
                         let hit = builder.ins().icmp(IntCC::Equal, tag, va_page);
@@ -533,8 +559,17 @@ impl JitEngine {
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         let size_arg = builder.ins().iconst(I64, size_val);
-                        builder.ins().call(store_ref, &[mem_ctx, va, size_arg, val]);
-                        builder.ins().jump(cont_block, &[]);
+                        let _ = builder.ins().call(store_ref, &[mem_ctx, va, size_arg, val]);
+                        let fault_ptr = builder.ins().iadd_imm(mem_ctx, 40);
+                        let fault = builder.ins().load(I64, memflags(), fault_ptr, 0);
+                        let zero = builder.ins().iconst(I64, 0);
+                        let faulted = builder.ins().icmp(IntCC::NotEqual, fault, zero);
+                        let fault_block = builder.create_block();
+                        builder.ins().brif(faulted, fault_block, &[], cont_block, &[]);
+                        builder.switch_to_block(fault_block);
+                        builder.seal_block(fault_block);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_FAULT, idx + 1, 0);
+                        builder.ins().jump(exit_block, &[]);
 
                         builder.switch_to_block(cont_block);
                         builder.seal_block(cont_block);

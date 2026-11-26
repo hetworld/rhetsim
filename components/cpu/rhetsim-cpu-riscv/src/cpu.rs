@@ -68,6 +68,8 @@ pub struct RiscvCpu {
     read_fast_tlb: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
     write_fast_tlb: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
     dram_host_ptr: Option<(*mut u8, u64, u64)>,
+    /// Page fault raised by a JIT data-access helper, delivered on block exit.
+    jit_fault: Option<(u64, u64)>,
     irq_lines: [Option<Arc<dyn IrqLineSource>>; IRQ_LINE_COUNT],
 }
 
@@ -97,6 +99,7 @@ impl RiscvCpu {
             read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
+            jit_fault: None,
             irq_lines: std::array::from_fn(|_| None),
         }
     }
@@ -119,6 +122,7 @@ impl RiscvCpu {
             read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
+            jit_fault: None,
             irq_lines: std::array::from_fn(|_| None),
         }
     }
@@ -402,21 +406,29 @@ impl RiscvCpu {
         }
     }
 
-    fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize) -> u64 {
+    fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize, fault_out: *mut u64) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
         let pa = match cpu.translate(va, mmu::AccessType::Load) {
             Ok(pa) => pa,
-            Err(_) => return 0,
+            Err(f) => {
+                cpu.jit_fault = Some((f.cause, f.tval));
+                unsafe { *fault_out = 1; }
+                return 0;
+            }
         };
         Self::fill_fast_tlb(&mut cpu.read_fast_tlb, va, pa, cpu.dram_host_ptr);
         cpu.phys_read(pa, size)
     }
 
-    fn jit_store(cpu_ptr: *mut u8, va: u64, size: usize, val: u64) -> u64 {
+    fn jit_store(cpu_ptr: *mut u8, va: u64, size: usize, val: u64, fault_out: *mut u64) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
         let pa = match cpu.translate(va, mmu::AccessType::Store) {
             Ok(pa) => pa,
-            Err(_) => return 1,
+            Err(f) => {
+                cpu.jit_fault = Some((f.cause, f.tval));
+                unsafe { *fault_out = 1; }
+                return 1;
+            }
         };
         Self::fill_fast_tlb(&mut cpu.write_fast_tlb, va, pa, cpu.dram_host_ptr);
         cpu.phys_write(pa, size, val);
@@ -454,7 +466,9 @@ impl RiscvCpu {
             store_fn: Self::jit_store,
             read_tlb: read_tlb_ptr,
             write_tlb: write_tlb_ptr,
+            fault: 0,
         };
+        self.jit_fault = None;
 
         let priv_mode = self.priv_mode;
         let satp = self.csr.satp;
@@ -558,6 +572,14 @@ impl RiscvCpu {
                 // EBREAK
                 self.pc = state.exit_pc;
                 self.take_trap(3, self.pc);
+            }
+            12 => {
+                // JIT data-access fault: re-deliver the pending page fault
+                // (epc is the faulting instruction, set by the block exit).
+                self.pc = state.exit_pc;
+                if let Some((cause, tval)) = self.jit_fault.take() {
+                    self.take_trap(cause, tval);
+                }
             }
             _ => {
                 self.pc = state.pc;
@@ -1023,6 +1045,7 @@ impl Unit for RiscvCpu {
         }
         self.tlb.flush();
         self.flush_fast_tlb();
+        self.jit_fault = None;
         if let Some(jit) = self.jit.as_mut() {
             jit.invalidate_all();
         }
