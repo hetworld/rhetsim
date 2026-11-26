@@ -105,6 +105,9 @@ pub struct JitEngine {
     store_id: FuncId,
     fb_ctx: FunctionBuilderContext,
     tb_counter: u64,
+    compiles: u64,
+    executions: u64,
+    invalidations: u64,
 }
 
 unsafe impl Send for JitEngine {}
@@ -117,7 +120,14 @@ fn memflags() -> MemFlagsData {
 impl JitEngine {
     pub fn new() -> Self {
         let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").unwrap();
+        // Blocks average ~5 instructions, so compile time dominates; the
+        // optimizer costs far more than the generated code saves. The IR
+        // verifier and unwind info are compile-time overhead we don't need
+        // for JIT blocks, and opt_level=none makes alias analysis useless.
+        flag_builder.set("opt_level", "none").unwrap();
+        flag_builder.set("enable_verifier", "false").unwrap();
+        flag_builder.set("unwind_info", "false").unwrap();
+        flag_builder.set("enable_alias_analysis", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
         let isa_builder = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu")
             .unwrap();
@@ -155,10 +165,19 @@ impl JitEngine {
             store_id,
             fb_ctx: FunctionBuilderContext::new(),
             tb_counter: 0,
+            compiles: 0,
+            executions: 0,
+            invalidations: 0,
         }
     }
 
+    /// (compiled blocks, block executions, cache invalidations)
+    pub fn stats(&self) -> (u64, u64, u64) {
+        (self.compiles, self.executions, self.invalidations)
+    }
+
     pub fn invalidate_all(&mut self) {
+        self.invalidations += 1;
         self.tb_cache.clear();
     }
 
@@ -174,11 +193,15 @@ impl JitEngine {
 
         if !self.tb_cache.contains_key(&key) {
             match self.compile_block(state.pc, fetch_fn) {
-                Some(tb) => { self.tb_cache.insert(key, tb); }
+                Some(tb) => {
+                    self.compiles += 1;
+                    self.tb_cache.insert(key, tb);
+                }
                 None => return false,
             }
         }
 
+        self.executions += 1;
         let tb = self.tb_cache.get(&key).unwrap();
         state.insn_count = 0;
         unsafe {

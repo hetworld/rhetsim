@@ -70,6 +70,11 @@ pub struct RiscvCpu {
     dram_host_ptr: Option<(*mut u8, u64, u64)>,
     /// Page fault raised by a JIT data-access helper, delivered on block exit.
     jit_fault: Option<(u64, u64)>,
+    // Diagnostic counters, printed when RHETSIM_JIT_STATS is set.
+    slow_loads: u64,
+    slow_stores: u64,
+    sfence_count: u64,
+    satp_writes: u64,
     irq_lines: [Option<Arc<dyn IrqLineSource>>; IRQ_LINE_COUNT],
 }
 
@@ -100,6 +105,10 @@ impl RiscvCpu {
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
             jit_fault: None,
+            slow_loads: 0,
+            slow_stores: 0,
+            sfence_count: 0,
+            satp_writes: 0,
             irq_lines: std::array::from_fn(|_| None),
         }
     }
@@ -123,6 +132,10 @@ impl RiscvCpu {
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
             jit_fault: None,
+            slow_loads: 0,
+            slow_stores: 0,
+            sfence_count: 0,
+            satp_writes: 0,
             irq_lines: std::array::from_fn(|_| None),
         }
     }
@@ -408,6 +421,7 @@ impl RiscvCpu {
 
     fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize, fault_out: *mut u64) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
+        cpu.slow_loads += 1;
         let pa = match cpu.translate(va, mmu::AccessType::Load) {
             Ok(pa) => pa,
             Err(f) => {
@@ -422,6 +436,7 @@ impl RiscvCpu {
 
     fn jit_store(cpu_ptr: *mut u8, va: u64, size: usize, val: u64, fault_out: *mut u64) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
+        cpu.slow_stores += 1;
         let pa = match cpu.translate(va, mmu::AccessType::Store) {
             Ok(pa) => pa,
             Err(f) => {
@@ -544,15 +559,16 @@ impl RiscvCpu {
                 self.insn_count += 1;
             }
             8 => {
-                // SFENCE
+                // SFENCE — flush translation caches only. Translated blocks do
+                // not embed translations (they use the runtime TLB), so the
+                // native code stays valid; instruction-memory changes are
+                // handled by FENCE.I instead.
                 self.pc = state.exit_pc;
                 self.pc += 4;
                 self.insn_count += 1;
+                self.sfence_count += 1;
                 self.tlb.flush();
                 self.flush_fast_tlb();
-                if let Some(jit) = self.jit.as_mut() {
-                    jit.invalidate_all();
-                }
             }
             9 => {
                 // AMO — fall back to interpreter
@@ -853,7 +869,11 @@ impl RiscvCpu {
                     }
                     _ => {}
                 }
-                if csr == 0x180 { self.tlb.flush(); self.flush_fast_tlb(); }
+                if csr == 0x180 {
+                    self.satp_writes += 1;
+                    self.tlb.flush();
+                    self.flush_fast_tlb();
+                }
                 self.pc += self.insn_size;
             }
             Instruction::Mret => {
@@ -1026,6 +1046,22 @@ impl RiscvCpu {
     }
 }
 
+impl Drop for RiscvCpu {
+    fn drop(&mut self) {
+        if std::env::var_os("RHETSIM_JIT_STATS").is_none() {
+            return;
+        }
+        let (compiles, executions, invalidations) =
+            self.jit.as_ref().map(|j| j.stats()).unwrap_or((0, 0, 0));
+        eprintln!(
+            "jit-stats hart={} execs={} compiles={} invalidations={} \
+             slow_loads={} slow_stores={} sfence={} satp={}",
+            self.csr.mhartid, executions, compiles, invalidations,
+            self.slow_loads, self.slow_stores, self.sfence_count, self.satp_writes
+        );
+    }
+}
+
 impl Unit for RiscvCpu {
     fn id(&self) -> &UnitId { &self.id }
     fn kind(&self) -> &'static str { "riscv-rv64-core" }
@@ -1046,6 +1082,10 @@ impl Unit for RiscvCpu {
         self.tlb.flush();
         self.flush_fast_tlb();
         self.jit_fault = None;
+        self.slow_loads = 0;
+        self.slow_stores = 0;
+        self.sfence_count = 0;
+        self.satp_writes = 0;
         if let Some(jit) = self.jit.as_mut() {
             jit.invalidate_all();
         }
@@ -1060,9 +1100,15 @@ impl Unit for RiscvCpu {
 impl ExecutionBackend for RiscvCpu {
     fn exec(&mut self, budget_ns: u64) -> OmniResult<u64> {
         let mut executed = 0u64;
+        // Irq-line syncing is not free; a block only runs a handful of
+        // instructions, so poll every 1024 instructions instead of per block.
+        let mut next_irq_check = 0u64;
         while executed < budget_ns && !self.halted {
-            self.check_interrupt();
-            if self.halted { break; }
+            if executed >= next_irq_check {
+                self.check_interrupt();
+                if self.halted { break; }
+                next_irq_check = executed + 1024;
+            }
 
             let before = self.insn_count;
             let enter_pc = self.pc;
