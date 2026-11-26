@@ -7,7 +7,7 @@
 	model = "rhetsim,riscv-virt";
 
 	chosen {
-		bootargs = "earlycon=sbi console=ttyS0";
+		bootargs = "earlycon=sbi console=ttyS0 printk.time=1";
 		stdout-path = "/soc/serial@10000000";
 	};
 

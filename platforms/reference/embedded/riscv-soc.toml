@@ -32,4 +32,4 @@ base = 0x80000000
 
 [boot]
 kernel = "Image"
-append = "console=ttyS0"
+append = "console=ttyS0 printk.time=1"
