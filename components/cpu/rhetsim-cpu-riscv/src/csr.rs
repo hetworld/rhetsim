@@ -374,7 +374,7 @@ impl CsrFile {
         (self.sepc, spp)
     }
 
-    pub fn state_size() -> usize { 17 * 8 }
+    pub fn state_size() -> usize { 19 * 8 }
 
     pub fn save(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(Self::state_size());
@@ -382,30 +382,19 @@ impl CsrFile {
                      self.mscratch, self.mepc, self.mcause, self.mtval,
                      self.medeleg, self.mideleg,
                      self.stvec, self.sscratch, self.sepc, self.scause, self.stval,
-                     self.satp, self.mhartid] {
+                     self.satp, self.mhartid, self.stimecmp,
+                     self.sstc_active as u64] {
             buf.extend_from_slice(&v.to_le_bytes());
         }
         buf
     }
 
     pub fn load(&mut self, data: &[u8]) {
-        if data.len() < Self::state_size() {
-            // Legacy format (8 fields) — load M-mode CSRs only
-            if data.len() >= 8 * 8 {
-                let r = |off: usize| -> u64 {
-                    let mut buf = [0u8; 8];
-                    buf.copy_from_slice(&data[off..off + 8]);
-                    u64::from_le_bytes(buf)
-                };
-                self.mstatus  = r(0);
-                self.mie      = r(8);
-                self.mip      = r(16);
-                self.mtvec    = r(24);
-                self.mscratch = r(32);
-                self.mepc     = r(40);
-                self.mcause   = r(48);
-                self.mtval    = r(56);
-            }
+        // Snapshot layout history:
+        //   8 fields  (64 B)  — original M-mode-only format
+        //   17 fields (136 B) — M+S CSRs, before Sstc
+        //   19 fields (152 B) — adds stimecmp + sstc_active
+        if data.len() < 8 * 8 {
             return;
         }
         let r = |off: usize| -> u64 {
@@ -413,6 +402,7 @@ impl CsrFile {
             buf.copy_from_slice(&data[off..off + 8]);
             u64::from_le_bytes(buf)
         };
+
         self.mstatus  = r(0);
         self.mie      = r(8);
         self.mip      = r(16);
@@ -421,15 +411,29 @@ impl CsrFile {
         self.mepc     = r(40);
         self.mcause   = r(48);
         self.mtval    = r(56);
-        self.medeleg  = r(64);
-        self.mideleg  = r(72);
-        self.stvec    = r(80);
-        self.sscratch = r(88);
-        self.sepc     = r(96);
-        self.scause   = r(104);
-        self.stval    = r(112);
-        self.satp     = r(120);
-        self.mhartid  = r(128);
+
+        if data.len() >= 17 * 8 {
+            self.medeleg  = r(64);
+            self.mideleg  = r(72);
+            self.stvec    = r(80);
+            self.sscratch = r(88);
+            self.sepc     = r(96);
+            self.scause   = r(104);
+            self.stval    = r(112);
+            self.satp     = r(120);
+            self.mhartid  = r(128);
+        } else {
+            return;
+        }
+
+        if data.len() >= Self::state_size() {
+            self.stimecmp    = r(136);
+            self.sstc_active = r(144) != 0;
+        } else {
+            // Pre-Sstc 17-field snapshot: timer state was not recorded.
+            self.stimecmp    = u64::MAX;
+            self.sstc_active = false;
+        }
     }
 }
 
@@ -608,6 +612,8 @@ mod tests {
         csr.mepc = 0x5678;
         csr.stvec = 0x9ABC;
         csr.satp = 0xDEF0;
+        csr.stimecmp = 0x1234_5678_9ABC_DEF0;
+        csr.sstc_active = true;
         let data = csr.save();
 
         let mut csr2 = CsrFile::new(0);
@@ -617,5 +623,28 @@ mod tests {
         assert_eq!(csr2.mepc, 0x5678);
         assert_eq!(csr2.stvec, 0x9ABC);
         assert_eq!(csr2.satp, 0xDEF0);
+        assert_eq!(csr2.stimecmp, 0x1234_5678_9ABC_DEF0);
+        assert!(csr2.sstc_active);
+    }
+
+    #[test]
+    fn test_load_pre_sstc_snapshot() {
+        let mut csr = CsrFile::new(0);
+        csr.mstatus = MSTATUS_MIE;
+        csr.stvec = 0x9ABC;
+        csr.satp = 0xDEF0;
+        csr.stimecmp = 42;
+        csr.sstc_active = true;
+
+        let data = csr.save();
+        let legacy = &data[..17 * 8];
+
+        let mut csr2 = CsrFile::new(0);
+        csr2.load(legacy);
+        assert_eq!(csr2.mstatus, MSTATUS_MIE);
+        assert_eq!(csr2.stvec, 0x9ABC);
+        assert_eq!(csr2.satp, 0xDEF0);
+        assert_eq!(csr2.stimecmp, u64::MAX);
+        assert!(!csr2.sstc_active);
     }
 }
