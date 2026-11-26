@@ -93,14 +93,39 @@ CLI options:
 
 | Option | Description |
 |--------|-------------|
-| `--batch` | Non-interactive mode (no console I/O) |
+| `--batch` | Non-interactive mode (UART output goes to stdout) |
 | `--steps <n>` | Max instruction steps in batch mode (default: 100000000) |
 | `--firmware <path>` | Override firmware binary path |
 | `--kernel <path>` | Override kernel image path |
 | `--dtb <path>` | Override device tree blob path |
+| `--uart-log <path>` | Write UART output to a file instead of stdout |
+| `--log-level <level>` | Simulator log level: `error`, `warn`, `info` (default), `debug`, `trace` |
+| `--log-file <path>` | Write simulator logs to a file (default: stderr) |
+| `--trace <items>` | Execution trace categories: `exec,cpu,jit,int,plic,clint,uart,loader,all` |
+| `--trace-file <path>` | Write execution trace to a file (default: stderr) |
 | `--list-units` | List available hardware unit kinds |
 
 Both ELF and raw binary formats are auto-detected. ELF files are loaded by their PT_LOAD segments with the entry point extracted automatically.
+
+### Output channels
+
+Output is split into three independent channels, similar to QEMU:
+
+| Channel | Content | Destination |
+|---------|---------|-------------|
+| Guest console | OpenSBI / Linux UART output | stdout, or `--uart-log <path>` |
+| Simulator log | Boot layout, progress, warnings, errors | stderr, or `--log-file <path>` |
+| Execution trace | Instructions, traps, PLIC/CLINT/UART events | off by default; `--trace` + `--trace-file` |
+
+```bash
+# Instruction trace to a file while the Linux console stays on the terminal
+./run.sh --batch --trace exec,int --trace-file trace.log
+
+# Verbose simulator log
+./run.sh --log-level debug
+```
+
+`--trace exec` and `--trace cpu` disable the JIT so every instruction retires through the interpreter; this is accurate but slow. Use `--trace jit` to observe JIT basic-block execution instead.
 
 ## Documentation
 

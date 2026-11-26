@@ -93,14 +93,39 @@ CLI 选项：
 
 | 选项 | 说明 |
 |------|------|
-| `--batch` | 非交互模式（无控制台 I/O） |
+| `--batch` | 非交互模式（UART 输出到 stdout） |
 | `--steps <n>` | 批处理模式下最大指令步数（默认 100000000） |
 | `--firmware <path>` | 覆盖固件路径 |
 | `--kernel <path>` | 覆盖内核镜像路径 |
 | `--dtb <path>` | 覆盖设备树路径 |
+| `--uart-log <path>` | UART 输出写入文件，而不是 stdout |
+| `--log-level <level>` | 模拟器日志级别：`error`、`warn`、`info`（默认）、`debug`、`trace` |
+| `--log-file <path>` | 模拟器日志写入文件（默认 stderr） |
+| `--trace <items>` | 执行 trace 分类：`exec,cpu,jit,int,plic,clint,uart,loader,all` |
+| `--trace-file <path>` | 执行 trace 写入文件（默认 stderr） |
 | `--list-units` | 列出可用的硬件单元类型 |
 
 ELF 和 raw binary 格式自动检测。ELF 文件按 PT_LOAD 段加载，入口点自动提取。
+
+### 输出通道
+
+输出分为三条独立通道，与 QEMU 的模型一致：
+
+| 通道 | 内容 | 去向 |
+|------|------|------|
+| Guest 控制台 | OpenSBI / Linux 的 UART 输出 | stdout，或 `--uart-log <path>` |
+| 模拟器日志 | Boot layout、进度、警告、错误 | stderr，或 `--log-file <path>` |
+| 执行 trace | 指令、trap、PLIC/CLINT/UART 事件 | 默认关闭；`--trace` + `--trace-file` |
+
+```bash
+# 指令 trace 写文件，Linux 控制台仍然留在终端
+./run.sh --batch --trace exec,int --trace-file trace.log
+
+# 更详细的模拟器日志
+./run.sh --log-level debug
+```
+
+`--trace exec` 和 `--trace cpu` 会关闭 JIT，让每条指令都经过解释器，保证逐指令 trace，但速度会明显变慢；只想观察 JIT basic block 时用 `--trace jit`。
 
 ## 文档
 

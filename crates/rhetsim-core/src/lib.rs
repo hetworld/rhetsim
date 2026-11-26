@@ -3,6 +3,7 @@
 //! 零业务依赖（仅允许 std + thiserror + bitflags）。
 //! 所有其他 crate 的唯一共同依赖。
 
+pub mod diag;
 pub mod error;
 pub mod unit;
 pub mod backend;

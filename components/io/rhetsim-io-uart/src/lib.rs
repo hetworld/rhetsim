@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::error::OmniResult;
 use rhetsim_core::irq::IrqLine;
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
@@ -46,6 +47,7 @@ pub struct Uart {
     output: Mutex<Vec<u8>>,
     input: Mutex<VecDeque<u8>>,
     irq_line: Mutex<Option<IrqLine>>,
+    irq_state: AtomicBool,
     console: AtomicBool,
     lsr: AtomicU8,
     ier: AtomicU8,
@@ -63,6 +65,7 @@ impl Uart {
             output: Mutex::new(Vec::new()),
             input: Mutex::new(VecDeque::new()),
             irq_line: Mutex::new(None),
+            irq_state: AtomicBool::new(false),
             console: AtomicBool::new(false),
             lsr: AtomicU8::new(LSR_RESET),
             ier: AtomicU8::new(0),
@@ -80,10 +83,12 @@ impl Uart {
     }
 
     pub fn push_input(&self, data: &[u8]) {
-        {
+        let queued = {
             let mut fifo = self.input.lock().expect("uart input lock");
             fifo.extend(data);
-        }
+            fifo.len()
+        };
+        tracing::trace!(target: trace_cat::UART, bytes = data.len(), queued, "rx push");
         self.update_irq();
     }
 
@@ -135,6 +140,9 @@ impl Uart {
 
     fn update_irq(&self) {
         let asserted = self.irq_asserted();
+        if self.irq_state.swap(asserted, Ordering::Relaxed) != asserted {
+            tracing::trace!(target: trace_cat::UART, asserted, "irq");
+        }
         let line = self.irq_line.lock().expect("uart irq lock").clone();
         if let Some(line) = line {
             let _ = if asserted { line.raise() } else { line.lower() };
@@ -174,10 +182,16 @@ impl MemTarget for Uart {
         match offset {
             RBR if dlab  => Ok(self.dll.load(Ordering::Relaxed) as u64),
             RBR          => {
-                let byte = {
+                let (byte, had_input) = {
                     let mut fifo = self.input.lock().expect("uart input lock");
-                    fifo.pop_front().unwrap_or(0)
+                    match fifo.pop_front() {
+                        Some(byte) => (byte, true),
+                        None => (0, false),
+                    }
                 };
+                if had_input {
+                    tracing::trace!(target: trace_cat::UART, byte = format_args!("0x{:02X}", byte), "rx read");
+                }
                 self.update_irq();
                 Ok(byte as u64)
             }
@@ -213,6 +227,7 @@ impl MemTarget for Uart {
             IER if dlab  => { self.dlm.store(v, Ordering::Relaxed); }
             IER          => {
                 self.ier.store(v, Ordering::Relaxed);
+                tracing::trace!(target: trace_cat::UART, ier = format_args!("0x{:02X}", v), "write ier");
                 self.update_irq();
             }
             IIR          => {} // FCR write, ignore

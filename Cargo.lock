@@ -592,6 +592,7 @@ dependencies = [
  "rhetsim-core",
  "rhetsim-mem-dram",
  "target-lexicon",
+ "tracing",
 ]
 
 [[package]]
@@ -613,6 +614,7 @@ name = "rhetsim-intc-clint"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "tracing",
 ]
 
 [[package]]
@@ -627,6 +629,7 @@ name = "rhetsim-intc-plic"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "tracing",
 ]
 
 [[package]]
@@ -657,6 +660,7 @@ name = "rhetsim-io-uart"
 version = "0.1.0"
 dependencies = [
  "rhetsim-core",
+ "tracing",
 ]
 
 [[package]]

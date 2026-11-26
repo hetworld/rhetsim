@@ -9,6 +9,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::irq::{IrqLineSource, IrqSink};
 use rhetsim_core::mem::{MemTarget, MemAccessSize};
@@ -150,6 +151,7 @@ impl MemTarget for Clint {
             let old = self.mtime.load(Ordering::Relaxed);
             let new = deposit_bytes(old, byte_off, size, val);
             self.mtime.store(new, Ordering::Relaxed);
+            tracing::trace!(target: trace_cat::CLINT, mtime = new, "write mtime");
             return Ok(());
         }
 
@@ -160,6 +162,12 @@ impl MemTarget for Clint {
                 let mut mtimecmp = self.mtimecmp.write().map_err(|e| OmniError::Internal(e.to_string()))?;
                 let byte_off = (rel % 8) as usize;
                 mtimecmp[hart] = deposit_bytes(mtimecmp[hart], byte_off, size, val);
+                tracing::trace!(
+                    target: trace_cat::CLINT,
+                    hart,
+                    mtimecmp = format_args!("0x{:016X}", mtimecmp[hart]),
+                    "write mtimecmp"
+                );
             }
             return Ok(());
         }
@@ -170,6 +178,7 @@ impl MemTarget for Clint {
             if hart < self.num_harts {
                 let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
                 msip[hart] = (val as u32) & 1;
+                tracing::trace!(target: trace_cat::CLINT, hart, msip = msip[hart], "write msip");
             }
             return Ok(());
         }
@@ -186,6 +195,7 @@ impl IrqSink for Clint {
         }
         let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
         msip[hart] |= 1;
+        tracing::trace!(target: trace_cat::CLINT, hart, "raise msip");
         Ok(())
     }
 
@@ -196,6 +206,7 @@ impl IrqSink for Clint {
         }
         let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
         msip[hart] &= !1;
+        tracing::trace!(target: trace_cat::CLINT, hart, "lower msip");
         Ok(())
     }
 

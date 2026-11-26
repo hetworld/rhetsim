@@ -1,12 +1,15 @@
 //! rhetsim-cli — load manifest, instantiate platform, run simulation
 
+mod logging;
+
 use std::collections::HashMap;
-use std::io::Read as IoRead;
+use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::diag::{trace as trace_cat, TraceCategory};
 use rhetsim_core::irq::{IrqLine, IrqSink};
 use rhetsim_core::mem::{MemAttrs, MemTarget};
 use rhetsim_core::unit::{Unit, UnitCaps};
@@ -20,7 +23,7 @@ use rhetsim_intc_plic::PlicContextLine;
 const UART_PLIC_IRQ: u32 = 10;
 /// Marker printed by the embedded initramfs /init.
 const INIT_OK_MARKER: &[u8] = b"RHETSIM_INIT_OK";
-use tracing::{info, debug, warn};
+use tracing::{debug, error, info, trace, warn};
 use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
 
@@ -34,14 +37,15 @@ fn load_image(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], default_addr: 
     } else {
         let offset = default_addr - dram_base;
         cpu.load_binary(data, offset);
-        info!("  {label:<10} {:>8} bytes -> 0x{:08X} (raw binary)", data.len(), default_addr);
+        info!(target: "loader", "  {label:<10} {:>8} bytes -> 0x{:08X} (raw binary)", data.len(), default_addr);
+        trace!(target: trace_cat::LOADER, label = %label, addr = format_args!("0x{:08X}", default_addr), size = data.len(), "load raw");
         LoadedImage { entry: None }
     }
 }
 
 fn load_elf(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], dram_base: u64, label: &str) -> LoadedImage {
     let elf = Elf::parse(data).unwrap_or_else(|e| {
-        eprintln!("Failed to parse {label} ELF: {e}");
+        error!(target: "loader", "Failed to parse {label} ELF: {e}");
         std::process::exit(1);
     });
     let mut total_loaded = 0usize;
@@ -54,26 +58,40 @@ fn load_elf(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], dram_base: u64, 
         let file_off = phdr.p_offset as usize;
         let file_end = file_off + phdr.p_filesz as usize;
         if file_end > data.len() {
-            eprintln!("{label} ELF: PT_LOAD segment exceeds file size");
+            error!(target: "loader", "{label} ELF: PT_LOAD segment exceeds file size");
             std::process::exit(1);
         }
         let seg_data = &data[file_off..file_end];
         let vaddr = phdr.p_vaddr;
         let offset = vaddr - dram_base;
         cpu.load_binary(seg_data, offset);
+        trace!(
+            target: trace_cat::LOADER,
+            label = %label,
+            vaddr = format_args!("0x{:08X}", vaddr),
+            filesz = phdr.p_filesz,
+            memsz = phdr.p_memsz,
+            "load segment"
+        );
         total_loaded += seg_data.len();
         lo = lo.min(vaddr);
         hi = hi.max(vaddr + phdr.p_memsz);
     }
-    info!("  {label:<10} {:>8} bytes -> 0x{:08X}..0x{:08X} (ELF, entry 0x{:X})",
+    info!(target: "loader", "  {label:<10} {:>8} bytes -> 0x{:08X}..0x{:08X} (ELF, entry 0x{:X})",
         total_loaded, lo, hi, elf.entry);
     LoadedImage { entry: Some(elf.entry) }
 }
 
 fn main() {
-    tracing_subscriber::fmt::init();
-
     let args: Vec<String> = std::env::args().collect();
+    let diag = match logging::init(&args) {
+        Ok(diag) => diag,
+        Err(e) => {
+            eprintln!("rhetsim-cli: {e}");
+            std::process::exit(2);
+        }
+    };
+
     if args.len() < 2 {
         eprintln!("Usage: rhetsim-cli <manifest.toml> [options]");
         eprintln!("Options:");
@@ -83,8 +101,12 @@ fn main() {
         eprintln!("  --firmware <path>  Override firmware binary path");
         eprintln!("  --kernel <path>    Override kernel image path");
         eprintln!("  --dtb <path>       Override device tree blob path");
-        eprintln!("  --batch         Non-interactive mode (no console I/O)");
-        eprintln!("  --uart-log <path>  Write UART output to file (batch mode)");
+        eprintln!("  --batch         Non-interactive mode (UART output goes to stdout)");
+        eprintln!("  --uart-log <path>  Write UART output to file instead of stdout (batch mode)");
+        eprintln!("  --log-level <level>  Simulator log level: error|warn|info|debug|trace (default: info)");
+        eprintln!("  --log-file <path>    Write simulator logs to file (default: stderr)");
+        eprintln!("  --trace <items>      Execution trace categories: exec,cpu,jit,int,plic,clint,uart,loader,all");
+        eprintln!("  --trace-file <path>  Write execution trace to file (default: stderr)");
         eprintln!("  --list-units    List available unit kinds and exit");
         std::process::exit(1);
     }
@@ -103,21 +125,21 @@ fn main() {
     let manifest = match rhetsim_manifest::loader::load_from_file(manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Error loading manifest: {e}");
+            error!(target: "cli", "Error loading manifest: {e}");
             std::process::exit(1);
         }
     };
 
-    println!("Platform: {}", manifest.name);
-    println!("Units:    {}", manifest.units.len());
-    println!("Buses:    {}", manifest.buses.len());
+    info!(target: "platform", "Platform: {}", manifest.name);
+    info!(target: "platform", "Units:    {}", manifest.units.len());
+    info!(target: "platform", "Buses:    {}", manifest.buses.len());
 
     let has_boot = manifest.boot.firmware.is_some()
         || parse_str_opt(&args, "--firmware").is_some();
     if has_boot {
         let interactive = !args.iter().any(|a| a == "--batch");
         let max_steps = if interactive { u64::MAX } else { parse_opt(&args, "--steps", 100_000_000u64) };
-        boot_riscv_linux(&manifest, manifest_dir, &args, max_steps, interactive);
+        boot_riscv_linux(&manifest, manifest_dir, &args, max_steps, interactive, &diag);
         return;
     }
 
@@ -127,23 +149,24 @@ fn main() {
     let exec_units = match build_platform(&manifest) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Error building platform: {e}");
+            error!(target: "cli", "Error building platform: {e}");
             std::process::exit(1);
         }
     };
 
     if exec_units.is_empty() {
-        println!("No executable units found. Nothing to simulate.");
+        info!(target: "sched", "No executable units found. Nothing to simulate.");
         return;
     }
 
     let mut scheduler = Scheduler::new(quantum);
     for (id, kind, unit_arc) in &exec_units {
         scheduler.add_unit(Arc::clone(unit_arc));
-        println!("  [exec] {id} ({kind})");
+        info!(target: "sched", "  [exec] {id} ({kind})");
     }
 
-    println!(
+    info!(
+        target: "sched",
         "Running simulation for {} ns (quantum={}ns, {} executable units)",
         run_time,
         quantum,
@@ -152,12 +175,12 @@ fn main() {
 
     match scheduler.run_default(run_time) {
         Ok(stats) => {
-            println!("Simulation complete:");
-            println!("  Quanta executed: {}", stats.quanta_executed);
-            println!("  Total ns elapsed: {}", stats.total_ns_elapsed);
+            info!(target: "sched", "Simulation complete:");
+            info!(target: "sched", "  Quanta executed: {}", stats.quanta_executed);
+            info!(target: "sched", "  Total ns elapsed: {}", stats.total_ns_elapsed);
         }
         Err(e) => {
-            eprintln!("Simulation error: {e}");
+            error!(target: "sched", "Simulation error: {e}");
             std::process::exit(1);
         }
     }
@@ -165,7 +188,14 @@ fn main() {
 
 // ── Boot path: firmware + kernel direct execution ─────────────
 
-fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], max_steps: u64, interactive: bool) {
+fn boot_riscv_linux(
+    manifest: &Manifest,
+    manifest_dir: &Path,
+    args: &[String],
+    max_steps: u64,
+    interactive: bool,
+    diag: &logging::Options,
+) {
     let boot = &manifest.boot;
 
     let fw_path = resolve_path(args, "--firmware", boot.firmware.as_deref(), manifest_dir);
@@ -186,7 +216,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         .filter(|u| u.kind == "rhetsim-cpu-riscv")
         .collect();
     if cpu_descs.is_empty() {
-        eprintln!("boot requires at least one rhetsim-cpu-riscv unit");
+        error!(target: "boot", "boot requires at least one rhetsim-cpu-riscv unit");
         std::process::exit(1);
     }
     let num_harts = cpu_descs.len();
@@ -205,11 +235,11 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let kernel_addr = boot.kernel_addr.unwrap_or(dram_base + 0x0020_0000);
     let dtb_addr = boot.dtb_addr.unwrap_or(dram_base + 0x0200_0000);
 
-    info!("Boot layout:");
-    info!("  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
-    info!("  CLINT   @ 0x{:08X}  ({} harts)", clint_base, clint_harts);
-    info!("  PLIC    @ 0x{:08X}  ({} sources, {} contexts)", plic_base, plic_sources, plic_contexts);
-    info!("  HARTs   {}", num_harts);
+    info!(target: "boot", "Boot layout:");
+    info!(target: "boot", "  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
+    info!(target: "boot", "  CLINT   @ 0x{:08X}  ({} harts)", clint_base, clint_harts);
+    info!(target: "boot", "  PLIC    @ 0x{:08X}  ({} sources, {} contexts)", plic_base, plic_sources, plic_contexts);
+    info!(target: "boot", "  HARTs   {}", num_harts);
 
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(&dram_desc.id, dram_size, dram_base));
     let clint = Arc::new(rhetsim_intc_clint::Clint::new(&clint_desc.id, clint_harts, clint_base));
@@ -246,11 +276,20 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         cpus.push(cpu);
     }
 
+    // Per-instruction trace must not run through cached JIT basic blocks.
+    if diag.trace_enabled(TraceCategory::Exec) || diag.trace_enabled(TraceCategory::Cpu) {
+        info!(target: "boot", "instruction trace enabled; JIT disabled");
+        for cpu in &mut cpus {
+            cpu.set_jit_enabled(false);
+        }
+    }
+
     // Firmware, kernel and DTB are shared in DRAM; load them through hart 0.
     let fw_result = load_image(&mut cpus[0], &fw_data, fw_addr, dram_base, "Firmware");
     let _kernel_result = load_image(&mut cpus[0], &kernel_data, kernel_addr, dram_base, "Kernel");
     cpus[0].load_binary(&dtb_data, dtb_addr - dram_base);
-    info!("  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
+    info!(target: "loader", "  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
+    trace!(target: trace_cat::LOADER, addr = format_args!("0x{:08X}", dtb_addr), size = dtb_data.len(), "load dtb raw");
 
     let entry_pc = fw_result.entry.unwrap_or(fw_addr);
 
@@ -261,15 +300,33 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         cpu.set_reg(11, dtb_addr);   // a1 = DTB
         cpu.set_pc(entry_pc);
     }
-    info!("  Entry PC  0x{:08X} ({} harts)", entry_pc, num_harts);
+    info!(target: "boot", "  Entry PC  0x{:08X} ({} harts)", entry_pc, num_harts);
 
     let _raw_guard = if interactive {
-        info!("Booting interactive (Ctrl-A X to quit)...");
+        info!(target: "boot", "Booting interactive (Ctrl-A X to quit)...");
         uart.set_console(true);
         Some(RawTermGuard::enter())
     } else {
-        info!("Booting... (max {} steps)", max_steps);
+        info!(target: "boot", "Booting... (max {} steps)", max_steps);
         None
+    };
+
+    // Guest console: a data path, separate from simulator logs. In batch mode
+    // stream UART bytes as they are produced (stdout or --uart-log file);
+    // interactive mode writes them straight to the terminal from the device.
+    let uart_log_path = parse_str_opt(args, "--uart-log");
+    let mut console_out: Option<Box<dyn IoWrite>> = if interactive {
+        None
+    } else if let Some(path) = uart_log_path.as_deref() {
+        match std::fs::File::create(path) {
+            Ok(file) => Some(Box::new(file)),
+            Err(e) => {
+                error!(target: "console", "Failed to create UART log '{path}': {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        Some(Box::new(std::io::stdout()))
     };
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -327,10 +384,17 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         if !interactive {
             let out = uart.take_output();
             if !out.is_empty() {
+                if let Some(writer) = console_out.as_mut() {
+                    writer.write_all(&out).unwrap_or_else(|e| {
+                        error!(target: "console", "Failed to write UART output: {e}");
+                        std::process::exit(1);
+                    });
+                    let _ = writer.flush();
+                }
                 all_output.extend_from_slice(&out);
             }
             if all_output.windows(INIT_OK_MARKER.len()).any(|w| w == INIT_OK_MARKER) {
-                info!("initramfs /init reached; stopping early");
+                info!(target: "boot", "initramfs /init reached; stopping early");
                 break;
             }
         }
@@ -338,7 +402,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         if !interactive {
             if total_steps % 10_000_000 == 0 {
                 let cpu0 = &cpus[0];
-                debug!(steps = total_steps, harts = num_harts,
+                debug!(target: "boot", steps = total_steps, harts = num_harts,
                     pc = format_args!("0x{:X}", cpu0.pc()),
                     mode = cpu0.priv_mode(), uart_bytes = all_output.len(),
                     mip = format_args!("0x{:X}", cpu0.csr().mip),
@@ -348,7 +412,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
                     timer_pending = clint.timer_pending(0),
                     "progress");
                 if let Some(cpu1) = cpus.get(1) {
-                    debug!(hart1_pc = format_args!("0x{:X}", cpu1.pc()),
+                    debug!(target: "boot", hart1_pc = format_args!("0x{:X}", cpu1.pc()),
                         hart1_mode = cpu1.priv_mode(),
                         hart1_mip = format_args!("0x{:X}", cpu1.csr().mip),
                         "hart1");
@@ -362,7 +426,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
             {
                 idle_batches += 1;
                 if idle_batches > 100 {
-                    warn!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
+                    warn!(target: "boot", "CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
                     break;
                 }
             } else {
@@ -376,31 +440,25 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     if let Some(t) = stdin_thread { let _ = t.join(); }
 
     if interactive {
-        info!("Exited ({} steps, {} harts)", total_steps, num_harts);
+        info!(target: "boot", "Exited ({} steps, {} harts)", total_steps, num_harts);
     } else {
-        use std::io::Write;
-        if let Some(log_path) = parse_str_opt(args, "--uart-log") {
-            let mut f = std::fs::File::create(&log_path).unwrap_or_else(|e| {
-                eprintln!("Failed to create UART log '{}': {}", log_path, e);
-                std::process::exit(1);
-            });
-            f.write_all(&all_output).unwrap();
-            eprintln!("UART output written to {} ({} bytes)", log_path, all_output.len());
-        } else {
-            std::io::stdout().write_all(&all_output).unwrap();
-            let _ = std::io::stdout().flush();
+        if let Some(mut writer) = console_out.take() {
+            let _ = writer.flush();
+        }
+        if let Some(path) = uart_log_path.as_deref() {
+            info!(target: "console", "UART output written to {} ({} bytes)", path, all_output.len());
         }
 
-        info!(steps = total_steps, harts = num_harts,
+        info!(target: "boot", steps = total_steps, harts = num_harts,
             halted = cpus.iter().all(|c| c.is_halted()),
             pc = format_args!("0x{:X}", cpus[0].pc()), mode = cpus[0].priv_mode(),
             "simulation finished");
 
         let output_str = String::from_utf8_lossy(&all_output);
         if output_str.contains("Run /init as init process") {
-            info!("Boot SUCCESS: Linux reached /init");
+            info!(target: "boot", "Boot SUCCESS: Linux reached /init");
         } else {
-            warn!("Boot INCOMPLETE: did not reach /init ({} bytes output in {} steps)",
+            warn!(target: "boot", "Boot INCOMPLETE: did not reach /init ({} bytes output in {} steps)",
                 all_output.len(), total_steps);
             std::process::exit(1);
         }
@@ -412,7 +470,7 @@ fn resolve_path(args: &[String], flag: &str, manifest_val: Option<&str>, manifes
         return cli_val;
     }
     let name = manifest_val.unwrap_or_else(|| {
-        eprintln!("Missing {flag} in manifest [boot] section and no {flag} CLI override");
+        error!(target: "boot", "Missing {flag} in manifest [boot] section and no {flag} CLI override");
         std::process::exit(1);
     });
     let p = manifest_dir.join(name);
@@ -423,7 +481,7 @@ fn read_required(path: &str, label: &str) -> Vec<u8> {
     match std::fs::read(path) {
         Ok(data) => data,
         Err(e) => {
-            eprintln!("Failed to read {label} at '{path}': {e}");
+            error!(target: "loader", "Failed to read {label} at '{path}': {e}");
             std::process::exit(1);
         }
     }
@@ -500,7 +558,7 @@ fn build_platform(
                         MemAttrs::rw(),
                         None,
                     ) {
-                        tracing::warn!("Failed to map {} into {}: {}", target_desc.unit, id, e);
+                        warn!(target: "platform", "Failed to map {} into {}: {}", target_desc.unit, id, e);
                     }
                 }
             }
@@ -526,7 +584,7 @@ fn build_platform(
                 }
             }
             Ok(None) => {}
-            Err(e) => tracing::warn!("Skipping unit '{}': {}", desc.id, e),
+            Err(e) => warn!(target: "platform", "Skipping unit '{}': {}", desc.id, e),
         }
     }
 
@@ -617,7 +675,7 @@ fn create_unit(
             ))))
         }
         _ => {
-            tracing::info!("Unknown unit kind '{}', skipping '{}'", desc.kind, desc.id);
+            info!(target: "platform", "Unknown unit kind '{}', skipping '{}'", desc.kind, desc.id);
             Ok(None)
         }
     }

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 rhetsim-core = { workspace = true }
+tracing = { workspace = true }
 cranelift-codegen = "0.138"
 cranelift-frontend = "0.138"
 cranelift-module = "0.138"

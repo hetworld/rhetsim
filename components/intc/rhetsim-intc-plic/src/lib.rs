@@ -11,6 +11,7 @@
 //! Total size: 0x400000 (4 MiB)
 
 use std::sync::{Arc, RwLock};
+use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::irq::{IrqLineSource, IrqSink};
 use rhetsim_core::mem::{MemTarget, MemAccessSize};
@@ -162,6 +163,7 @@ impl MemTarget for Plic {
                             let w = irq as usize / 32;
                             let b = irq as usize % 32;
                             state.claimed[ctx][w] |= 1 << b;
+                            tracing::trace!(target: trace_cat::PLIC, context = ctx, irq, "claim");
                             return Ok(irq as u64);
                         }
                         return Ok(0);
@@ -182,6 +184,7 @@ impl MemTarget for Plic {
             let idx = (offset / 4) as usize;
             if idx > 0 && idx <= self.num_sources {
                 state.priority[idx] = val as u32;
+                tracing::trace!(target: trace_cat::PLIC, source = idx, priority = val, "priority");
             }
             return Ok(());
         }
@@ -198,6 +201,13 @@ impl MemTarget for Plic {
             let word = ((rel % ENABLE_STRIDE) / 4) as usize;
             if ctx < self.num_contexts && word < state.enable[ctx].len() {
                 state.enable[ctx][word] = val as u32;
+                tracing::trace!(
+                    target: trace_cat::PLIC,
+                    context = ctx,
+                    word,
+                    value = format_args!("0x{:08X}", val),
+                    "enable"
+                );
             }
             return Ok(());
         }
@@ -209,7 +219,10 @@ impl MemTarget for Plic {
             let reg = rel % CONTEXT_STRIDE;
             if ctx < self.num_contexts {
                 match reg {
-                    0 => state.threshold[ctx] = val as u32,
+                    0 => {
+                        state.threshold[ctx] = val as u32;
+                        tracing::trace!(target: trace_cat::PLIC, context = ctx, threshold = val, "threshold");
+                    }
                     4 => {
                         // Complete: deactivate the source. Keep the pending
                         // bit as the level state: if the source is still
@@ -220,6 +233,7 @@ impl MemTarget for Plic {
                             let w = irq as usize / 32;
                             let b = irq as usize % 32;
                             state.claimed[ctx][w] &= !(1 << b);
+                            tracing::trace!(target: trace_cat::PLIC, context = ctx, irq, "complete");
                         }
                     }
                     _ => {}
@@ -240,6 +254,7 @@ impl IrqSink for Plic {
         let w = irq_num as usize / 32;
         let b = irq_num as usize % 32;
         state.pending[w] |= 1 << b;
+        tracing::trace!(target: trace_cat::PLIC, source = irq_num, "raise");
         Ok(())
     }
 
@@ -251,6 +266,7 @@ impl IrqSink for Plic {
         let w = irq_num as usize / 32;
         let b = irq_num as usize % 32;
         state.pending[w] &= !(1 << b);
+        tracing::trace!(target: trace_cat::PLIC, source = irq_num, "lower");
         Ok(())
     }
 

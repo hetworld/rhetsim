@@ -5,6 +5,7 @@ use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::irq::IrqLineSource;
 use rhetsim_core::mem::MemAccessSize;
 use crate::csr::{self, CsrFile};
@@ -40,6 +41,15 @@ pub enum RiscvIrqLine {
 }
 
 const IRQ_LINE_COUNT: usize = 4;
+
+fn priv_name(mode: u8) -> &'static str {
+    match mode {
+        0 => "U",
+        1 => "S",
+        3 => "M",
+        _ => "?",
+    }
+}
 
 pub struct RiscvCpu {
     id: UnitId,
@@ -136,6 +146,21 @@ impl RiscvCpu {
     /// Set the hart ID reported by the `mhartid` CSR. Must be called before
     /// the CPU starts (OpenSBI and Linux use it to identify the hart).
     pub fn set_hartid(&mut self, hartid: u64) { self.csr.mhartid = hartid; }
+
+    /// Enable or disable the JIT. Trace consumers that need instruction
+    /// granularity (`exec` / `cpu`) disable it so every instruction retires
+    /// through the interpreter.
+    pub fn set_jit_enabled(&mut self, enabled: bool) {
+        if enabled {
+            if self.jit.is_none() {
+                self.jit = Some(JitEngine::new());
+            }
+        } else {
+            self.jit = None;
+        }
+    }
+
+    pub fn jit_enabled(&self) -> bool { self.jit.is_some() }
 
     pub fn set_uart_addr(&mut self, addr: u64) {
         if let MemBackend::Flat { uart_addr, .. } = &mut self.backend {
@@ -300,6 +325,22 @@ impl RiscvCpu {
     fn take_trap(&mut self, cause: u64, tval: u64) {
         let delegated = self.priv_mode <= csr::PRV_S && self.csr.is_delegated(cause);
 
+        let is_interrupt = cause & (1u64 << 63) != 0;
+        let kind = if is_interrupt { "interrupt" } else { "exception" };
+        let to = if delegated { "S" } else { "M" };
+        tracing::trace!(
+            target: trace_cat::INT,
+            step = self.insn_count,
+            hart = self.csr.mhartid,
+            kind = %kind,
+            cause = format_args!("0x{:X}", cause),
+            epc = format_args!("0x{:X}", self.pc),
+            tval = format_args!("0x{:X}", tval),
+            from = %priv_name(self.priv_mode),
+            to = %to,
+            "trap"
+        );
+
         if delegated {
             let target = self.csr.trap_enter_s(self.pc, cause, tval, self.priv_mode);
             if target == 0 {
@@ -327,6 +368,18 @@ impl RiscvCpu {
         } else {
             false
         }
+    }
+
+    fn trace_trap_return(&self, kind: &str, target: u64, mode: u8) {
+        tracing::trace!(
+            target: trace_cat::INT,
+            hart = self.csr.mhartid,
+            kind = %kind,
+            target = format_args!("0x{:X}", target),
+            from = %priv_name(self.priv_mode),
+            to = %priv_name(mode),
+            "trap return"
+        );
     }
 
     // ── JIT helpers ────────────────────────────────────────────
@@ -456,6 +509,7 @@ impl RiscvCpu {
                 // MRET
                 self.pc = state.exit_pc;
                 let (pc, mode) = self.csr.mret();
+                self.trace_trap_return("mret", pc, mode);
                 self.pc = pc;
                 self.priv_mode = mode;
                 self.insn_count += 1;
@@ -464,6 +518,7 @@ impl RiscvCpu {
                 // SRET
                 self.pc = state.exit_pc;
                 let (pc, mode) = self.csr.sret();
+                self.trace_trap_return("sret", pc, mode);
                 self.pc = pc;
                 self.priv_mode = mode;
                 self.insn_count += 1;
@@ -527,17 +582,49 @@ impl RiscvCpu {
             return;
         }
 
-        let insn = if half & 0x3 != 0x3 {
+        let (raw_insn, insn) = if half & 0x3 != 0x3 {
             self.insn_size = 2;
-            decode_compressed(half)
+            (half as u32, decode_compressed(half))
         } else {
             self.insn_size = 4;
             let raw = (self.phys_read(fetch_pa + 2, 2) as u32) << 16 | half as u32;
-            decode(raw)
+            (raw, decode(raw))
         };
+
+        tracing::trace!(
+            target: trace_cat::EXEC,
+            step = self.insn_count,
+            hart = self.csr.mhartid,
+            pc = format_args!("0x{:08X}", self.pc),
+            priv = %priv_name(self.priv_mode),
+            insn = format_args!("0x{:08X}", raw_insn),
+            decoded = ?insn,
+            "exec"
+        );
+
         self.execute(insn);
         self.regs[0] = 0;
         self.insn_count += 1;
+
+        if tracing::enabled!(target: trace_cat::CPU, tracing::Level::TRACE) {
+            use std::fmt::Write as _;
+            let mut regs = String::with_capacity(32 * 18);
+            for (idx, value) in self.regs.iter().enumerate().skip(1) {
+                if idx > 1 {
+                    regs.push(' ');
+                }
+                let _ = write!(regs, "x{idx}=0x{value:016X}");
+            }
+            tracing::trace!(
+                target: trace_cat::CPU,
+                step = self.insn_count,
+                hart = self.csr.mhartid,
+                pc = format_args!("0x{:08X}", self.pc),
+                priv = %priv_name(self.priv_mode),
+                regs = %regs,
+                "cpu"
+            );
+        }
     }
 
     // ── Execute ───────────────────────────────────────────────
@@ -749,11 +836,13 @@ impl RiscvCpu {
             }
             Instruction::Mret => {
                 let (pc, mode) = self.csr.mret();
+                self.trace_trap_return("mret", pc, mode);
                 self.pc = pc;
                 self.priv_mode = mode;
             }
             Instruction::Sret => {
                 let (pc, mode) = self.csr.sret();
+                self.trace_trap_return("sret", pc, mode);
                 self.pc = pc;
                 self.priv_mode = mode;
             }
@@ -953,10 +1042,24 @@ impl ExecutionBackend for RiscvCpu {
             if self.halted { break; }
 
             let before = self.insn_count;
-            if !self.jit_step() {
+            let enter_pc = self.pc;
+            let enter_priv = self.priv_mode;
+            let used_jit = self.jit_step();
+            if !used_jit {
                 self.step_one_interp();
             }
             let ran = self.insn_count - before;
+            if used_jit {
+                tracing::trace!(
+                    target: trace_cat::JIT,
+                    hart = self.csr.mhartid,
+                    pc = format_args!("0x{:08X}", enter_pc),
+                    priv = %priv_name(enter_priv),
+                    insns = ran,
+                    next_pc = format_args!("0x{:08X}", self.pc),
+                    "block"
+                );
+            }
             executed += ran.max(1);
         }
         Ok(executed)
