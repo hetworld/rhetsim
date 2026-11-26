@@ -31,7 +31,7 @@ Step-by-step guide to implementing a hardware component: project layout, trait i
 Sixteen end-to-end simulation scenarios covering heterogeneous SoC, PCIe accelerators, embedded systems, AI servers, nested virtualization, and more. Each scenario includes a Manifest example and notes on key configuration points.
 
 **05 — Roadmap**
-Phase-by-phase implementation roadmap: completed phases (0–2), current work (Phase 3), and planned phases (4–9). Includes dependency graph and mapping to the original M0–M6 milestones.
+Phase-by-phase implementation roadmap: completed phases (0–6), active Phase 6.5, and planned phases (6.6–9). Includes dependency graph, per-phase capability boundaries, and mapping to the original M0–M6 milestones.
 
 ## Recommended Reading Order
 
