@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use rhetsim_core::error::{OmniError, OmniResult};
-use rhetsim_core::irq::IrqSink;
+use rhetsim_core::irq::{IrqLineSource, IrqSink};
 use rhetsim_core::mem::{MemTarget, MemAccessSize};
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 
@@ -50,6 +50,11 @@ impl Clint {
         self.mtime.load(Ordering::Relaxed)
     }
 
+    pub fn mtimecmp(&self, hart: usize) -> u64 {
+        if hart >= self.num_harts { return u64::MAX; }
+        self.mtimecmp.read().unwrap()[hart]
+    }
+
     pub fn timer_pending(&self, hart: usize) -> bool {
         if hart >= self.num_harts { return false; }
         let mtime = self.mtime.load(Ordering::Relaxed);
@@ -61,6 +66,29 @@ impl Clint {
         if hart >= self.num_harts { return false; }
         let msip = self.msip.read().unwrap();
         msip[hart] & 1 != 0
+    }
+}
+
+/// CLINT 的 timer/software 输出线，可由 RISC-V CPU 轮询同步到 mip。
+pub struct ClintLine {
+    clint: Arc<Clint>,
+    hart: usize,
+    timer: bool,
+}
+
+impl ClintLine {
+    pub fn new(clint: Arc<Clint>, hart: usize, timer: bool) -> Self {
+        Self { clint, hart, timer }
+    }
+}
+
+impl IrqLineSource for ClintLine {
+    fn is_asserted(&self) -> bool {
+        if self.timer {
+            self.clint.timer_pending(self.hart)
+        } else {
+            self.clint.sw_pending(self.hart)
+        }
     }
 }
 

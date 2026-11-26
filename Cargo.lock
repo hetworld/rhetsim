@@ -711,6 +711,7 @@ dependencies = [
  "rhetsim-cpu-riscv",
  "rhetsim-intc-clint",
  "rhetsim-intc-gicv3",
+ "rhetsim-intc-plic",
  "rhetsim-io-dma",
  "rhetsim-io-pcie",
  "rhetsim-io-uart",

@@ -7,11 +7,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::irq::{IrqLine, IrqSink};
 use rhetsim_core::mem::{MemAttrs, MemTarget};
 use rhetsim_core::unit::{Unit, UnitCaps};
 use rhetsim_manifest::manifest::{Manifest, UnitDesc, BusDesc};
 use rhetsim_runtime::scheduler::Scheduler;
-use rhetsim_cpu_riscv::csr;
+use rhetsim_cpu_riscv::{csr, RiscvIrqLine};
+use rhetsim_intc_clint::ClintLine;
+use rhetsim_intc_plic::PlicContextLine;
+
+/// QEMU virt maps UART0 to PLIC source 10.
+const UART_PLIC_IRQ: u32 = 10;
+/// Marker printed by the embedded initramfs /init.
+const INIT_OK_MARKER: &[u8] = b"RHETSIM_INIT_OK";
 use tracing::{info, debug, warn};
 use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
@@ -172,6 +180,8 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         .expect("boot requires a rhetsim-mem-dram unit");
     let clint_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-intc-clint")
         .expect("boot requires a rhetsim-intc-clint unit");
+    let plic_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-intc-plic")
+        .expect("boot requires a rhetsim-intc-plic unit");
     let cpu_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-cpu-riscv")
         .expect("boot requires a rhetsim-cpu-riscv unit");
 
@@ -180,6 +190,9 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let dram_base = cfg_u64(&dram_desc.config, "base", 0x8000_0000);
     let clint_harts = cfg_usize(&clint_desc.config, "num_harts", 1);
     let clint_base = cfg_u64(&clint_desc.config, "base", 0x0200_0000);
+    let plic_base = cfg_u64(&plic_desc.config, "base", 0x0c00_0000);
+    let plic_sources = cfg_usize(&plic_desc.config, "num_sources", 64);
+    let plic_contexts = cfg_usize(&plic_desc.config, "num_contexts", 2);
     let mem_base = cfg_u64(&cpu_desc.config, "mem_base", dram_base);
 
     let fw_addr = boot.firmware_addr.unwrap_or(dram_base);
@@ -189,9 +202,13 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     info!("Boot layout:");
     info!("  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
     info!("  CLINT   @ 0x{:08X}", clint_base);
+    info!("  PLIC    @ 0x{:08X}  ({} sources, {} contexts)", plic_base, plic_sources, plic_contexts);
 
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(&dram_desc.id, dram_size, dram_base));
     let clint = Arc::new(rhetsim_intc_clint::Clint::new(&clint_desc.id, clint_harts, clint_base));
+    let plic = Arc::new(rhetsim_intc_plic::Plic::new(
+        &plic_desc.id, plic_sources, plic_contexts, plic_base,
+    ));
     let uart = Arc::new(rhetsim_io_uart::Uart::new("uart0"));
 
     let uart_base = find_target_base(manifest, "uart0").unwrap_or(0x1000_0000);
@@ -199,10 +216,19 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let mut bus = MemBus::new("sys-bus");
     bus.map(dram.clone() as Arc<dyn MemTarget>, dram_base, MemAttrs::rw(), None).unwrap();
     bus.map(clint.clone() as Arc<dyn MemTarget>, clint_base, MemAttrs::rw(), None).unwrap();
+    bus.map(plic.clone() as Arc<dyn MemTarget>, plic_base, MemAttrs::rw(), None).unwrap();
     bus.map(uart.clone() as Arc<dyn MemTarget>, uart_base, MemAttrs::rw(), None).unwrap();
     let bus = Arc::new(bus);
 
+    // UART IRQ 10 is a PLIC source; the PLIC drives context 0 (M) and
+    // context 1 (S) into the CPU's MEIP/SEIP inputs.
+    uart.set_irq_line(IrqLine::new(plic.clone() as Arc<dyn IrqSink>, UART_PLIC_IRQ));
+
     let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus(&cpu_desc.id, bus, mem_base);
+    cpu.set_irq_line(RiscvIrqLine::MTimer, Arc::new(ClintLine::new(clint.clone(), 0, true)));
+    cpu.set_irq_line(RiscvIrqLine::MSoft, Arc::new(ClintLine::new(clint.clone(), 0, false)));
+    cpu.set_irq_line(RiscvIrqLine::MExt, Arc::new(PlicContextLine::new(plic.clone(), 0)));
+    cpu.set_irq_line(RiscvIrqLine::SExt, Arc::new(PlicContextLine::new(plic.clone(), 1)));
 
     let fw_result = load_image(&mut cpu, &fw_data, fw_addr, dram_base, "Firmware");
     let _kernel_result = load_image(&mut cpu, &kernel_data, kernel_addr, dram_base, "Kernel");
@@ -271,16 +297,6 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
 
     while !cpu.is_halted() && total_steps < max_steps && !stop.load(Ordering::Relaxed) {
         clint.tick(batch);
-        if clint.timer_pending(0) {
-            cpu.csr_mut().mip |= csr::MIP_MTIP;
-        } else {
-            cpu.csr_mut().mip &= !csr::MIP_MTIP;
-        }
-        if clint.sw_pending(0) {
-            cpu.csr_mut().mip |= csr::MIP_MSIP;
-        } else {
-            cpu.csr_mut().mip &= !csr::MIP_MSIP;
-        }
 
         cpu.exec(batch).unwrap();
         total_steps += batch;
@@ -290,12 +306,26 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
             if !out.is_empty() {
                 all_output.extend_from_slice(&out);
             }
+            if all_output.windows(INIT_OK_MARKER.len()).any(|w| w == INIT_OK_MARKER) {
+                info!("initramfs /init reached; stopping early");
+                break;
+            }
         }
 
         if !interactive {
             if total_steps % 10_000_000 == 0 {
                 debug!(steps = total_steps, pc = format_args!("0x{:X}", cpu.pc()),
-                    mode = cpu.priv_mode(), uart_bytes = all_output.len(), "progress");
+                    mode = cpu.priv_mode(), uart_bytes = all_output.len(),
+                    mip = format_args!("0x{:X}", cpu.csr().mip),
+                    mie = format_args!("0x{:X}", cpu.csr().mie),
+                    mideleg = format_args!("0x{:X}", cpu.csr().mideleg),
+                    mcause = format_args!("0x{:X}", cpu.csr().mcause),
+                    scause = format_args!("0x{:X}", cpu.csr().scause),
+                    mtime = clint.mtime(),
+                    mtimecmp = clint.mtimecmp(0),
+                    insn_count = cpu.insn_count(),
+                    timer_pending = clint.timer_pending(0),
+                    "progress");
             }
 
             if all_output.len() > 1000 && cpu.priv_mode() == csr::PRV_M && all_output.len() == last_uart_len {

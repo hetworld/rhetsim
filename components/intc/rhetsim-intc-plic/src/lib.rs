@@ -10,13 +10,13 @@
 //!
 //! Total size: 0x400000 (4 MiB)
 
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use rhetsim_core::error::{OmniError, OmniResult};
-use rhetsim_core::irq::IrqSink;
+use rhetsim_core::irq::{IrqLineSource, IrqSink};
 use rhetsim_core::mem::{MemTarget, MemAccessSize};
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 
-const PLIC_SIZE: u64 = 0x40_0000;
+const PLIC_SIZE: u64 = 0x400_0000;
 const MAX_SOURCES: usize = 1024;
 const MAX_CONTEXTS: usize = 15872; // spec max
 const PRIORITY_BASE: u64 = 0x0;
@@ -46,7 +46,10 @@ impl Plic {
     pub fn new(id: &str, num_sources: usize, num_contexts: usize, base: u64) -> Self {
         assert!(num_sources > 0 && num_sources <= MAX_SOURCES);
         assert!(num_contexts > 0 && num_contexts <= MAX_CONTEXTS);
-        let words = (num_sources + 31) / 32;
+        // Source IDs are 1..=num_sources and bit 0 is reserved, so the
+        // pending/enable/claimed bitmaps need one extra bit for the last
+        // source when num_sources is a multiple of 32.
+        let words = (num_sources + 32) / 32;
         Self {
             id: UnitId::new(id),
             base,
@@ -208,13 +211,15 @@ impl MemTarget for Plic {
                 match reg {
                     0 => state.threshold[ctx] = val as u32,
                     4 => {
-                        // Complete: clear claimed and pending bits
+                        // Complete: deactivate the source. Keep the pending
+                        // bit as the level state: if the source is still
+                        // asserted (e.g. UART RX FIFO not empty), the next
+                        // pending_irq() must deliver it again.
                         let irq = val as u32;
                         if (irq as usize) <= self.num_sources {
                             let w = irq as usize / 32;
                             let b = irq as usize % 32;
                             state.claimed[ctx][w] &= !(1 << b);
-                            state.pending[w] &= !(1 << b);
                         }
                     }
                     _ => {}
@@ -250,6 +255,24 @@ impl IrqSink for Plic {
     }
 
     fn irq_count(&self) -> u32 { self.num_sources as u32 }
+}
+
+/// 某个 PLIC context 的输出线，可由 RISC-V CPU 轮询同步到 mip.MEIP/SEIP。
+pub struct PlicContextLine {
+    plic: Arc<Plic>,
+    context: usize,
+}
+
+impl PlicContextLine {
+    pub fn new(plic: Arc<Plic>, context: usize) -> Self {
+        Self { plic, context }
+    }
+}
+
+impl IrqLineSource for PlicContextLine {
+    fn is_asserted(&self) -> bool {
+        self.plic.pending_irq(self.context).is_some()
+    }
 }
 
 pub fn register() {}
@@ -297,12 +320,47 @@ mod tests {
         // After claim, should not be claimable again
         assert_eq!(plic.pending_irq(0), None);
 
-        // Complete
+        // Source deasserts while the interrupt is claimed, then complete.
+        plic.lower(1).unwrap();
         plic.write(CONTEXT_BASE + 4, MemAccessSize::U32, 1).unwrap();
 
         // Pending should be cleared
         let pending = plic.read(PENDING_BASE, MemAccessSize::U32).unwrap();
         assert_eq!(pending & 0x2, 0);
+    }
+
+    #[test]
+    fn test_level_reattach_after_complete() {
+        let plic = Plic::new("plic0", 32, 2, 0x0C00_0000);
+        plic.write(4, MemAccessSize::U32, 1).unwrap();
+        plic.write(ENABLE_BASE, MemAccessSize::U32, 0x2).unwrap();
+        plic.raise(1).unwrap();
+
+        // Claim + complete while the source line is still asserted.
+        assert_eq!(plic.read(CONTEXT_BASE + 4, MemAccessSize::U32).unwrap(), 1);
+        plic.write(CONTEXT_BASE + 4, MemAccessSize::U32, 1).unwrap();
+
+        // Level is still high, so the PLIC must present it again.
+        assert_eq!(plic.pending_irq(0), Some(1));
+
+        // Deasserting the source clears it.
+        plic.lower(1).unwrap();
+        assert_eq!(plic.pending_irq(0), None);
+    }
+
+    #[test]
+    fn test_context_line() {
+        let plic = Arc::new(Plic::new("plic0", 32, 2, 0x0C00_0000));
+        // Enable source 1 for context 1 only.
+        plic.write(4, MemAccessSize::U32, 1).unwrap();
+        plic.write(ENABLE_BASE + ENABLE_STRIDE, MemAccessSize::U32, 0x2).unwrap();
+        plic.raise(1).unwrap();
+
+        let s_line = PlicContextLine::new(plic.clone(), 1);
+        assert!(s_line.is_asserted());
+
+        let m_line = PlicContextLine::new(plic, 0);
+        assert!(!m_line.is_asserted());
     }
 
     #[test]

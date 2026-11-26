@@ -5,6 +5,7 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use rhetsim_core::error::OmniResult;
+use rhetsim_core::irq::IrqLine;
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::mem::{MemTarget, MemAccessSize};
 
@@ -25,10 +26,26 @@ const LSR_RESET: u8 = LSR_THRE | LSR_TEMT;
 
 const LCR_DLAB: u8 = 0x80;
 
+// IER interrupt-enable bits
+const IER_RDI:  u8 = 1 << 0; // received data available
+const IER_THRI: u8 = 1 << 1; // transmitter holding register empty
+const IER_RLSI: u8 = 1 << 2; // receiver line status
+const IER_MSI:  u8 = 1 << 3; // modem status
+
+// IIR interrupt-identification values
+const IIR_NONE: u8 = 0x01;
+const IIR_THRE: u8 = 0x02;
+const IIR_RDA:  u8 = 0x04;
+const IIR_LSR:  u8 = 0x06;
+
+// LSR error bits (not modeled, but kept for the interrupt condition)
+const LSR_ERR_MASK: u8 = 0x1E;
+
 pub struct Uart {
     id: UnitId,
     output: Mutex<Vec<u8>>,
     input: Mutex<VecDeque<u8>>,
+    irq_line: Mutex<Option<IrqLine>>,
     console: AtomicBool,
     lsr: AtomicU8,
     ier: AtomicU8,
@@ -45,6 +62,7 @@ impl Uart {
             id: UnitId::new(id),
             output: Mutex::new(Vec::new()),
             input: Mutex::new(VecDeque::new()),
+            irq_line: Mutex::new(None),
             console: AtomicBool::new(false),
             lsr: AtomicU8::new(LSR_RESET),
             ier: AtomicU8::new(0),
@@ -62,8 +80,11 @@ impl Uart {
     }
 
     pub fn push_input(&self, data: &[u8]) {
-        let mut fifo = self.input.lock().expect("uart input lock");
-        fifo.extend(data);
+        {
+            let mut fifo = self.input.lock().expect("uart input lock");
+            fifo.extend(data);
+        }
+        self.update_irq();
     }
 
     pub fn has_input(&self) -> bool {
@@ -72,6 +93,52 @@ impl Uart {
 
     pub fn set_console(&self, enable: bool) {
         self.console.store(enable, Ordering::Relaxed);
+    }
+
+    /// Connect the UART interrupt output to an interrupt controller.
+    pub fn set_irq_line(&self, line: IrqLine) {
+        *self.irq_line.lock().expect("uart irq lock") = Some(line);
+        self.update_irq();
+    }
+
+    fn irq_asserted(&self) -> bool {
+        let ier = self.ier.load(Ordering::Relaxed);
+        let lsr = self.lsr.load(Ordering::Relaxed);
+
+        if ier & IER_RLSI != 0 && lsr & LSR_ERR_MASK != 0 {
+            return true;
+        }
+        if ier & IER_RDI != 0 && self.has_input() {
+            return true;
+        }
+        if ier & IER_THRI != 0 && lsr & LSR_THRE != 0 {
+            return true;
+        }
+        // Modem status interrupts are not modeled.
+        false
+    }
+
+    fn iir_value(&self) -> u8 {
+        let ier = self.ier.load(Ordering::Relaxed);
+        let lsr = self.lsr.load(Ordering::Relaxed);
+
+        if ier & IER_RLSI != 0 && lsr & LSR_ERR_MASK != 0 {
+            IIR_LSR
+        } else if ier & IER_RDI != 0 && self.has_input() {
+            IIR_RDA
+        } else if ier & IER_THRI != 0 && lsr & LSR_THRE != 0 {
+            IIR_THRE
+        } else {
+            IIR_NONE
+        }
+    }
+
+    fn update_irq(&self) {
+        let asserted = self.irq_asserted();
+        let line = self.irq_line.lock().expect("uart irq lock").clone();
+        if let Some(line) = line {
+            let _ = if asserted { line.raise() } else { line.lower() };
+        }
     }
 }
 
@@ -92,6 +159,7 @@ impl Unit for Uart {
         self.scr.store(0, Ordering::Relaxed);
         self.dll.store(0, Ordering::Relaxed);
         self.dlm.store(0, Ordering::Relaxed);
+        self.update_irq();
         Ok(())
     }
 }
@@ -106,12 +174,16 @@ impl MemTarget for Uart {
         match offset {
             RBR if dlab  => Ok(self.dll.load(Ordering::Relaxed) as u64),
             RBR          => {
-                let mut fifo = self.input.lock().expect("uart input lock");
-                Ok(fifo.pop_front().unwrap_or(0) as u64)
+                let byte = {
+                    let mut fifo = self.input.lock().expect("uart input lock");
+                    fifo.pop_front().unwrap_or(0)
+                };
+                self.update_irq();
+                Ok(byte as u64)
             }
             IER if dlab  => Ok(self.dlm.load(Ordering::Relaxed) as u64),
             IER          => Ok(self.ier.load(Ordering::Relaxed) as u64),
-            IIR          => Ok(0x01),
+            IIR          => Ok(self.iir_value() as u64),
             LCR          => Ok(self.lcr.load(Ordering::Relaxed) as u64),
             MCR          => Ok(self.mcr.load(Ordering::Relaxed) as u64),
             LSR          => {
@@ -139,7 +211,10 @@ impl MemTarget for Uart {
                 }
             }
             IER if dlab  => { self.dlm.store(v, Ordering::Relaxed); }
-            IER          => { self.ier.store(v, Ordering::Relaxed); }
+            IER          => {
+                self.ier.store(v, Ordering::Relaxed);
+                self.update_irq();
+            }
             IIR          => {} // FCR write, ignore
             LCR          => { self.lcr.store(v, Ordering::Relaxed); }
             MCR          => { self.mcr.store(v, Ordering::Relaxed); }
@@ -155,6 +230,8 @@ pub fn register() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use rhetsim_core::irq::IrqSink;
 
     #[test]
     fn uart_write_and_read() {
@@ -178,5 +255,59 @@ mod tests {
 
         Unit::reset(&mut uart).unwrap();
         assert!(uart.take_output().is_empty());
+    }
+
+    struct MockSink {
+        asserted: AtomicBool,
+    }
+
+    impl MockSink {
+        fn new() -> Self {
+            Self { asserted: AtomicBool::new(false) }
+        }
+    }
+
+    impl IrqSink for MockSink {
+        fn raise(&self, _irq_num: u32) -> OmniResult<()> {
+            self.asserted.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+        fn lower(&self, _irq_num: u32) -> OmniResult<()> {
+            self.asserted.store(false, Ordering::Relaxed);
+            Ok(())
+        }
+        fn irq_count(&self) -> u32 { 1 }
+    }
+
+    #[test]
+    fn uart_irq_line_rx() {
+        let uart = Uart::new("uart0");
+        let sink = Arc::new(MockSink::new());
+        uart.set_irq_line(IrqLine::new(sink.clone(), 10));
+
+        uart.write(IER, MemAccessSize::U8, IER_RDI as u64).unwrap();
+        assert!(!sink.asserted.load(Ordering::Relaxed));
+
+        uart.push_input(b"X");
+        assert!(sink.asserted.load(Ordering::Relaxed));
+        assert_eq!(uart.read(IIR, MemAccessSize::U8).unwrap(), IIR_RDA as u64);
+
+        assert_eq!(uart.read(RBR, MemAccessSize::U8).unwrap(), b'X' as u64);
+        assert!(!sink.asserted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn uart_irq_line_thre() {
+        let uart = Uart::new("uart0");
+        let sink = Arc::new(MockSink::new());
+        uart.set_irq_line(IrqLine::new(sink.clone(), 10));
+
+        uart.write(IER, MemAccessSize::U8, IER_THRI as u64).unwrap();
+        assert!(sink.asserted.load(Ordering::Relaxed));
+        assert_eq!(uart.read(IIR, MemAccessSize::U8).unwrap(), IIR_THRE as u64);
+
+        uart.write(IER, MemAccessSize::U8, 0).unwrap();
+        assert!(!sink.asserted.load(Ordering::Relaxed));
+        assert_eq!(uart.read(IIR, MemAccessSize::U8).unwrap(), IIR_NONE as u64);
     }
 }

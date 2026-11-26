@@ -22,7 +22,7 @@ pub mod prelude {
     pub use crate::backend::execution::ExecutionBackend;
     pub use crate::backend::timing::{TimingModel, TimingKind};
     pub use crate::mem::{MemTarget, MemSpace, MemAttrs, MemAccessSize, MemAccess};
-    pub use crate::irq::{IrqSink, IrqLine, IrqSource, MsiSender};
+    pub use crate::irq::{IrqSink, IrqLine, IrqSource, IrqLineSource, MsiSender};
     pub use crate::dataflow::{DataEndpoint, DataDesc, DataOp};
     pub use crate::registry::UnitRegistry;
     pub use crate::snapshot::{UnitSnapshot, PlatformSnapshot};

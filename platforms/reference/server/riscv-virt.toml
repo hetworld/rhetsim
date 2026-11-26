@@ -15,6 +15,14 @@ num_harts = 1
 base      = 0x02000000
 
 [[units]]
+id   = "plic0"
+kind = "rhetsim-intc-plic"
+[units.config]
+num_sources  = 64
+num_contexts = 2
+base         = 0x0c000000
+
+[[units]]
 id   = "uart0"
 kind = "rhetsim-io-uart"
 
@@ -37,6 +45,10 @@ base = 0x80000000
 [[buses.targets]]
 unit = "clint0"
 base = 0x02000000
+
+[[buses.targets]]
+unit = "plic0"
+base = 0x0c000000
 
 [[buses.targets]]
 unit = "uart0"

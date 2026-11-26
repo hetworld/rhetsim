@@ -29,6 +29,7 @@ pub trait IrqSink: Send + Sync {
 }
 
 /// 一条中断线（从外设到 IrqSink 的连接）
+#[derive(Clone)]
 pub struct IrqLine {
     pub sink:    Arc<dyn IrqSink>,
     pub irq_num: u32,
@@ -53,6 +54,15 @@ pub struct IrqSourceDesc {
 /// 中断发出端 trait
 pub trait IrqSource: Send + Sync {
     fn irq_source_descs(&self) -> &[IrqSourceDesc];
+}
+
+/// 可轮询的电平中断线。
+///
+/// 用于中断控制器（PLIC/CLINT）到 CPU 的输入线：CPU 在每次检查中断前
+/// 读取当前电平，同步 `mip` 中对应的位。相比在每个 batch 边界写 `mip`，
+/// 这样可以避免 claim/complete 或 mtimecmp 更新后出现虚假的重复中断。
+pub trait IrqLineSource: Send + Sync {
+    fn is_asserted(&self) -> bool;
 }
 
 /// MSI 描述符

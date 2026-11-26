@@ -6,6 +6,6 @@ pub mod decode;
 pub mod jit;
 pub mod mmu;
 
-pub use cpu::RiscvCpu;
+pub use cpu::{RiscvCpu, RiscvIrqLine};
 
 pub fn register() {}

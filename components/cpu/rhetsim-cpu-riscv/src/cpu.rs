@@ -5,6 +5,7 @@ use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::irq::IrqLineSource;
 use rhetsim_core::mem::MemAccessSize;
 use crate::csr::{self, CsrFile};
 use crate::decode::{decode, decode_compressed, Instruction};
@@ -21,6 +22,24 @@ enum MemBackend {
         bus: Arc<MemBus>,
     },
 }
+
+/// RISC-V 本地中断输入线。
+///
+/// 这些线由平台层连接到 CLINT/PLIC，CPU 在每次检查中断前轮询并同步到
+/// `mip` 对应位。未连接的线保持原有行为（测试里可以直接写 `mip`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiscvIrqLine {
+    /// Machine software interrupt (CLINT MSIP)
+    MSoft = 0,
+    /// Machine timer interrupt (CLINT MTIP)
+    MTimer = 1,
+    /// Machine external interrupt (PLIC M-mode context)
+    MExt = 2,
+    /// Supervisor external interrupt (PLIC S-mode context)
+    SExt = 3,
+}
+
+const IRQ_LINE_COUNT: usize = 4;
 
 pub struct RiscvCpu {
     id: UnitId,
@@ -39,6 +58,7 @@ pub struct RiscvCpu {
     read_fast_tlb: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
     write_fast_tlb: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
     dram_host_ptr: Option<(*mut u8, u64, u64)>,
+    irq_lines: [Option<Arc<dyn IrqLineSource>>; IRQ_LINE_COUNT],
 }
 
 unsafe impl Send for RiscvCpu {}
@@ -67,6 +87,7 @@ impl RiscvCpu {
             read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
+            irq_lines: std::array::from_fn(|_| None),
         }
     }
 
@@ -88,6 +109,7 @@ impl RiscvCpu {
             read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
+            irq_lines: std::array::from_fn(|_| None),
         }
     }
 
@@ -136,6 +158,43 @@ impl RiscvCpu {
 
     pub fn set_dram_direct(&mut self, ptr: *mut u8, base: u64, size: u64) {
         self.dram_host_ptr = Some((ptr, base, size));
+    }
+
+    /// 连接一条本地中断输入线。未连接的线不参与 `mip` 同步。
+    pub fn set_irq_line(&mut self, line: RiscvIrqLine, src: Arc<dyn IrqLineSource>) {
+        self.irq_lines[line as usize] = Some(src);
+    }
+
+    fn sync_irq_lines(&mut self) {
+        let msoft = self.irq_lines[RiscvIrqLine::MSoft as usize]
+            .as_ref().map(|l| l.is_asserted());
+        let mtimer = self.irq_lines[RiscvIrqLine::MTimer as usize]
+            .as_ref().map(|l| l.is_asserted());
+        let mext = self.irq_lines[RiscvIrqLine::MExt as usize]
+            .as_ref().map(|l| l.is_asserted());
+        let sext = self.irq_lines[RiscvIrqLine::SExt as usize]
+            .as_ref().map(|l| l.is_asserted());
+
+        Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_MSIP, msoft);
+        Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_MTIP, mtimer);
+        Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_MEIP, mext);
+        Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_SEIP, sext);
+
+        // Sstc: stimecmp is compared against the time CSR (we model time
+        // as insn_count). OpenSBI uses this path when it detects SSTC,
+        // instead of programming the CLINT and injecting STIP in software.
+        if self.csr.sstc_active {
+            let stip = self.insn_count >= self.csr.stimecmp;
+            Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_STIP, Some(stip));
+        }
+    }
+
+    fn apply_mip_bit(mip: &mut u64, bit: u64, state: Option<bool>) {
+        match state {
+            Some(true) => *mip |= bit,
+            Some(false) => *mip &= !bit,
+            None => {}
+        }
     }
 
     fn flush_fast_tlb(&mut self) {
@@ -257,6 +316,7 @@ impl RiscvCpu {
     }
 
     fn check_interrupt(&mut self) -> bool {
+        self.sync_irq_lines();
         if let Some(cause) = self.csr.pending_interrupt(self.priv_mode) {
             self.take_trap(csr::MCAUSE_INTERRUPT | cause, 0);
             true

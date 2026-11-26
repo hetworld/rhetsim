@@ -12,6 +12,8 @@ pub const SCAUSE: u16    = 0x142;
 pub const STVAL: u16     = 0x143;
 pub const SIP: u16       = 0x144;
 pub const SATP: u16      = 0x180;
+/// Sstc supervisor timer compare (RV64: 64-bit CSR).
+pub const STIMECMP: u16  = 0x14D;
 
 // M-mode
 pub const MSTATUS: u16   = 0x300;
@@ -88,6 +90,14 @@ pub const MIP_MEIP: u64 = 1 << 11;
 const SIE_MASK: u64 = MIP_SSIP | MIP_STIP | MIP_SEIP;
 const MIE_ALL: u64  = MIP_SSIP | MIP_MSIP | MIP_STIP | MIP_MTIP | MIP_SEIP | MIP_MEIP;
 
+/// M-mode can write software-injected interrupt bits:
+/// - MSIP: software interrupt (CLINT/rv-virt)
+/// - SSIP/STIP/SEIP: needed by OpenSBI to inject S-mode IPI/timer/external
+///
+/// MEIP/MTIP are driven by the interrupt controllers (PLIC/CLINT) and stay
+/// read-only; the CPU syncs them from IrqLineSource.
+const MIP_WRITABLE: u64 = MIP_MSIP | MIP_SSIP | MIP_STIP | MIP_SEIP;
+
 // ── mcause ────────────────────────────────────────────────────
 
 pub const MCAUSE_INTERRUPT: u64 = 1u64 << 63;
@@ -133,6 +143,10 @@ pub struct CsrFile {
     pub scause: u64,
     pub stval: u64,
     pub satp: u64,
+    /// Sstc timer compare; when active, STIP is derived from
+    /// `insn_count >= stimecmp` (see RiscvCpu::sync_irq_lines).
+    pub stimecmp: u64,
+    pub sstc_active: bool,
     pub scounteren: u64,
     // PMP (store-only, no enforcement)
     pub pmpcfg: [u64; 2],
@@ -160,6 +174,8 @@ impl CsrFile {
             scause: 0,
             stval: 0,
             satp: 0,
+            stimecmp: u64::MAX,
+            sstc_active: false,
             scounteren: 0,
             pmpcfg: [0; 2],
             pmpaddr: [0; 16],
@@ -199,6 +215,7 @@ impl CsrFile {
             STVAL     => Some(self.stval),
             SIP       => Some(self.mip & SIE_MASK),
             SATP      => Some(self.satp),
+            STIMECMP  => Some(self.stimecmp),
             CYCLE     => Some(insn_count),
             TIME      => Some(insn_count),
             INSTRET   => Some(insn_count),
@@ -218,7 +235,7 @@ impl CsrFile {
             MEPC      => self.mepc = val & !1,
             MCAUSE    => self.mcause = val,
             MTVAL     => self.mtval = val,
-            MIP       => self.mip = (self.mip & !MIP_MSIP) | (val & MIP_MSIP),
+            MIP       => self.mip = (self.mip & !MIP_WRITABLE) | (val & MIP_WRITABLE),
             PMPCFG0   => self.pmpcfg[0] = val,
             PMPCFG2   => self.pmpcfg[1] = val,
             a @ 0x3B0..=0x3BF => self.pmpaddr[(a - PMPADDR0) as usize] = val,
@@ -236,6 +253,10 @@ impl CsrFile {
                 if mode == 0 || mode == 8 {
                     self.satp = val;
                 }
+            }
+            STIMECMP  => {
+                self.stimecmp = val;
+                self.sstc_active = true;
             }
             MISA | MVENDORID | MARCHID | MIMPID | MHARTID | MCYCLE | MINSTRET => {}
             _ => {}
@@ -260,6 +281,8 @@ impl CsrFile {
         self.scause = 0;
         self.stval = 0;
         self.satp = 0;
+        self.stimecmp = u64::MAX;
+        self.sstc_active = false;
         self.scounteren = 0;
         self.pmpcfg = [0; 2];
         self.pmpaddr = [0; 16];
@@ -549,6 +572,32 @@ mod tests {
         let (pc, mode) = csr.mret();
         assert_eq!(pc, 0x8000_2000);
         assert_eq!(mode, PRV_S);
+    }
+
+    #[test]
+    fn test_stimecmp() {
+        let mut csr = CsrFile::new(0);
+        assert_eq!(csr.read(STIMECMP, 0).unwrap(), u64::MAX);
+        assert!(!csr.sstc_active);
+
+        csr.write(STIMECMP, 12345);
+        assert_eq!(csr.read(STIMECMP, 0).unwrap(), 12345);
+        assert!(csr.sstc_active);
+
+        csr.reset();
+        assert_eq!(csr.read(STIMECMP, 0).unwrap(), u64::MAX);
+        assert!(!csr.sstc_active);
+    }
+
+    #[test]
+    fn test_mip_software_injection_bits_writable() {
+        let mut csr = CsrFile::new(0);
+        csr.write(MIP, MIP_SSIP | MIP_STIP | MIP_SEIP | MIP_MSIP);
+        assert_eq!(csr.mip & (MIP_SSIP | MIP_STIP | MIP_SEIP | MIP_MSIP),
+                   MIP_SSIP | MIP_STIP | MIP_SEIP | MIP_MSIP);
+        // Hardware-driven bits stay read-only.
+        csr.write(MIP, MIP_MTIP | MIP_MEIP);
+        assert_eq!(csr.mip & (MIP_MTIP | MIP_MEIP), 0);
     }
 
     #[test]
