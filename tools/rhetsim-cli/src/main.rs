@@ -21,7 +21,7 @@ use rhetsim_intc_plic::PlicContextLine;
 
 /// QEMU virt maps UART0 to PLIC source 10.
 const UART_PLIC_IRQ: u32 = 10;
-/// Marker printed by the embedded initramfs /init.
+/// Marker printed by the initramfs /init.
 const INIT_OK_MARKER: &[u8] = b"RHETSIM_INIT_OK";
 use tracing::{debug, error, info, trace, warn};
 use goblin::elf::Elf;
@@ -100,6 +100,8 @@ fn main() {
         eprintln!("  --steps <n>     Max instruction steps for boot mode (default: 100000000)");
         eprintln!("  --firmware <path>  Override firmware binary path");
         eprintln!("  --kernel <path>    Override kernel image path");
+        eprintln!("  --initrd <path>    Override initrd/initramfs path");
+        eprintln!("  --initrd-addr <addr>  Override initrd load address");
         eprintln!("  --dtb <path>       Override device tree blob path");
         eprintln!("  --batch         Non-interactive mode (UART output goes to stdout)");
         eprintln!("  --uart-log <path>  Write UART output to file instead of stdout (batch mode)");
@@ -201,11 +203,13 @@ fn boot_riscv_linux(
 
     let fw_path = resolve_path(args, "--firmware", boot.firmware.as_deref(), manifest_dir);
     let kernel_path = resolve_path(args, "--kernel", boot.kernel.as_deref(), manifest_dir);
+    let initrd_path = resolve_opt_path(args, "--initrd", boot.initrd.as_deref(), manifest_dir);
     let dtb_path = resolve_path(args, "--dtb", boot.dtb.as_deref(), manifest_dir);
 
     let fw_data = read_required(&fw_path, "firmware");
     let kernel_data = read_required(&kernel_path, "kernel");
-    let dtb_data = read_required(&dtb_path, "DTB");
+    let mut dtb_data = read_required(&dtb_path, "DTB");
+    let initrd_data = initrd_path.as_deref().map(|p| read_required(p, "initrd"));
 
     let dram_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-mem-dram")
         .expect("boot requires a rhetsim-mem-dram unit");
@@ -235,6 +239,29 @@ fn boot_riscv_linux(
     let fw_addr = boot.firmware_addr.unwrap_or(dram_base);
     let kernel_addr = boot.kernel_addr.unwrap_or(dram_base + 0x0020_0000);
     let dtb_addr = boot.dtb_addr.unwrap_or(dram_base + 0x0200_0000);
+    let initrd_addr = parse_opt(args, "--initrd-addr",
+        boot.initrd_addr.unwrap_or(dram_base + 0x0300_0000));
+
+    if let Some(data) = initrd_data.as_ref() {
+        let initrd_end = match initrd_addr.checked_add(data.len() as u64) {
+            Some(v) => v,
+            None => {
+                error!(target: "boot", "initrd address overflow");
+                std::process::exit(1);
+            }
+        };
+        if initrd_addr < dram_base || initrd_end > dram_base + dram_size as u64 {
+            error!(target: "boot",
+                "initrd 0x{:08X}..0x{:08X} does not fit DRAM 0x{:08X}..0x{:08X}",
+                initrd_addr, initrd_end, dram_base, dram_base + dram_size as u64);
+            std::process::exit(1);
+        }
+        if let Err(e) = patch_dtb_initrd(&mut dtb_data, initrd_addr, initrd_end) {
+            error!(target: "boot", "failed to patch DTB for initrd: {e}");
+            std::process::exit(1);
+        }
+        info!(target: "boot", "  Initrd  @ 0x{:08X}  ({} bytes)", initrd_addr, data.len());
+    }
 
     info!(target: "boot", "Boot layout:");
     info!(target: "boot", "  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
@@ -297,6 +324,12 @@ fn boot_riscv_linux(
     cpus[0].load_binary(&dtb_data, dtb_addr - dram_base);
     info!(target: "loader", "  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
     trace!(target: trace_cat::LOADER, addr = format_args!("0x{:08X}", dtb_addr), size = dtb_data.len(), "load dtb raw");
+
+    if let Some(data) = initrd_data.as_ref() {
+        cpus[0].load_binary(data, initrd_addr - dram_base);
+        info!(target: "loader", "  Initrd    {:>8} bytes -> 0x{:08X} (raw)", data.len(), initrd_addr);
+        trace!(target: trace_cat::LOADER, addr = format_args!("0x{:08X}", initrd_addr), size = data.len(), "load initrd raw");
+    }
 
     let entry_pc = fw_result.entry.unwrap_or(fw_addr);
 
@@ -470,6 +503,133 @@ fn boot_riscv_linux(
             std::process::exit(1);
         }
     }
+}
+
+fn resolve_opt_path(args: &[String], flag: &str, manifest_val: Option<&str>, manifest_dir: &Path) -> Option<String> {
+    if let Some(cli_val) = parse_str_opt(args, flag) {
+        return Some(cli_val);
+    }
+    manifest_val.map(|name| manifest_dir.join(name).to_string_lossy().into_owned())
+}
+
+fn fdt_be32(data: &[u8], off: usize) -> Result<u32, String> {
+    data.get(off..off + 4)
+        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        .ok_or_else(|| "truncated FDT".to_string())
+}
+
+fn fdt_cstr(data: &[u8], start: usize, end: usize) -> Result<String, String> {
+    if start >= end || end > data.len() {
+        return Err("bad FDT string range".to_string());
+    }
+    let bytes = &data[start..end];
+    let len = bytes.iter().position(|&b| b == 0)
+        .ok_or_else(|| "unterminated FDT string".to_string())?;
+    std::str::from_utf8(&bytes[..len])
+        .map(|s| s.to_string())
+        .map_err(|e| format!("invalid FDT string: {e}"))
+}
+
+/// Write the initrd range into /chosen's linux,initrd-start/end properties.
+/// The DTB must be compiled from a DTS that already contains both properties.
+fn patch_dtb_initrd(dtb: &mut [u8], start: u64, end: u64) -> Result<(), String> {
+    const FDT_MAGIC: u32 = 0xd00d_feed;
+    if dtb.len() < 40 {
+        return Err("DTB too small".to_string());
+    }
+    if fdt_be32(dtb, 0)? != FDT_MAGIC {
+        return Err("bad DTB magic".to_string());
+    }
+    let off_struct = fdt_be32(dtb, 8)? as usize;
+    let off_strings = fdt_be32(dtb, 12)? as usize;
+    let size_strings = fdt_be32(dtb, 32)? as usize;
+    let size_struct = fdt_be32(dtb, 36)? as usize;
+    let end_struct = off_struct.checked_add(size_struct)
+        .ok_or_else(|| "bad FDT structure range".to_string())?;
+    let end_strings = off_strings.checked_add(size_strings)
+        .ok_or_else(|| "bad FDT strings range".to_string())?;
+    if end_struct > dtb.len() || end_strings > dtb.len() {
+        return Err("FDT block exceeds file".to_string());
+    }
+
+    let mut pos = off_struct;
+    let mut depth = 0usize;
+    let mut in_chosen = false;
+    let mut found_start = false;
+    let mut found_end = false;
+
+    while pos + 4 <= end_struct {
+        let token = fdt_be32(dtb, pos)?;
+        pos += 4;
+        match token {
+            1 => { // FDT_BEGIN_NODE
+                let name_start = pos;
+                while pos < end_struct && dtb[pos] != 0 {
+                    pos += 1;
+                }
+                if pos >= end_struct {
+                    return Err("unterminated FDT node name".to_string());
+                }
+                let name = std::str::from_utf8(&dtb[name_start..pos]).unwrap_or("");
+                pos += 1;
+                pos = (pos + 3) & !3;
+                depth += 1;
+                if depth == 2 && name == "chosen" {
+                    in_chosen = true;
+                }
+            }
+            2 => { // FDT_END_NODE
+                if in_chosen && depth == 2 {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            3 => { // FDT_PROP
+                let len = fdt_be32(dtb, pos)? as usize;
+                pos += 4;
+                let nameoff = fdt_be32(dtb, pos)? as usize;
+                pos += 4;
+                let value_off = pos;
+                if value_off + len > end_struct {
+                    return Err("FDT property exceeds structure block".to_string());
+                }
+                if in_chosen && depth == 2 {
+                    let name_start = off_strings.checked_add(nameoff)
+                        .ok_or_else(|| "bad FDT property name offset".to_string())?;
+                    let name = fdt_cstr(dtb, name_start, end_strings)?;
+                    let (is_start, is_end) = match name.as_str() {
+                        "linux,initrd-start" => (true, false),
+                        "linux,initrd-end" => (false, true),
+                        _ => (false, false),
+                    };
+                    if is_start || is_end {
+                        if len != 8 {
+                            return Err(format!(
+                                "{name} must be 2 address cells (8 bytes), got {len}"
+                            ));
+                        }
+                        let value = if is_start { start } else { end };
+                        dtb[value_off..value_off + 8].copy_from_slice(&value.to_be_bytes());
+                        if is_start {
+                            found_start = true;
+                        }
+                        if is_end {
+                            found_end = true;
+                        }
+                    }
+                }
+                pos += (len + 3) & !3;
+            }
+            4 => {} // FDT_NOP
+            9 => break, // FDT_END
+            other => return Err(format!("unknown FDT token 0x{other:x}")),
+        }
+    }
+
+    if !found_start || !found_end {
+        return Err("DTB lacks /chosen linux,initrd-start/end; rebuild it from the updated DTS".to_string());
+    }
+    Ok(())
 }
 
 fn resolve_path(args: &[String], flag: &str, manifest_val: Option<&str>, manifest_dir: &Path) -> String {

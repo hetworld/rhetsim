@@ -140,6 +140,8 @@ pub struct BootDesc {
     #[serde(default)]
     pub initrd:   Option<String>,
     #[serde(default)]
+    pub initrd_addr: Option<u64>,
+    #[serde(default)]
     pub dtb:      Option<String>,
     #[serde(default)]
     pub dtb_addr: Option<u64>,

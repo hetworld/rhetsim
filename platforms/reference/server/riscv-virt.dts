@@ -9,6 +9,8 @@
 	chosen {
 		bootargs = "earlycon=sbi console=ttyS0 printk.time=1";
 		stdout-path = "/soc/serial@10000000";
+		linux,initrd-start = <0x0 0x0>;
+		linux,initrd-end = <0x0 0x0>;
 	};
 
 	cpus {
