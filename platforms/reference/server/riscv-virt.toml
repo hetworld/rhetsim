@@ -11,7 +11,7 @@ base    = 0x80000000
 id   = "clint0"
 kind = "rhetsim-intc-clint"
 [units.config]
-num_harts = 1
+num_harts = 2
 base      = 0x02000000
 
 [[units]]
@@ -19,7 +19,7 @@ id   = "plic0"
 kind = "rhetsim-intc-plic"
 [units.config]
 num_sources  = 64
-num_contexts = 2
+num_contexts = 4
 base         = 0x0c000000
 
 [[units]]
@@ -32,11 +32,17 @@ kind = "rhetsim-cpu-riscv"
 [units.config]
 mem_base = 0x80000000
 
+[[units]]
+id   = "rv-core1"
+kind = "rhetsim-cpu-riscv"
+[units.config]
+mem_base = 0x80000000
+
 [[buses]]
 kind       = "mem"
 id         = "sys-bus"
 overlap    = false
-initiators = ["rv-core0"]
+initiators = ["rv-core0", "rv-core1"]
 
 [[buses.targets]]
 unit = "dram0"

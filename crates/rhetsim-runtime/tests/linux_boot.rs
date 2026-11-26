@@ -1,7 +1,8 @@
-//! Boot Linux kernel via OpenSBI on the RISC-V CPU simulator.
+//! Boot a 2-hart Linux kernel via OpenSBI on the RISC-V CPU simulator.
 //!
 //! Layout (matches QEMU virt machine):
-//!   CLINT  @ 0x0200_0000
+//!   CLINT  @ 0x0200_0000  (2 harts)
+//!   PLIC   @ 0x0c00_0000  (4 contexts: M/S per hart)
 //!   UART   @ 0x1000_0000
 //!   DRAM   @ 0x8000_0000  (64 MiB)
 //!   OpenSBI loaded at 0x8000_0000
@@ -14,10 +15,11 @@ use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::irq::{IrqLine, IrqSink};
 use rhetsim_core::mem::{MemAttrs, MemTarget};
 use rhetsim_cpu_riscv::cpu::RiscvCpu;
-use rhetsim_cpu_riscv::{csr, RiscvIrqLine};
+use rhetsim_cpu_riscv::RiscvIrqLine;
 use rhetsim_intc_clint::ClintLine;
 use rhetsim_intc_plic::{Plic, PlicContextLine};
 
+const NUM_HARTS: usize = 2;
 const DRAM_BASE: u64  = 0x8000_0000;
 const DRAM_SIZE: usize = 64 * 1024 * 1024;
 const CLINT_BASE: u64  = 0x0200_0000;
@@ -55,8 +57,8 @@ fn linux_boot() {
         fw_data.len(), kernel_data.len(), dtb_data.len());
 
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", DRAM_SIZE, DRAM_BASE));
-    let clint = Arc::new(rhetsim_intc_clint::Clint::new("clint0", 1, CLINT_BASE));
-    let plic = Arc::new(Plic::new("plic0", 64, 2, PLIC_BASE));
+    let clint = Arc::new(rhetsim_intc_clint::Clint::new("clint0", NUM_HARTS, CLINT_BASE));
+    let plic = Arc::new(Plic::new("plic0", 64, NUM_HARTS * 2, PLIC_BASE));
     let uart = Arc::new(rhetsim_io_uart::Uart::new("uart0"));
 
     let mut bus = MemBus::new("sys-bus");
@@ -68,35 +70,45 @@ fn linux_boot() {
 
     uart.set_irq_line(IrqLine::new(plic.clone() as Arc<dyn IrqSink>, UART_PLIC_IRQ));
 
-    let mut cpu = RiscvCpu::with_bus("rv-core0", bus, DRAM_BASE);
-    cpu.set_irq_line(RiscvIrqLine::MTimer, Arc::new(ClintLine::new(clint.clone(), 0, true)));
-    cpu.set_irq_line(RiscvIrqLine::MSoft, Arc::new(ClintLine::new(clint.clone(), 0, false)));
-    cpu.set_irq_line(RiscvIrqLine::MExt, Arc::new(PlicContextLine::new(plic.clone(), 0)));
-    cpu.set_irq_line(RiscvIrqLine::SExt, Arc::new(PlicContextLine::new(plic.clone(), 1)));
+    let mut cpus: Vec<RiscvCpu> = Vec::with_capacity(NUM_HARTS);
+    for hart in 0..NUM_HARTS {
+        let mut cpu = RiscvCpu::with_bus(&format!("rv-core{hart}"), bus.clone(), DRAM_BASE);
+        cpu.set_hartid(hart as u64);
+        cpu.set_irq_line(RiscvIrqLine::MTimer, Arc::new(ClintLine::new(clint.clone(), hart, true)));
+        cpu.set_irq_line(RiscvIrqLine::MSoft, Arc::new(ClintLine::new(clint.clone(), hart, false)));
+        cpu.set_irq_line(RiscvIrqLine::MExt, Arc::new(PlicContextLine::new(plic.clone(), hart * 2)));
+        cpu.set_irq_line(
+            RiscvIrqLine::SExt,
+            Arc::new(PlicContextLine::new(plic.clone(), hart * 2 + 1)),
+        );
+        cpus.push(cpu);
+    }
 
-    cpu.load_binary(&fw_data, 0);
-    cpu.load_binary(&kernel_data, KERNEL_ADDR - DRAM_BASE);
-    cpu.load_binary(&dtb_data, DTB_ADDR - DRAM_BASE);
+    // Firmware, kernel and DTB are shared in DRAM; load them through hart 0.
+    cpus[0].load_binary(&fw_data, 0);
+    cpus[0].load_binary(&kernel_data, KERNEL_ADDR - DRAM_BASE);
+    cpus[0].load_binary(&dtb_data, DTB_ADDR - DRAM_BASE);
 
     let (dram_ptr, dram_base, dram_sz) = dram.host_info();
-    cpu.set_dram_direct(dram_ptr, dram_base, dram_sz);
+    for (hart, cpu) in cpus.iter_mut().enumerate() {
+        cpu.set_dram_direct(dram_ptr, dram_base, dram_sz);
+        cpu.set_reg(10, hart as u64); // a0 = hartid
+        cpu.set_reg(11, DTB_ADDR);   // a1 = DTB
+        cpu.set_pc(DRAM_BASE);
+    }
 
-    cpu.set_reg(10, 0);
-    cpu.set_reg(11, DTB_ADDR);
-    cpu.set_pc(DRAM_BASE);
-
-    let max_steps: u64 = 100_000_000;
+    let max_steps: u64 = 150_000_000;
     let batch = 10_000u64;
     let mut total_steps = 0u64;
     let mut all_output = Vec::new();
-    let mut idle_batches = 0u32;
-    let mut last_uart_len = 0usize;
 
-    while !cpu.is_halted() && total_steps < max_steps {
+    while cpus.iter().any(|c| !c.is_halted()) && total_steps < max_steps {
         clint.tick(batch);
 
-        cpu.exec(batch).unwrap();
-        total_steps += batch;
+        for cpu in cpus.iter_mut() {
+            cpu.exec(batch).unwrap();
+        }
+        total_steps += batch * NUM_HARTS as u64;
 
         let out = uart.take_output();
         if !out.is_empty() {
@@ -104,39 +116,33 @@ fn linux_boot() {
         }
 
         if total_steps % 10_000_000 == 0 {
-            eprintln!("[{}M steps] PC=0x{:X} mode={} uart={}B",
-                total_steps / 1_000_000, cpu.pc(), cpu.priv_mode(), all_output.len());
+            eprintln!("[{}M steps] PC0=0x{:X} mode0={} PC1=0x{:X} mode1={} uart={}B",
+                total_steps / 1_000_000,
+                cpus[0].pc(), cpus[0].priv_mode(),
+                cpus[1].pc(), cpus[1].priv_mode(),
+                all_output.len());
         }
 
         if all_output.windows(INIT_OK.len()).any(|w| w == INIT_OK) {
             eprintln!("init marker seen at {} steps", total_steps);
             break;
         }
-
-        // Detect idle: M-mode with no new UART output for 1M steps
-        // Only after kernel has produced output (skip OpenSBI init phase)
-        if all_output.len() > 1000 && cpu.priv_mode() == csr::PRV_M && all_output.len() == last_uart_len {
-            idle_batches += 1;
-            if idle_batches > 100 {
-                eprintln!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
-                break;
-            }
-        } else {
-            idle_batches = 0;
-        }
-        last_uart_len = all_output.len();
     }
 
     let output_str = String::from_utf8_lossy(&all_output);
     eprintln!("\n=== UART Output ({} bytes) ===\n{}", all_output.len(), output_str);
     eprintln!("\n--- Result ---");
-    eprintln!("Steps: {}, halted: {}, PC: 0x{:X}, mode: {}",
-        total_steps, cpu.is_halted(), cpu.pc(), cpu.priv_mode());
+    eprintln!("Steps: {}, halted: {}, PC0: 0x{:X}, mode0: {}",
+        total_steps, cpus.iter().all(|c| c.is_halted()),
+        cpus[0].pc(), cpus[0].priv_mode());
 
     assert!(output_str.contains("Run /init as init process"),
         "Linux kernel should boot and run /init (got {} bytes in {} steps)",
         all_output.len(), total_steps);
     assert!(output_str.contains("RHETSIM_INIT_OK"),
         "initramfs /init should run and print its marker (got {} bytes in {} steps)",
+        all_output.len(), total_steps);
+    assert!(output_str.contains("CPU1"),
+        "Linux should bring up the second hart (got {} bytes in {} steps)",
         all_output.len(), total_steps);
 }

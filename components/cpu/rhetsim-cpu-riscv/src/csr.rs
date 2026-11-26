@@ -15,6 +15,12 @@ pub const SATP: u16      = 0x180;
 /// Sstc supervisor timer compare (RV64: 64-bit CSR).
 pub const STIMECMP: u16  = 0x14D;
 
+// AIA CSRs. We do not implement AIA; these reads must trap so OpenSBI's
+// feature probe does not enable the AIA interrupt path (which would read
+// MTOPI and silently skip MSIP processing).
+pub const STOPI: u16     = 0xDB0;
+pub const MTOPI: u16     = 0xFB0;
+
 // M-mode
 pub const MSTATUS: u16   = 0x300;
 pub const MISA: u16      = 0x301;
@@ -216,6 +222,9 @@ impl CsrFile {
             SIP       => Some(self.mip & SIE_MASK),
             SATP      => Some(self.satp),
             STIMECMP  => Some(self.stimecmp),
+            // Unsupported AIA CSRs must trap (illegal instruction) so
+            // OpenSBI does not detect SMAIA/SSAIA.
+            MTOPI | STOPI => None,
             CYCLE     => Some(insn_count),
             TIME      => Some(insn_count),
             INSTRET   => Some(insn_count),

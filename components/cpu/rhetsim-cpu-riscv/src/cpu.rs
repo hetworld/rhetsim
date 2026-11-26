@@ -133,6 +133,10 @@ impl RiscvCpu {
 
     pub fn set_pc(&mut self, pc: u64) { self.pc = pc; }
 
+    /// Set the hart ID reported by the `mhartid` CSR. Must be called before
+    /// the CPU starts (OpenSBI and Linux use it to identify the hart).
+    pub fn set_hartid(&mut self, hartid: u64) { self.csr.mhartid = hartid; }
+
     pub fn set_uart_addr(&mut self, addr: u64) {
         if let MemBackend::Flat { uart_addr, .. } = &mut self.backend {
             *uart_addr = addr;
@@ -704,7 +708,14 @@ impl RiscvCpu {
                     self.take_trap(2, 0);
                     return;
                 }
-                let old = self.csr.read(csr, self.insn_count).unwrap_or(0);
+                let old = match self.csr.read(csr, self.insn_count) {
+                    Some(v) => v,
+                    None => {
+                        // Unsupported CSR: illegal instruction.
+                        self.take_trap(2, 0);
+                        return;
+                    }
+                };
                 let src = self.regs[rs1 as usize];
                 match funct3 {
                     1 => {

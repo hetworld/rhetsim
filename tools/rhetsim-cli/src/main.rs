@@ -182,18 +182,24 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
         .expect("boot requires a rhetsim-intc-clint unit");
     let plic_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-intc-plic")
         .expect("boot requires a rhetsim-intc-plic unit");
-    let cpu_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-cpu-riscv")
-        .expect("boot requires a rhetsim-cpu-riscv unit");
+    let cpu_descs: Vec<&UnitDesc> = manifest.units.iter()
+        .filter(|u| u.kind == "rhetsim-cpu-riscv")
+        .collect();
+    if cpu_descs.is_empty() {
+        eprintln!("boot requires at least one rhetsim-cpu-riscv unit");
+        std::process::exit(1);
+    }
+    let num_harts = cpu_descs.len();
 
     let dram_size = cfg_usize(&dram_desc.config, "size",
         cfg_usize(&dram_desc.config, "size_mb", 64) * 1024 * 1024);
     let dram_base = cfg_u64(&dram_desc.config, "base", 0x8000_0000);
-    let clint_harts = cfg_usize(&clint_desc.config, "num_harts", 1);
+    let clint_harts = cfg_usize(&clint_desc.config, "num_harts", num_harts).max(num_harts);
     let clint_base = cfg_u64(&clint_desc.config, "base", 0x0200_0000);
     let plic_base = cfg_u64(&plic_desc.config, "base", 0x0c00_0000);
     let plic_sources = cfg_usize(&plic_desc.config, "num_sources", 64);
-    let plic_contexts = cfg_usize(&plic_desc.config, "num_contexts", 2);
-    let mem_base = cfg_u64(&cpu_desc.config, "mem_base", dram_base);
+    let plic_contexts = cfg_usize(&plic_desc.config, "num_contexts", num_harts * 2)
+        .max(num_harts * 2);
 
     let fw_addr = boot.firmware_addr.unwrap_or(dram_base);
     let kernel_addr = boot.kernel_addr.unwrap_or(dram_base + 0x0020_0000);
@@ -201,8 +207,9 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
 
     info!("Boot layout:");
     info!("  DRAM    @ 0x{:08X}  ({} MiB)", dram_base, dram_size / (1024 * 1024));
-    info!("  CLINT   @ 0x{:08X}", clint_base);
+    info!("  CLINT   @ 0x{:08X}  ({} harts)", clint_base, clint_harts);
     info!("  PLIC    @ 0x{:08X}  ({} sources, {} contexts)", plic_base, plic_sources, plic_contexts);
+    info!("  HARTs   {}", num_harts);
 
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(&dram_desc.id, dram_size, dram_base));
     let clint = Arc::new(rhetsim_intc_clint::Clint::new(&clint_desc.id, clint_harts, clint_base));
@@ -220,30 +227,41 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     bus.map(uart.clone() as Arc<dyn MemTarget>, uart_base, MemAttrs::rw(), None).unwrap();
     let bus = Arc::new(bus);
 
-    // UART IRQ 10 is a PLIC source; the PLIC drives context 0 (M) and
-    // context 1 (S) into the CPU's MEIP/SEIP inputs.
+    // UART IRQ 10 is a PLIC source; per hart, PLIC context 2*hart is the
+    // M-mode output (MEIP) and 2*hart+1 is the S-mode output (SEIP).
     uart.set_irq_line(IrqLine::new(plic.clone() as Arc<dyn IrqSink>, UART_PLIC_IRQ));
 
-    let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus(&cpu_desc.id, bus, mem_base);
-    cpu.set_irq_line(RiscvIrqLine::MTimer, Arc::new(ClintLine::new(clint.clone(), 0, true)));
-    cpu.set_irq_line(RiscvIrqLine::MSoft, Arc::new(ClintLine::new(clint.clone(), 0, false)));
-    cpu.set_irq_line(RiscvIrqLine::MExt, Arc::new(PlicContextLine::new(plic.clone(), 0)));
-    cpu.set_irq_line(RiscvIrqLine::SExt, Arc::new(PlicContextLine::new(plic.clone(), 1)));
+    let mut cpus: Vec<rhetsim_cpu_riscv::RiscvCpu> = Vec::with_capacity(num_harts);
+    for (hart, desc) in cpu_descs.iter().enumerate() {
+        let hart_mem_base = cfg_u64(&desc.config, "mem_base", dram_base);
+        let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus(&desc.id, bus.clone(), hart_mem_base);
+        cpu.set_hartid(hart as u64);
+        cpu.set_irq_line(RiscvIrqLine::MTimer, Arc::new(ClintLine::new(clint.clone(), hart, true)));
+        cpu.set_irq_line(RiscvIrqLine::MSoft, Arc::new(ClintLine::new(clint.clone(), hart, false)));
+        cpu.set_irq_line(RiscvIrqLine::MExt, Arc::new(PlicContextLine::new(plic.clone(), hart * 2)));
+        cpu.set_irq_line(
+            RiscvIrqLine::SExt,
+            Arc::new(PlicContextLine::new(plic.clone(), hart * 2 + 1)),
+        );
+        cpus.push(cpu);
+    }
 
-    let fw_result = load_image(&mut cpu, &fw_data, fw_addr, dram_base, "Firmware");
-    let _kernel_result = load_image(&mut cpu, &kernel_data, kernel_addr, dram_base, "Kernel");
-    cpu.load_binary(&dtb_data, dtb_addr - dram_base);
+    // Firmware, kernel and DTB are shared in DRAM; load them through hart 0.
+    let fw_result = load_image(&mut cpus[0], &fw_data, fw_addr, dram_base, "Firmware");
+    let _kernel_result = load_image(&mut cpus[0], &kernel_data, kernel_addr, dram_base, "Kernel");
+    cpus[0].load_binary(&dtb_data, dtb_addr - dram_base);
     info!("  DTB       {:>8} bytes -> 0x{:08X} (raw)", dtb_data.len(), dtb_addr);
 
     let entry_pc = fw_result.entry.unwrap_or(fw_addr);
 
     let (dram_ptr, dram_host_base, dram_sz) = dram.host_info();
-    cpu.set_dram_direct(dram_ptr, dram_host_base, dram_sz);
-
-    cpu.set_reg(10, 0);
-    cpu.set_reg(11, dtb_addr);
-    cpu.set_pc(entry_pc);
-    info!("  Entry PC  0x{:08X}", entry_pc);
+    for (hart, cpu) in cpus.iter_mut().enumerate() {
+        cpu.set_dram_direct(dram_ptr, dram_host_base, dram_sz);
+        cpu.set_reg(10, hart as u64); // a0 = hartid
+        cpu.set_reg(11, dtb_addr);   // a1 = DTB
+        cpu.set_pc(entry_pc);
+    }
+    info!("  Entry PC  0x{:08X} ({} harts)", entry_pc, num_harts);
 
     let _raw_guard = if interactive {
         info!("Booting interactive (Ctrl-A X to quit)...");
@@ -295,11 +313,16 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     let mut idle_batches = 0u32;
     let mut last_uart_len = 0usize;
 
-    while !cpu.is_halted() && total_steps < max_steps && !stop.load(Ordering::Relaxed) {
+    while cpus.iter().any(|c| !c.is_halted())
+        && total_steps < max_steps
+        && !stop.load(Ordering::Relaxed)
+    {
         clint.tick(batch);
 
-        cpu.exec(batch).unwrap();
-        total_steps += batch;
+        for cpu in cpus.iter_mut() {
+            cpu.exec(batch).unwrap();
+        }
+        total_steps += batch * num_harts as u64;
 
         if !interactive {
             let out = uart.take_output();
@@ -314,21 +337,29 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
 
         if !interactive {
             if total_steps % 10_000_000 == 0 {
-                debug!(steps = total_steps, pc = format_args!("0x{:X}", cpu.pc()),
-                    mode = cpu.priv_mode(), uart_bytes = all_output.len(),
-                    mip = format_args!("0x{:X}", cpu.csr().mip),
-                    mie = format_args!("0x{:X}", cpu.csr().mie),
-                    mideleg = format_args!("0x{:X}", cpu.csr().mideleg),
-                    mcause = format_args!("0x{:X}", cpu.csr().mcause),
-                    scause = format_args!("0x{:X}", cpu.csr().scause),
+                let cpu0 = &cpus[0];
+                debug!(steps = total_steps, harts = num_harts,
+                    pc = format_args!("0x{:X}", cpu0.pc()),
+                    mode = cpu0.priv_mode(), uart_bytes = all_output.len(),
+                    mip = format_args!("0x{:X}", cpu0.csr().mip),
+                    mie = format_args!("0x{:X}", cpu0.csr().mie),
+                    mcause = format_args!("0x{:X}", cpu0.csr().mcause),
                     mtime = clint.mtime(),
-                    mtimecmp = clint.mtimecmp(0),
-                    insn_count = cpu.insn_count(),
                     timer_pending = clint.timer_pending(0),
                     "progress");
+                if let Some(cpu1) = cpus.get(1) {
+                    debug!(hart1_pc = format_args!("0x{:X}", cpu1.pc()),
+                        hart1_mode = cpu1.priv_mode(),
+                        hart1_mip = format_args!("0x{:X}", cpu1.csr().mip),
+                        "hart1");
+                }
             }
 
-            if all_output.len() > 1000 && cpu.priv_mode() == csr::PRV_M && all_output.len() == last_uart_len {
+            if num_harts == 1
+                && all_output.len() > 1000
+                && cpus[0].priv_mode() == csr::PRV_M
+                && all_output.len() == last_uart_len
+            {
                 idle_batches += 1;
                 if idle_batches > 100 {
                     warn!("CPU idle in M-mode for {}K steps, stopping.", idle_batches * 10);
@@ -345,7 +376,7 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
     if let Some(t) = stdin_thread { let _ = t.join(); }
 
     if interactive {
-        info!("Exited ({} steps)", total_steps);
+        info!("Exited ({} steps, {} harts)", total_steps, num_harts);
     } else {
         use std::io::Write;
         if let Some(log_path) = parse_str_opt(args, "--uart-log") {
@@ -360,8 +391,10 @@ fn boot_riscv_linux(manifest: &Manifest, manifest_dir: &Path, args: &[String], m
             let _ = std::io::stdout().flush();
         }
 
-        info!(steps = total_steps, halted = cpu.is_halted(),
-            pc = format_args!("0x{:X}", cpu.pc()), mode = cpu.priv_mode(), "simulation finished");
+        info!(steps = total_steps, harts = num_harts,
+            halted = cpus.iter().all(|c| c.is_halted()),
+            pc = format_args!("0x{:X}", cpus[0].pc()), mode = cpus[0].priv_mode(),
+            "simulation finished");
 
         let output_str = String::from_utf8_lossy(&all_output);
         if output_str.contains("Run /init as init process") {

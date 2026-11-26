@@ -31,6 +31,22 @@
 				compatible = "riscv,cpu-intc";
 			};
 		};
+
+		cpu@1 {
+			device_type = "cpu";
+			reg = <1>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv64ima";
+			mmu-type = "riscv,sv39";
+
+			cpu1_intc: interrupt-controller {
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+				interrupt-controller;
+				compatible = "riscv,cpu-intc";
+			};
+		};
 	};
 
 	memory@80000000 {
@@ -47,7 +63,8 @@
 		clint@2000000 {
 			compatible = "riscv,clint0";
 			reg = <0x0 0x2000000 0x0 0x10000>;
-			interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+			interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7
+					       &cpu1_intc 3 &cpu1_intc 7>;
 		};
 
 		plic: interrupt-controller@c000000 {
@@ -57,8 +74,9 @@
 			#address-cells = <0>;
 			#interrupt-cells = <1>;
 			riscv,ndev = <64>;
-			/* context 0: M-mode external (11), context 1: S-mode external (9) */
-			interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+			/* One M-mode and one S-mode context per hart. */
+			interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9
+					       &cpu1_intc 11 &cpu1_intc 9>;
 		};
 
 		serial@10000000 {
