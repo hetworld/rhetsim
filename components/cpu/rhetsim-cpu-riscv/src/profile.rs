@@ -263,6 +263,14 @@ const THEAD_C908_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::D)
         .union(IsaExtensions::ZBA)
         .union(IsaExtensions::ZBB)
+        .union(IsaExtensions::ZBC)
+        .union(IsaExtensions::ZBS)
+        .union(IsaExtensions::ZBKC)
+        .union(IsaExtensions::ZKT)
+        .union(IsaExtensions::ZIHINTPAUSE)
+        .union(IsaExtensions::ZICBOM)
+        .union(IsaExtensions::ZICBOZ)
+        .union(IsaExtensions::SVINVAL)
         .union(IsaExtensions::SSTC)
         .union(IsaExtensions::SSCOFPMF),
     dts_isa: "rv64gcb",
@@ -380,11 +388,15 @@ mod tests {
             .contains(IsaExtensions::D));
 
         let c908 = RiscvCpuType::THeadC908.profile().missing();
-        assert!(c908.contains(IsaExtensions::ZBC));
         assert!(c908.contains(IsaExtensions::XTHEAD));
-        assert!(c908.contains(IsaExtensions::SVINVAL));
+        assert!(c908.contains(IsaExtensions::SVNAPOT));
+        assert!(c908.contains(IsaExtensions::SVPBMT));
+        assert!(c908.contains(IsaExtensions::SMEPMP));
         assert!(!c908.contains(IsaExtensions::F));
         assert!(!c908.contains(IsaExtensions::D));
+        assert!(!c908.contains(IsaExtensions::ZBC));
+        assert!(!c908.contains(IsaExtensions::ZBS));
+        assert!(!c908.contains(IsaExtensions::SVINVAL));
         // Vector is optional on C908 and is not part of the base profile.
         assert!(!RiscvCpuType::THeadC908
             .profile()

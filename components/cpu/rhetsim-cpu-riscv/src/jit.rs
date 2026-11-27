@@ -272,6 +272,7 @@ impl JitEngine {
                     | Instruction::FpFma { .. }
                     | Instruction::Bitmanip { .. }
                     | Instruction::BitmanipImm { .. }
+                    | Instruction::Cbo { .. }
             ) {
                 return None;
             }
@@ -903,7 +904,8 @@ impl JitEngine {
                     | Instruction::FpOp { .. }
                     | Instruction::FpFma { .. }
                     | Instruction::Bitmanip { .. }
-                    | Instruction::BitmanipImm { .. } => return None,
+                    | Instruction::BitmanipImm { .. }
+                    | Instruction::Cbo { .. } => return None,
                     Instruction::Fence => { /* no-op */ }
                     Instruction::Unknown(_) => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_TRAP, idx + 1, 0);
