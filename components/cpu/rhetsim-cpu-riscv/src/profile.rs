@@ -257,8 +257,6 @@ const THEAD_C908_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::SVNAPOT)
         .union(IsaExtensions::SVPBMT)
         .union(IsaExtensions::SSCOFPMF)
-        .union(IsaExtensions::SMEPMP)
-        .union(IsaExtensions::XTHEAD)
         .union(IsaExtensions::XTHEAD_SYNC),
     implemented: COMMON_IMPLEMENTED
         .union(IsaExtensions::C)
@@ -279,7 +277,23 @@ const THEAD_C908_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::SSTC)
         .union(IsaExtensions::SSCOFPMF)
         .union(IsaExtensions::XTHEAD_SYNC),
-    dts_isa: "rv64gcb",
+    dts_isa: "rv64imafdc_zicsr_zifencei_zba_zbb_zbc_zbs_zbkc_zkt_zicbom_zicboz_zihintpause_svinval_svnapot_svpbmt_sstc_sscofpmf",
+    dts_compatible: &["thead,c908"],
+    mvendorid: 0x5b7,
+    marchid: 0x8d143000,
+    mimpid: 0,
+};
+
+/// C908 with the remaining XThead vendor extensions and Smepmp enabled.
+const THEAD_C908_FULL_PROFILE: CpuProfile = CpuProfile {
+    name: "thead-c908-full",
+    vendor: "T-Head",
+    declared: THEAD_C908_PROFILE
+        .declared
+        .union(IsaExtensions::SMEPMP)
+        .union(IsaExtensions::XTHEAD),
+    implemented: THEAD_C908_PROFILE.implemented,
+    dts_isa: THEAD_C908_PROFILE.dts_isa,
     dts_compatible: &["thead,c908"],
     mvendorid: 0x5b7,
     marchid: 0x8d143000,
@@ -296,8 +310,10 @@ pub enum RiscvCpuType {
     RhetSimRv64Imac,
     /// SiFive U74 alignment profile (F/D and bitmanip pending).
     SiFiveU74,
-    /// T-Head C908 alignment profile (F/D, bitmanip and vendor extensions pending).
+    /// T-Head C908 base profile (implemented subset, no optional Smepmp/XThead).
     THeadC908,
+    /// T-Head C908 with the remaining XThead vendor extensions and Smepmp.
+    THeadC908Full,
 }
 
 impl RiscvCpuType {
@@ -306,6 +322,7 @@ impl RiscvCpuType {
         Self::RhetSimRv64Imac,
         Self::SiFiveU74,
         Self::THeadC908,
+        Self::THeadC908Full,
     ];
 
     pub fn parse(value: &str) -> Result<Self, String> {
@@ -318,6 +335,10 @@ impl RiscvCpuType {
             Ok(Self::RhetSimRv64Imac)
         } else if value.eq_ignore_ascii_case("sifive-u74") || value.eq_ignore_ascii_case("u74") {
             Ok(Self::SiFiveU74)
+        } else if value.eq_ignore_ascii_case("thead-c908-full")
+            || value.eq_ignore_ascii_case("c908-full")
+        {
+            Ok(Self::THeadC908Full)
         } else if value.eq_ignore_ascii_case("thead-c908")
             || value.eq_ignore_ascii_case("xuantie-c908")
             || value.eq_ignore_ascii_case("c908")
@@ -341,6 +362,7 @@ impl RiscvCpuType {
             Self::RhetSimRv64Imac => &RHETSIM_IMAC_PROFILE,
             Self::SiFiveU74 => &SIFIVE_U74_PROFILE,
             Self::THeadC908 => &THEAD_C908_PROFILE,
+            Self::THeadC908Full => &THEAD_C908_FULL_PROFILE,
         }
     }
 
@@ -393,17 +415,20 @@ mod tests {
             .implemented
             .contains(IsaExtensions::D));
 
-        let c908 = RiscvCpuType::THeadC908.profile().missing();
-        assert!(c908.contains(IsaExtensions::XTHEAD));
-        assert!(c908.contains(IsaExtensions::SMEPMP));
-        assert!(!c908.contains(IsaExtensions::XTHEAD_SYNC));
-        assert!(!c908.contains(IsaExtensions::F));
-        assert!(!c908.contains(IsaExtensions::D));
-        assert!(!c908.contains(IsaExtensions::ZBC));
-        assert!(!c908.contains(IsaExtensions::ZBS));
-        assert!(!c908.contains(IsaExtensions::SVINVAL));
-        assert!(!c908.contains(IsaExtensions::SVNAPOT));
-        assert!(!c908.contains(IsaExtensions::SVPBMT));
+        assert!(RiscvCpuType::THeadC908.ensure_implemented().is_ok());
+        assert!(!RiscvCpuType::THeadC908
+            .profile()
+            .implemented
+            .contains(IsaExtensions::XTHEAD));
+        assert!(!RiscvCpuType::THeadC908
+            .profile()
+            .implemented
+            .contains(IsaExtensions::SMEPMP));
+
+        let full = RiscvCpuType::THeadC908Full.profile().missing();
+        assert!(full.contains(IsaExtensions::XTHEAD));
+        assert!(full.contains(IsaExtensions::SMEPMP));
+        assert!(!full.contains(IsaExtensions::XTHEAD_SYNC));
         // Vector is optional on C908 and is not part of the base profile.
         assert!(!RiscvCpuType::THeadC908
             .profile()
@@ -439,6 +464,10 @@ mod tests {
         assert_eq!(
             RiscvCpuType::parse("c908").unwrap(),
             RiscvCpuType::THeadC908
+        );
+        assert_eq!(
+            RiscvCpuType::parse("thead-c908-full").unwrap(),
+            RiscvCpuType::THeadC908Full
         );
         assert!(RiscvCpuType::parse("rv64gcv").is_err());
     }
