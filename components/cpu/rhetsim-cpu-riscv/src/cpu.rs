@@ -229,6 +229,20 @@ impl RiscvCpu {
     pub fn reg(&self, idx: usize) -> u64 {
         self.regs[idx]
     }
+
+    /// Floating-point register bit pattern (NaN-boxed for single precision).
+    pub fn freg(&self, idx: usize) -> u64 {
+        self.fregs[idx]
+    }
+
+    /// JIT counters `(compiled blocks, executions, invalidations, fallbacks)`
+    /// when the JIT is enabled.
+    pub fn jit_stats(&self) -> Option<(u64, u64, u64, u64)> {
+        self.jit.as_ref().map(|jit| {
+            let (compiles, executions, invalidations) = jit.stats();
+            (compiles, executions, invalidations, jit.fallback_count())
+        })
+    }
     pub fn set_reg(&mut self, idx: usize, val: u64) {
         if idx != 0 && idx < 32 {
             self.regs[idx] = val;
