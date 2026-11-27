@@ -7,6 +7,8 @@ const PTE_X: u64 = 1 << 3;
 const PTE_U: u64 = 1 << 4;
 const PTE_A: u64 = 1 << 6;
 const PTE_D: u64 = 1 << 7;
+/// Svnapot: NAPOT-contiguous mapping bit.
+const PTE_N: u64 = 1 << 63;
 
 const LEVELS: usize = 3;
 const PTESIZE: u64 = 8;
@@ -34,6 +36,16 @@ impl PageFault {
             AccessType::Fetch => 12,
             AccessType::Load => 13,
             AccessType::Store => 15,
+        };
+        Self { cause, tval: va }
+    }
+
+    /// Physical access fault (PMP denial): cause 1/5/7.
+    pub fn access_fault(access: AccessType, va: u64) -> Self {
+        let cause = match access {
+            AccessType::Fetch => 1,
+            AccessType::Load => 5,
+            AccessType::Store => 7,
         };
         Self { cause, tval: va }
     }
@@ -82,6 +94,19 @@ pub fn translate_sv39(
             }
             if matches!(access, AccessType::Store) && pte & PTE_D == 0 {
                 return Err(PageFault::new(access, va));
+            }
+
+            if pte & PTE_N != 0 {
+                // Only the standardized 64 KiB NAPOT encoding is accepted.
+                if level != 0 {
+                    return Err(PageFault::new(access, va));
+                }
+                let napot_bits = ppn.trailing_zeros() + 1;
+                if napot_bits != 4 {
+                    return Err(PageFault::new(access, va));
+                }
+                let ppn = (ppn & !0xF) | ((va >> 12) & 0xF);
+                return Ok((ppn << 12) | page_offset);
             }
 
             let mut pa = page_offset;
@@ -314,6 +339,37 @@ mod tests {
         let va = 0x0000_0000_0040_0ABC;
         let pa = translate_sv39(va, satp, AccessType::Load, 1, 0, &phys_read).unwrap();
         assert_eq!(pa, target_ppn * PAGESIZE + 0xABC);
+    }
+
+    #[test]
+    fn sv39_svnapot_64k_page() {
+        let l2_ppn: u64 = 0x100;
+        let l1_ppn: u64 = 0x200;
+        let l0_ppn: u64 = 0x300;
+        let satp = (8u64 << 60) | l2_ppn;
+
+        let l2_pte = make_pte(l1_ppn, PTE_V);
+        let l1_pte = make_pte(l0_ppn, PTE_V);
+        let l0_pte = make_pte(
+            0x508, // low nibble 1000 selects a 64 KiB NAPOT mapping
+            PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D | PTE_N,
+        );
+
+        let phys_read = move |addr: u64| -> u64 {
+            if addr == l2_ppn * PAGESIZE {
+                l2_pte
+            } else if addr == l1_ppn * PAGESIZE {
+                l1_pte
+            } else if addr == l0_ppn * PAGESIZE + 4 * PTESIZE {
+                l0_pte
+            } else {
+                0
+            }
+        };
+
+        let va = 0x4ABC; // VPN[0]=4, within the 64 KiB NAPOT region
+        let pa = translate_sv39(va, satp, AccessType::Load, 1, 0, &phys_read).unwrap();
+        assert_eq!(pa, 0x504000 + 0xABC);
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod csr;
 pub mod decode;
 pub mod jit;
 pub mod mmu;
+pub mod pmp;
 pub mod profile;
 
 pub use cpu::{RiscvCpu, RiscvIrqLine};

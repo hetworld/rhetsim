@@ -131,6 +131,16 @@ pub enum Instruction {
         rs1: u8,
         rs2: u8,
     },
+    Cbo {
+        op: u8,
+        rs1: u8,
+    },
+    /// T-Head XTheadSync barrier (no architectural state).
+    TheadSync,
+    /// Other T-Head XThead vendor instruction (decoded by mask at execution).
+    Thead {
+        raw: u32,
+    },
     // Atomics (A extension)
     Amo {
         funct5: u8,
@@ -280,8 +290,8 @@ pub fn decode(insn: u32) -> Instruction {
             let f3 = funct3(insn);
             let f7 = funct7(insn);
             let funct12 = ((insn >> 20) & 0xFFF) as u16;
-            let bitmanip =
-                (f3 == 1 && f7 == 0x30) || (f3 == 5 && (f7 == 0x30 || f7 == 0x35 || f7 == 0x14));
+            let bitmanip = (f3 == 1 && (f7 == 0x30 || f7 == 0x14 || f7 == 0x24 || f7 == 0x34))
+                || (f3 == 5 && (f7 == 0x30 || f7 == 0x35 || f7 == 0x14 || f7 == 0x24));
             if bitmanip {
                 Instruction::BitmanipImm {
                     opcode: 0x13,
@@ -305,7 +315,14 @@ pub fn decode(insn: u32) -> Instruction {
             let f3 = funct3(insn);
             let bitmanip = matches!(
                 (f7, f3),
-                (0x10, 2 | 4 | 6) | (0x20, 4 | 6 | 7) | (0x05, 4..=7) | (0x30, 1 | 5)
+                (0x10, 2 | 4 | 6)
+                    | (0x20, 4 | 6 | 7)
+                    | (0x05, 1..=3)
+                    | (0x05, 4..=7)
+                    | (0x14, 1)
+                    | (0x24, 1 | 5)
+                    | (0x34, 1)
+                    | (0x30, 1 | 5)
             );
             if bitmanip {
                 Instruction::Bitmanip {
@@ -381,6 +398,8 @@ pub fn decode(insn: u32) -> Instruction {
                     0x102 => Instruction::Sret,
                     0x302 => Instruction::Mret,
                     0x105 => Instruction::Wfi,
+                    // Svinval fine-grained fences.
+                    0x180 | 0x1A0 => Instruction::SfenceVma { rs1: 0, rs2: 0 },
                     _ => {
                         if (insn >> 25) == 0x09 {
                             Instruction::SfenceVma {
@@ -404,13 +423,22 @@ pub fn decode(insn: u32) -> Instruction {
                 }
             }
         }
-        0x0F => {
-            if funct3(insn) == 1 {
-                Instruction::FenceI
-            } else {
-                Instruction::Fence
-            }
-        }
+        0x0B => match insn {
+            0x0180_000B | 0x0190_000B | 0x01A0_000B | 0x01B0_000B => Instruction::TheadSync,
+            _ if insn & 0xFE00_7FFF == 0x0400_000B => Instruction::SfenceVma {
+                rs1: rs1(insn),
+                rs2: rs2(insn),
+            },
+            _ => Instruction::Thead { raw: insn },
+        },
+        0x0F => match funct3(insn) {
+            1 => Instruction::FenceI,
+            2 => Instruction::Cbo {
+                op: ((insn >> 20) & 0xF) as u8,
+                rs1: rs1(insn),
+            },
+            _ => Instruction::Fence,
+        },
         0x2F => {
             // A extension (atomics)
             let f5 = (insn >> 27) & 0x1F;

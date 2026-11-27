@@ -1,5 +1,6 @@
 //! RISC-V CSR file — M-mode and S-mode
 
+use crate::pmp;
 use crate::profile::RiscvCpuType;
 
 // ── CSR addresses ─────────────────────────────────────────────
@@ -40,10 +41,14 @@ pub const MCOUNTINHIBIT: u16 = 0x320;
 pub const MHPMEVENT3: u16 = 0x323;
 pub const MHPMCOUNTER3: u16 = 0xB03;
 
-// PMP
+// PMP / Smepmp
 pub const PMPCFG0: u16 = 0x3A0;
+pub const PMPCFG1: u16 = 0x3A1;
 pub const PMPCFG2: u16 = 0x3A2;
+pub const PMPCFG3: u16 = 0x3A3;
 pub const PMPADDR0: u16 = 0x3B0;
+pub const MSECCFG: u16 = 0x747;
+pub const MSECCFGH: u16 = 0x757;
 
 // Counters (M-mode)
 pub const MCYCLE: u16 = 0xB00;
@@ -187,9 +192,11 @@ pub struct CsrFile {
     pub stimecmp: u64,
     pub sstc_active: bool,
     pub scounteren: u64,
-    // PMP (store-only, no enforcement)
+    // PMP / Smepmp
     pub pmpcfg: [u64; 2],
     pub pmpaddr: [u64; 16],
+    /// Smepmp machine security configuration (`MML`/`MMWP`/`RLB`).
+    pub mseccfg: u64,
 }
 
 impl CsrFile {
@@ -233,6 +240,7 @@ impl CsrFile {
             scounteren: 0,
             pmpcfg: [0; 2],
             pmpaddr: [0; 16],
+            mseccfg: 0,
         }
     }
 
@@ -273,7 +281,11 @@ impl CsrFile {
             MHARTID => Some(self.mhartid),
             PMPCFG0 => Some(self.pmpcfg[0]),
             PMPCFG2 => Some(self.pmpcfg[1]),
-            a @ 0x3B0..=0x3BF => Some(self.pmpaddr[(a - PMPADDR0) as usize]),
+            // On RV64 the odd-numbered pmpcfg registers do not exist.
+            PMPCFG1 | PMPCFG3 => None,
+            a @ 0x3B0..=0x3BF => Some(self.pmpaddr[(a - PMPADDR0) as usize] & pmp::PMPADDR_MASK),
+            MSECCFG => Some(self.mseccfg),
+            MSECCFGH => Some(self.mseccfg >> 32),
             SSTATUS => Some(self.mstatus & SSTATUS_MASK),
             SIE => Some(self.mie & SIE_MASK),
             STVEC => Some(self.stvec),
@@ -316,9 +328,27 @@ impl CsrFile {
             MINSTRET => self.minstret = val,
             a @ MHPMEVENT3..=0x33F => self.mhpmevent[(a - MHPMEVENT3 + 3) as usize] = val,
             a @ MHPMCOUNTER3..=0xB1F => self.mhpmcounter[(a - MHPMCOUNTER3 + 3) as usize] = val,
-            PMPCFG0 => self.pmpcfg[0] = val,
-            PMPCFG2 => self.pmpcfg[1] = val,
-            a @ 0x3B0..=0x3BF => self.pmpaddr[(a - PMPADDR0) as usize] = val,
+            PMPCFG0 => {
+                for i in 0..8 {
+                    let byte = (val >> (i * 8)) as u8;
+                    pmp::write_cfg(self.mseccfg, &mut self.pmpcfg, i, byte);
+                }
+            }
+            PMPCFG2 => {
+                for i in 0..8 {
+                    let byte = (val >> (i * 8)) as u8;
+                    pmp::write_cfg(self.mseccfg, &mut self.pmpcfg, i + 8, byte);
+                }
+            }
+            a @ 0x3B0..=0x3BF => {
+                let index = (a - PMPADDR0) as usize;
+                pmp::write_addr(self.mseccfg, &self.pmpcfg, &mut self.pmpaddr, index, val);
+            }
+            MSECCFG => {
+                pmp::write_mseccfg(&mut self.mseccfg, &self.pmpcfg, val);
+            }
+            MSECCFGH => {}
+            PMPCFG1 | PMPCFG3 => {}
             SSTATUS => self.mstatus = (self.mstatus & !SSTATUS_WRITABLE) | (val & SSTATUS_WRITABLE),
             SIE => self.mie = (self.mie & !SIE_MASK) | (val & SIE_MASK),
             STVEC => self.stvec = val,
@@ -372,6 +402,7 @@ impl CsrFile {
         self.mhpmcounter = [0; 32];
         self.pmpcfg = [0; 2];
         self.pmpaddr = [0; 16];
+        self.mseccfg = 0;
     }
 
     /// Advance cycle/instruction/HPM counters by `steps` retired instructions.
@@ -509,7 +540,7 @@ impl CsrFile {
     }
 
     pub fn state_size() -> usize {
-        87 * 8
+        106 * 8
     }
 
     pub fn save(&self) -> Vec<u8> {
@@ -542,6 +573,12 @@ impl CsrFile {
             buf.extend_from_slice(&v.to_le_bytes());
         }
         for value in self.mhpmevent.iter().chain(self.mhpmcounter.iter()) {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        for &v in &[self.mseccfg, self.pmpcfg[0], self.pmpcfg[1]] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for value in &self.pmpaddr {
             buf.extend_from_slice(&value.to_le_bytes());
         }
         buf
@@ -595,7 +632,7 @@ impl CsrFile {
             self.fcsr = 0;
         }
 
-        if data.len() >= Self::state_size() {
+        if data.len() >= 87 * 8 {
             self.mcycle = r(160);
             self.minstret = r(168);
             self.mcountinhibit = r(176);
@@ -609,6 +646,19 @@ impl CsrFile {
             self.mcountinhibit = 0;
             self.mhpmevent = [0; 32];
             self.mhpmcounter = [0; 32];
+        }
+
+        if data.len() >= Self::state_size() {
+            self.mseccfg = r(696);
+            self.pmpcfg[0] = r(704);
+            self.pmpcfg[1] = r(712);
+            for (i, addr) in self.pmpaddr.iter_mut().enumerate() {
+                *addr = r(720 + i * 8);
+            }
+        } else {
+            self.mseccfg = 0;
+            self.pmpcfg = [0; 2];
+            self.pmpaddr = [0; 16];
         }
     }
 }

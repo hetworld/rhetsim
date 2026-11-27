@@ -4,6 +4,7 @@ use crate::csr::{self, CsrFile};
 use crate::decode::{decode, decode_compressed, Instruction};
 use crate::jit::{FastTlbEntry, HelperContext, JitCpuState, JitEngine, FAST_TLB_SIZE};
 use crate::mmu;
+use crate::pmp;
 use crate::profile::RiscvCpuType;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
@@ -249,7 +250,16 @@ impl RiscvCpu {
         self.priv_mode
     }
     pub fn set_priv_mode(&mut self, mode: u8) {
-        self.priv_mode = mode;
+        self.enter_priv(mode);
+    }
+
+    /// Switch privilege level; translation caches are mode-sensitive.
+    fn enter_priv(&mut self, mode: u8) {
+        if mode != self.priv_mode {
+            self.priv_mode = mode;
+            self.tlb.flush();
+            self.flush_fast_tlb();
+        }
     }
 
     pub fn set_dram_direct(&mut self, ptr: *mut u8, base: u64, size: u64) {
@@ -377,27 +387,57 @@ impl RiscvCpu {
 
     // ── Virtual → Physical translation ────────────────────────
 
-    fn translate_walk(&self, va: u64, access: mmu::AccessType) -> Result<u64, mmu::PageFault> {
+    /// Privilege level used for a data access. `mstatus.MPRV` makes M-mode
+    /// perform loads and stores as the mode recorded in `MPP`.
+    fn effective_priv(&self, access: mmu::AccessType) -> u8 {
+        if !matches!(access, mmu::AccessType::Fetch)
+            && self.priv_mode == csr::PRV_M
+            && self.csr.mstatus & csr::MSTATUS_MPRV != 0
+        {
+            ((self.csr.mstatus & csr::MSTATUS_MPP_MASK) >> 11) as u8
+        } else {
+            self.priv_mode
+        }
+    }
+
+    fn translate_walk(
+        &self,
+        va: u64,
+        access: mmu::AccessType,
+        priv_mode: u8,
+    ) -> Result<u64, mmu::PageFault> {
         mmu::translate_sv39(
             va,
             self.csr.satp,
             access,
-            self.priv_mode,
+            priv_mode,
             self.csr.mstatus,
             &|addr| self.phys_read(addr, 8),
         )
     }
 
-    fn translate(&mut self, va: u64, access: mmu::AccessType) -> Result<u64, mmu::PageFault> {
+    /// Translate a virtual address and enforce PMP on the resulting
+    /// physical range.
+    fn translate(
+        &mut self,
+        va: u64,
+        access: mmu::AccessType,
+        size: u64,
+    ) -> Result<u64, mmu::PageFault> {
+        let priv_mode = self.effective_priv(access);
         let mode = (self.csr.satp >> 60) & 0xF;
-        if mode == 0 || self.priv_mode == 3 {
-            return Ok(va);
+        let pa = if mode == 0 || priv_mode == csr::PRV_M {
+            va
+        } else if let Some(pa) = self.tlb.lookup(va, access) {
+            pa
+        } else {
+            let pa = self.translate_walk(va, access, priv_mode)?;
+            self.tlb.fill(va, pa, access);
+            pa
+        };
+        if !pmp::check(&self.csr, priv_mode, pa, size, access) {
+            return Err(mmu::PageFault::access_fault(access, va));
         }
-        if let Some(pa) = self.tlb.lookup(va, access) {
-            return Ok(pa);
-        }
-        let pa = self.translate_walk(va, access)?;
-        self.tlb.fill(va, pa, access);
         Ok(pa)
     }
 
@@ -432,7 +472,7 @@ impl RiscvCpu {
                 self.halted = true;
             } else {
                 self.pc = target;
-                self.priv_mode = csr::PRV_S;
+                self.enter_priv(csr::PRV_S);
             }
         } else {
             let target = self.csr.trap_enter_m(self.pc, cause, tval, self.priv_mode);
@@ -440,7 +480,7 @@ impl RiscvCpu {
                 self.halted = true;
             } else {
                 self.pc = target;
-                self.priv_mode = csr::PRV_M;
+                self.enter_priv(csr::PRV_M);
             }
         }
     }
@@ -494,7 +534,7 @@ impl RiscvCpu {
     fn jit_load(cpu_ptr: *mut u8, va: u64, size: usize, fault_out: *mut u64) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
         cpu.slow_loads += 1;
-        let pa = match cpu.translate(va, mmu::AccessType::Load) {
+        let pa = match cpu.translate(va, mmu::AccessType::Load, size as u64) {
             Ok(pa) => pa,
             Err(f) => {
                 cpu.jit_fault = Some((f.cause, f.tval));
@@ -511,7 +551,7 @@ impl RiscvCpu {
     fn jit_store(cpu_ptr: *mut u8, va: u64, size: usize, val: u64, fault_out: *mut u64) -> u64 {
         let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
         cpu.slow_stores += 1;
-        let pa = match cpu.translate(va, mmu::AccessType::Store) {
+        let pa = match cpu.translate(va, mmu::AccessType::Store, size as u64) {
             Ok(pa) => pa,
             Err(f) => {
                 cpu.jit_fault = Some((f.cause, f.tval));
@@ -570,7 +610,7 @@ impl RiscvCpu {
 
         let fetch_fn = |pc: u64| -> Result<u64, (u64, u64)> {
             let cpu = unsafe { &mut *(self_ptr as *mut RiscvCpu) };
-            let pa = match cpu.translate(pc, mmu::AccessType::Fetch) {
+            let pa = match cpu.translate(pc, mmu::AccessType::Fetch, 2) {
                 Ok(pa) => pa,
                 Err(fault) => return Err((fault.cause, fault.tval)),
             };
@@ -578,6 +618,15 @@ impl RiscvCpu {
             if lo & 0x3 != 0x3 {
                 Ok(lo as u64)
             } else {
+                if !pmp::check(
+                    &cpu.csr,
+                    cpu.effective_priv(mmu::AccessType::Fetch),
+                    pa,
+                    4,
+                    mmu::AccessType::Fetch,
+                ) {
+                    return Err((1, pc));
+                }
                 let hi = cpu.phys_read(pa + 2, 2) as u16;
                 Ok(((hi as u64) << 16) | lo as u64)
             }
@@ -625,7 +674,7 @@ impl RiscvCpu {
                 let (pc, mode) = self.csr.mret();
                 self.trace_trap_return("mret", pc, mode);
                 self.pc = pc;
-                self.priv_mode = mode;
+                self.enter_priv(mode);
                 self.insn_count += 1;
             }
             6 => {
@@ -634,7 +683,7 @@ impl RiscvCpu {
                 let (pc, mode) = self.csr.sret();
                 self.trace_trap_return("sret", pc, mode);
                 self.pc = pc;
-                self.priv_mode = mode;
+                self.enter_priv(mode);
                 self.insn_count += 1;
             }
             7 => {
@@ -691,7 +740,7 @@ impl RiscvCpu {
     }
 
     fn step_one_interp(&mut self) {
-        let fetch_pa = match self.translate(self.pc, mmu::AccessType::Fetch) {
+        let fetch_pa = match self.translate(self.pc, mmu::AccessType::Fetch, 2) {
             Ok(pa) => pa,
             Err(fault) => {
                 self.take_trap(fault.cause, fault.tval);
@@ -714,6 +763,11 @@ impl RiscvCpu {
             (half as u32, decode_compressed(half))
         } else {
             self.insn_size = 4;
+            let mode = self.effective_priv(mmu::AccessType::Fetch);
+            if !pmp::check(&self.csr, mode, fetch_pa, 4, mmu::AccessType::Fetch) {
+                self.take_trap(1, self.pc);
+                return;
+            }
             let raw = (self.phys_read(fetch_pa + 2, 2) as u32) << 16 | half as u32;
             (raw, decode(raw))
         };
@@ -795,7 +849,7 @@ impl RiscvCpu {
 
     fn execute_fp_load(&mut self, width: u8, rd: u8, rs1: u8, offset: i64) {
         let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
-        let pa = match self.translate(va, mmu::AccessType::Load) {
+        let pa = match self.translate(va, mmu::AccessType::Load, width as u64) {
             Ok(pa) => pa,
             Err(fault) => {
                 self.take_trap(fault.cause, fault.tval);
@@ -813,7 +867,7 @@ impl RiscvCpu {
 
     fn execute_fp_store(&mut self, width: u8, rs1: u8, rs2: u8, offset: i64) {
         let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
-        let pa = match self.translate(va, mmu::AccessType::Store) {
+        let pa = match self.translate(va, mmu::AccessType::Store, width as u64) {
             Ok(pa) => pa,
             Err(fault) => {
                 self.take_trap(fault.cause, fault.tval);
@@ -1087,6 +1141,397 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
+    fn execute_cbo(&mut self, op: u8, rs1: u8) {
+        match op {
+            0..=2 => {}
+            4 => {
+                let base = self.regs[rs1 as usize] & !0x3F;
+                for offset in (0..64).step_by(8) {
+                    let va = base + offset;
+                    let pa = match self.translate(va, mmu::AccessType::Store, 8) {
+                        Ok(pa) => pa,
+                        Err(fault) => {
+                            self.take_trap(fault.cause, fault.tval);
+                            return;
+                        }
+                    };
+                    self.phys_write(pa, 8, 0);
+                }
+            }
+            _ => {
+                self.take_trap(2, 0);
+                return;
+            }
+        }
+        self.pc += self.insn_size;
+    }
+
+    // ── T-Head XThead vendor instructions ─────────────────────
+
+    /// Execute one T-Head XThead instruction (opcode `0x0B`).
+    fn execute_thead(&mut self, raw: u32) {
+        let f3 = ((raw >> 12) & 0x7) as u8;
+        let rd = ((raw >> 7) & 0x1F) as u8;
+        let rs1 = ((raw >> 15) & 0x1F) as u8;
+        let rs2 = ((raw >> 20) & 0x1F) as u8;
+        let hi6 = (raw >> 26) & 0x3F;
+
+        match f3 {
+            0 => {
+                // XTheadCmo cache maintenance is a no-op for this model.
+                if rd == 0 && (raw >> 25) & 0x7F <= 1 {
+                    self.pc += self.insn_size;
+                } else {
+                    self.take_trap(2, 0);
+                }
+            }
+            1 => self.execute_thead_alu(raw, rd, rs1, rs2, hi6),
+            2 | 3 => self.execute_thead_extract(raw, rd, rs1, f3 == 2),
+            4 | 5 => self.execute_thead_mem(raw, rd, rs1, rs2, f3 == 4),
+            6 | 7 => self.execute_thead_fmem(raw, rd, rs1, rs2, f3 == 6),
+            _ => self.take_trap(2, 0),
+        }
+    }
+
+    /// XTheadBa/Bb/Bs/CondMov/Fmv/Mac register operations.
+    fn execute_thead_alu(&mut self, raw: u32, rd: u8, rs1: u8, rs2: u8, hi6: u32) {
+        let dst = rd as usize;
+        let src1 = self.regs[rs1 as usize];
+        let src2 = self.regs[rs2 as usize];
+        let acc = self.regs[dst];
+
+        match hi6 {
+            // th.srri (rotate right) and th.tst (bit test).
+            0b000100 => {
+                let shamt = (raw >> 20) & 0x3F;
+                self.set_rd(rd, src1.rotate_right(shamt));
+            }
+            0b100010 => {
+                let shamt = (raw >> 20) & 0x3F;
+                self.set_rd(rd, (src1 >> shamt) & 1);
+            }
+            _ => {
+                let funct7 = ((raw >> 25) & 0x7F) as u8;
+                // These encodings fix the rs2 field to zero.
+                if rs2 != 0 && matches!(funct7, 0x40..=0x43 | 0x48 | 0x50 | 0x60) {
+                    self.take_trap(2, 0);
+                    return;
+                }
+                match funct7 {
+                    0x00 => self.set_rd(rd, src1.wrapping_add(src2)),
+                    0x01..=0x03 => {
+                        // th.addsl{1,2,3}: shift is applied to rs2.
+                        self.set_rd(rd, src1.wrapping_add(src2 << funct7));
+                    }
+                    0x40 => {
+                        // th.tstnbz: inverted orc.b.
+                        let mut out = 0u64;
+                        for byte in 0..8 {
+                            if (src1 >> (byte * 8)) & 0xFF == 0 {
+                                out |= 0xFF << (byte * 8);
+                            }
+                        }
+                        self.set_rd(rd, out);
+                    }
+                    0x41 => self.set_rd(rd, src1.swap_bytes()),
+                    0x42 => self.set_rd(rd, (!src1).leading_zeros() as u64),
+                    0x43 => self.set_rd(rd, src1.leading_zeros() as u64),
+                    0x48 => {
+                        let v = (src1 as u32).swap_bytes();
+                        self.set_rd(rd, v as i32 as i64 as u64);
+                    }
+                    0x50 => {
+                        // th.fmv.hw.x: f[rd][63:32] = rs1[31:0].
+                        self.fregs[dst] =
+                            (self.fregs[dst] & 0xFFFF_FFFF) | ((src1 & 0xFFFF_FFFF) << 32);
+                        self.mark_fp_dirty();
+                    }
+                    0x60 => {
+                        // th.fmv.x.hw: rd = f[rs1][63:32].
+                        self.set_rd(rd, (self.fregs[rs1 as usize] >> 32) & 0xFFFF_FFFF);
+                    }
+                    0x10 => self.set_rd(rd, acc.wrapping_add(src1.wrapping_mul(src2))),
+                    0x11 => self.set_rd(rd, acc.wrapping_sub(src1.wrapping_mul(src2))),
+                    0x12 => {
+                        let v = (acc as u32).wrapping_add(src1.wrapping_mul(src2) as u32);
+                        self.set_rd(rd, v as i32 as i64 as u64);
+                    }
+                    0x13 => {
+                        let v = (acc as u32).wrapping_sub(src1.wrapping_mul(src2) as u32);
+                        self.set_rd(rd, v as i32 as i64 as u64);
+                    }
+                    0x14 => {
+                        let p = (src1 as i16 as i32).wrapping_mul(src2 as i16 as i32);
+                        let v = (acc as u32).wrapping_add(p as u32);
+                        self.set_rd(rd, v as i32 as i64 as u64);
+                    }
+                    0x15 => {
+                        let p = (src1 as i16 as i32).wrapping_mul(src2 as i16 as i32);
+                        let v = (acc as u32).wrapping_sub(p as u32);
+                        self.set_rd(rd, v as i32 as i64 as u64);
+                    }
+                    0x20 => {
+                        // th.mveqz
+                        if src2 == 0 {
+                            self.set_rd(rd, src1);
+                        }
+                    }
+                    0x21 => {
+                        // th.mvnez
+                        if src2 != 0 {
+                            self.set_rd(rd, src1);
+                        }
+                    }
+                    _ => {
+                        self.take_trap(2, 0);
+                        return;
+                    }
+                }
+            }
+        }
+        self.pc += self.insn_size;
+    }
+
+    /// th.ext / th.extu bitfield extraction.
+    fn execute_thead_extract(&mut self, raw: u32, rd: u8, rs1: u8, signed: bool) {
+        let msb = (raw >> 26) & 0x3F;
+        let lsb = (raw >> 20) & 0x3F;
+        if lsb <= msb {
+            let width = msb - lsb + 1;
+            let mask = if width == 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            };
+            let mut val = (self.regs[rs1 as usize] >> lsb) & mask;
+            if signed && val & (1u64 << (width - 1)) != 0 {
+                val |= !mask;
+            }
+            self.set_rd(rd, val);
+        }
+        self.pc += self.insn_size;
+    }
+
+    fn thead_load_val(&mut self, va: u64, size: u64, signed: bool) -> Option<u64> {
+        let pa = match self.translate(va, mmu::AccessType::Load, size) {
+            Ok(pa) => pa,
+            Err(fault) => {
+                self.take_trap(fault.cause, fault.tval);
+                return None;
+            }
+        };
+        Some(match (size, signed) {
+            (1, true) => self.phys_read(pa, 1) as i8 as i64 as u64,
+            (1, false) => self.phys_read(pa, 1) & 0xFF,
+            (2, true) => self.phys_read(pa, 2) as i16 as i64 as u64,
+            (2, false) => self.phys_read(pa, 2) & 0xFFFF,
+            (4, true) => self.phys_read(pa, 4) as i32 as i64 as u64,
+            (4, false) => self.phys_read(pa, 4) & 0xFFFF_FFFF,
+            _ => self.phys_read(pa, 8),
+        })
+    }
+
+    fn thead_store_val(&mut self, va: u64, size: u64, val: u64) -> bool {
+        let pa = match self.translate(va, mmu::AccessType::Store, size) {
+            Ok(pa) => pa,
+            Err(fault) => {
+                self.take_trap(fault.cause, fault.tval);
+                return false;
+            }
+        };
+        self.phys_write(pa, size as usize, val);
+        true
+    }
+
+    /// XTheadMemIdx / XTheadMemPair memory operations.
+    fn execute_thead_mem(&mut self, raw: u32, rd: u8, rs1: u8, rs2: u8, load: bool) {
+        let hi5 = (raw >> 27) & 0x1F;
+        let imm2 = (raw >> 25) & 0x3;
+        let imm5 = ((((raw >> 20) & 0x1F) << 27) as i32 >> 27) as i64;
+        let inc_imm = (imm5 as u64) << imm2;
+        let base = self.regs[rs1 as usize];
+
+        // Increment forms (th.ldia/ldib, th.sdia/sdib, ...).
+        let inc = match hi5 {
+            0x0F | 0x0D => Some((8, true)),
+            0x0B | 0x09 => Some((4, true)),
+            0x1B | 0x19 => Some((4, false)),
+            0x07 | 0x05 => Some((2, true)),
+            0x17 | 0x15 => Some((2, false)),
+            0x03 | 0x01 => Some((1, true)),
+            0x13 | 0x11 => Some((1, false)),
+            _ => None,
+        };
+        if let Some((size, signed)) = inc {
+            if load {
+                if rs1 == rd {
+                    self.take_trap(2, 0);
+                    return;
+                }
+                let preinc = hi5 & 0x2 == 0;
+                let va = base.wrapping_add(if preinc { inc_imm } else { 0 });
+                let Some(val) = self.thead_load_val(va, size, signed) else {
+                    return;
+                };
+                self.regs[rs1 as usize] = base.wrapping_add(inc_imm);
+                self.set_rd(rd, val);
+            } else {
+                if !matches!(hi5, 0x0F | 0x0D | 0x0B | 0x09 | 0x07 | 0x05 | 0x03 | 0x01) {
+                    self.take_trap(2, 0);
+                    return;
+                }
+                let preinc = hi5 & 0x2 == 0;
+                let va = base.wrapping_add(if preinc { inc_imm } else { 0 });
+                let val = self.regs[rd as usize];
+                if !self.thead_store_val(va, size, val) {
+                    return;
+                }
+                self.regs[rs1 as usize] = base.wrapping_add(inc_imm);
+            }
+            self.pc += self.insn_size;
+            return;
+        }
+
+        // Indexed forms (th.lrd/..., th.lurd/..., th.srd/..., th.surd/...).
+        let idx = match hi5 {
+            0x0C => Some((8, true, false)),
+            0x08 => Some((4, true, false)),
+            0x18 => Some((4, false, false)),
+            0x04 => Some((2, true, false)),
+            0x14 => Some((2, false, false)),
+            0x00 => Some((1, true, false)),
+            0x10 => Some((1, false, false)),
+            0x0E => Some((8, true, true)),
+            0x0A => Some((4, true, true)),
+            0x1A => Some((4, false, true)),
+            0x06 => Some((2, true, true)),
+            0x16 => Some((2, false, true)),
+            0x02 => Some((1, true, true)),
+            0x12 => Some((1, false, true)),
+            _ => None,
+        };
+        if let Some((size, signed, zext_offs)) = idx {
+            if !load && !matches!(hi5, 0x0C | 0x08 | 0x04 | 0x00 | 0x0E | 0x0A | 0x06 | 0x02) {
+                self.take_trap(2, 0);
+                return;
+            }
+            let offset = if zext_offs {
+                self.regs[rs2 as usize] & 0xFFFF_FFFF
+            } else {
+                self.regs[rs2 as usize]
+            };
+            let va = base.wrapping_add(offset << imm2);
+            if load {
+                let Some(val) = self.thead_load_val(va, size, signed) else {
+                    return;
+                };
+                self.set_rd(rd, val);
+            } else {
+                let val = self.regs[rd as usize];
+                if !self.thead_store_val(va, size, val) {
+                    return;
+                }
+            }
+            self.pc += self.insn_size;
+            return;
+        }
+
+        // Pair forms (th.ldd/lwd/lwud/sdd/swd). rd2 lives in bits 24:20.
+        let pair_ok = if load {
+            matches!(hi5, 0x1F | 0x1C | 0x1E)
+        } else {
+            matches!(hi5, 0x1F | 0x1C)
+        };
+        if !pair_ok {
+            self.take_trap(2, 0);
+            return;
+        }
+        let (size, signed, shamt) = match hi5 {
+            0x1F => (8u64, false, 4u32),
+            0x1E => (4, false, 3),
+            _ => (4, true, 3),
+        };
+        if load && (rs1 == rd || rs1 == rs2 || rd == rs2) {
+            self.take_trap(2, 0);
+            return;
+        }
+        let imm = (imm2 as u64) << shamt;
+        let va1 = base.wrapping_add(imm);
+        let va2 = va1.wrapping_add(size);
+        if load {
+            let Some(v1) = self.thead_load_val(va1, size, signed) else {
+                return;
+            };
+            let Some(v2) = self.thead_load_val(va2, size, signed) else {
+                return;
+            };
+            self.set_rd(rd, v1);
+            self.set_rd(rs2, v2);
+        } else {
+            let v1 = self.regs[rd as usize];
+            let v2 = self.regs[rs2 as usize];
+            if !self.thead_store_val(va1, size, v1) {
+                return;
+            }
+            if !self.thead_store_val(va2, size, v2) {
+                return;
+            }
+        }
+        self.pc += self.insn_size;
+    }
+
+    /// XTheadFMemIdx floating-point indexed loads and stores.
+    fn execute_thead_fmem(&mut self, raw: u32, rd: u8, rs1: u8, rs2: u8, load: bool) {
+        let hi5 = (raw >> 27) & 0x1F;
+        let imm2 = (raw >> 25) & 0x3;
+        let (size, zext_offs) = match hi5 {
+            0x0C => (8u64, false),
+            0x08 => (4, false),
+            0x0E => (8, true),
+            0x0A => (4, true),
+            _ => {
+                self.take_trap(2, 0);
+                return;
+            }
+        };
+        let offset = if zext_offs {
+            self.regs[rs2 as usize] & 0xFFFF_FFFF
+        } else {
+            self.regs[rs2 as usize]
+        };
+        let va = self.regs[rs1 as usize].wrapping_add(offset << imm2);
+        if load {
+            let pa = match self.translate(va, mmu::AccessType::Load, size) {
+                Ok(pa) => pa,
+                Err(fault) => {
+                    self.take_trap(fault.cause, fault.tval);
+                    return;
+                }
+            };
+            if size == 4 {
+                self.set_fp32_bits(rd, self.phys_read(pa, 4) as u32);
+            } else {
+                self.fregs[rd as usize] = self.phys_read(pa, 8);
+            }
+            self.mark_fp_dirty();
+        } else {
+            let pa = match self.translate(va, mmu::AccessType::Store, size) {
+                Ok(pa) => pa,
+                Err(fault) => {
+                    self.take_trap(fault.cause, fault.tval);
+                    return;
+                }
+            };
+            let val = if size == 4 {
+                self.fregs[rd as usize] & 0xFFFF_FFFF
+            } else {
+                self.fregs[rd as usize]
+            };
+            self.phys_write(pa, size as usize, val);
+        }
+        self.pc += self.insn_size;
+    }
+
     fn execute_bitmanip(&mut self, opcode: u8, funct7: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
         let a = self.regs[rs1 as usize];
         let b = self.regs[rs2 as usize];
@@ -1097,10 +1542,20 @@ impl RiscvCpu {
             (0x33, 0x20, 4) => !(a ^ b),
             (0x33, 0x20, 6) => a | !b,
             (0x33, 0x20, 7) => a & !b,
+            (0x33, 0x05, 1) => Self::clmul(a, b).0,
+            (0x33, 0x05, 2) => {
+                let (lo, hi) = Self::clmul(a, b);
+                (lo >> 63) | (hi << 1)
+            }
+            (0x33, 0x05, 3) => Self::clmul(a, b).1,
             (0x33, 0x05, 4) => (a as i64).min(b as i64) as u64,
             (0x33, 0x05, 5) => a.min(b),
             (0x33, 0x05, 6) => (a as i64).max(b as i64) as u64,
             (0x33, 0x05, 7) => a.max(b),
+            (0x33, 0x14, 1) => a | (1u64 << (b & 63)),
+            (0x33, 0x24, 1) => a & !(1u64 << (b & 63)),
+            (0x33, 0x24, 5) => (a >> (b & 63)) & 1,
+            (0x33, 0x34, 1) => a ^ (1u64 << (b & 63)),
             (0x33, 0x30, 1) => a.rotate_left((b & 63) as u32),
             (0x33, 0x30, 5) => a.rotate_right((b & 63) as u32),
             (0x3B, 0x04, 0) => (a as u32 as u64).wrapping_add(b),
@@ -1119,6 +1574,20 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
+    fn clmul(a: u64, b: u64) -> (u64, u64) {
+        let mut lo = 0u64;
+        let mut hi = 0u64;
+        for i in 0..64 {
+            if (b >> i) & 1 != 0 {
+                lo ^= a << i;
+                if i != 0 {
+                    hi ^= a >> (64 - i);
+                }
+            }
+        }
+        (lo, hi)
+    }
+
     fn execute_bitmanip_imm(&mut self, opcode: u8, funct3: u8, rd: u8, rs1: u8, funct12: u16) {
         let a = self.regs[rs1 as usize];
         let value = if opcode == 0x13 && funct3 == 5 {
@@ -1134,6 +1603,7 @@ impl RiscvCpu {
                     out
                 }
                 f if (0x600..0x640).contains(&f) => a.rotate_right((f & 0x3F) as u32),
+                f if (0x480..0x4C0).contains(&f) => (a >> (f & 0x3F)) & 1,
                 _ => {
                     self.take_trap(2, 0);
                     return;
@@ -1163,6 +1633,9 @@ impl RiscvCpu {
                 0x602 => a.count_ones() as u64,
                 0x604 => a as i8 as i64 as u64,
                 0x605 => a as i16 as i64 as u64,
+                f if (0x280..0x2C0).contains(&f) => a | (1u64 << (f & 0x3F)),
+                f if (0x480..0x4C0).contains(&f) => a & !(1u64 << (f & 0x3F)),
+                f if (0x680..0x6C0).contains(&f) => a ^ (1u64 << (f & 0x3F)),
                 _ => {
                     self.take_trap(2, 0);
                     return;
@@ -1225,7 +1698,13 @@ impl RiscvCpu {
                 offset,
             } => {
                 let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
-                let pa = match self.translate(va, mmu::AccessType::Load) {
+                let size = match funct3 {
+                    0 | 4 => 1,
+                    1 | 5 => 2,
+                    2 | 6 => 4,
+                    _ => 8,
+                };
+                let pa = match self.translate(va, mmu::AccessType::Load, size) {
                     Ok(pa) => pa,
                     Err(fault) => {
                         self.take_trap(fault.cause, fault.tval);
@@ -1252,7 +1731,13 @@ impl RiscvCpu {
                 offset,
             } => {
                 let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
-                let pa = match self.translate(va, mmu::AccessType::Store) {
+                let size = match funct3 {
+                    0 => 1,
+                    1 => 2,
+                    2 => 4,
+                    _ => 8,
+                };
+                let pa = match self.translate(va, mmu::AccessType::Store, size) {
                     Ok(pa) => pa,
                     Err(fault) => {
                         self.take_trap(fault.cause, fault.tval);
@@ -1311,6 +1796,11 @@ impl RiscvCpu {
                 rs1,
                 funct12,
             } => self.execute_bitmanip_imm(opcode, funct3, rd, rs1, funct12),
+            Instruction::Cbo { op, rs1 } => self.execute_cbo(op, rs1),
+            Instruction::TheadSync => {
+                self.pc += self.insn_size;
+            }
+            Instruction::Thead { raw } => self.execute_thead(raw),
             Instruction::OpImm {
                 funct3,
                 rd,
@@ -1472,10 +1962,30 @@ impl RiscvCpu {
                     }
                     _ => {}
                 }
-                if csr == 0x180 {
-                    self.satp_writes += 1;
-                    self.tlb.flush();
-                    self.flush_fast_tlb();
+                match csr {
+                    csr::SATP => {
+                        self.satp_writes += 1;
+                        self.tlb.flush();
+                        self.flush_fast_tlb();
+                    }
+                    csr::MSTATUS => {
+                        // MPRV/MPP change the translation and PMP context of
+                        // subsequent data accesses.
+                        if (old ^ self.csr.mstatus) & (csr::MSTATUS_MPRV | csr::MSTATUS_MPP_MASK)
+                            != 0
+                        {
+                            self.tlb.flush();
+                            self.flush_fast_tlb();
+                        }
+                    }
+                    csr::PMPCFG0 | csr::PMPCFG2 | csr::MSECCFG | 0x3B0..=0x3BF => {
+                        self.tlb.flush();
+                        self.flush_fast_tlb();
+                        if let Some(jit) = self.jit.as_mut() {
+                            jit.invalidate_all();
+                        }
+                    }
+                    _ => {}
                 }
                 self.pc += self.insn_size;
             }
@@ -1483,13 +1993,13 @@ impl RiscvCpu {
                 let (pc, mode) = self.csr.mret();
                 self.trace_trap_return("mret", pc, mode);
                 self.pc = pc;
-                self.priv_mode = mode;
+                self.enter_priv(mode);
             }
             Instruction::Sret => {
                 let (pc, mode) = self.csr.sret();
                 self.trace_trap_return("sret", pc, mode);
                 self.pc = pc;
-                self.priv_mode = mode;
+                self.enter_priv(mode);
             }
             Instruction::Wfi => {
                 self.pc += self.insn_size;
@@ -1514,7 +2024,8 @@ impl RiscvCpu {
                 } else {
                     mmu::AccessType::Store
                 };
-                let pa = match self.translate(va, access) {
+                let size = if funct3 == 2 { 4 } else { 8 };
+                let pa = match self.translate(va, access, size) {
                     Ok(pa) => pa,
                     Err(fault) => {
                         self.take_trap(fault.cause, fault.tval);
@@ -2170,6 +2681,10 @@ mod tests {
         // S-mode code: set x10 = 1, ECALL → back to M-mode
         // M-mode handler: set x11 = 1, halt
         let mut cpu = RiscvCpu::new("test", 0x10000, 0);
+        // PMP default-denies S/U accesses without a matching entry, so
+        // cover the whole address space like firmware would.
+        cpu.csr_mut().pmpaddr[0] = pmp::PMPADDR_MASK;
+        cpu.csr_mut().pmpcfg[0] = 0x1F; // NAPOT | R | W | X
 
         // mepc = 0x200 (S-mode entry)
         let csrrw_mepc = (0x341u32 << 20) | (1 << 15) | (1 << 12) | (0 << 7) | 0x73;
@@ -2219,6 +2734,243 @@ mod tests {
         assert_eq!(cpu.reg(10), 1); // S-mode executed
         assert_eq!(cpu.reg(11), 1); // M-mode handler executed
         assert_eq!(cpu.csr().mcause, 9); // ecall from S-mode
+    }
+
+    // ── XThead vendor instructions ─────────────────────────────
+
+    fn addi(rd: u32, rs1: u32, imm: i32) -> u32 {
+        ((imm as u32 & 0xFFF) << 20) | (rs1 << 15) | (rd << 7) | 0x13
+    }
+
+    fn sd(rs2: u32, rs1: u32, imm: i32) -> u32 {
+        let imm = imm as u32 & 0xFFF;
+        ((imm >> 5) << 25) | (rs2 << 20) | (rs1 << 15) | (3 << 12) | ((imm & 0x1F) << 7) | 0x23
+    }
+
+    fn th_r(funct7: u32, rd: u32, rs1: u32, rs2: u32) -> u32 {
+        (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x0B
+    }
+
+    fn th_ext_raw(funct3: u32, rd: u32, rs1: u32, msb: u32, lsb: u32) -> u32 {
+        (msb << 26) | (lsb << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x0B
+    }
+
+    fn th_inc(funct3: u32, hi5: u32, rd: u32, rs1: u32, imm5: i32, imm2: u32) -> u32 {
+        (hi5 << 27)
+            | ((imm2 & 0x3) << 25)
+            | ((imm5 as u32 & 0x1F) << 20)
+            | (rs1 << 15)
+            | (funct3 << 12)
+            | (rd << 7)
+            | 0x0B
+    }
+
+    fn th_idx(funct3: u32, hi5: u32, rd: u32, rs1: u32, rs2: u32, imm2: u32) -> u32 {
+        (hi5 << 27)
+            | ((imm2 & 0x3) << 25)
+            | (rs2 << 20)
+            | (rs1 << 15)
+            | (funct3 << 12)
+            | (rd << 7)
+            | 0x0B
+    }
+
+    fn th_pair(funct3: u32, hi5: u32, rd1: u32, rs: u32, rd2: u32, sh2: u32) -> u32 {
+        (hi5 << 27)
+            | ((sh2 & 0x3) << 25)
+            | (rd2 << 20)
+            | (rs << 15)
+            | (funct3 << 12)
+            | (rd1 << 7)
+            | 0x0B
+    }
+
+    fn run_thead(insns: &[u32], setup: impl FnOnce(&mut RiscvCpu)) -> RiscvCpu {
+        let mut cpu = RiscvCpu::new("thead", 8192, 0);
+        setup(&mut cpu);
+        for (i, insn) in insns.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
+        }
+        cpu.set_pc(0);
+        cpu.exec(64).unwrap();
+        cpu
+    }
+
+    #[test]
+    fn test_thead_addsl_and_condmov() {
+        let cpu = run_thead(
+            &[
+                addi(1, 0, 5),
+                addi(2, 0, 3),
+                th_r(0x01, 3, 1, 2), // th.addsl1
+                addi(4, 0, 0),
+                th_r(0x20, 4, 1, 4), // th.mveqz (rs2 == 0)
+                th_r(0x21, 4, 2, 1), // th.mvnez (rs2 != 0)
+                0x00000073,
+            ],
+            |_| {},
+        );
+        assert_eq!(cpu.reg(3), 11);
+        assert_eq!(cpu.reg(4), 3);
+    }
+
+    #[test]
+    fn test_thead_extract() {
+        let cpu = run_thead(
+            &[
+                0x123450B7,                 // LUI x1, 0x12345
+                addi(1, 1, 0x6F8),          // x1 = 0x1234_56F8
+                th_ext_raw(2, 2, 1, 7, 0),  // th.ext  x2, x1, 7, 0
+                th_ext_raw(3, 3, 1, 7, 0),  // th.extu x3, x1, 7, 0
+                th_ext_raw(2, 4, 1, 15, 8), // th.ext  x4, x1, 15, 8
+                0x00000073,
+            ],
+            |_| {},
+        );
+        assert_eq!(cpu.reg(2), u64::MAX - 7); // 0xF8 sign-extended
+        assert_eq!(cpu.reg(3), 0xF8);
+        assert_eq!(cpu.reg(4), 0x56);
+    }
+
+    #[test]
+    fn test_thead_mac() {
+        let cpu = run_thead(
+            &[
+                addi(1, 0, 3),
+                addi(2, 0, 4),
+                addi(3, 0, 10),
+                th_r(0x10, 3, 1, 2), // th.mula: 10 + 12
+                th_r(0x11, 3, 1, 2), // th.muls: 22 - 12
+                addi(4, 0, 1),
+                th_r(0x12, 4, 1, 2), // th.mulaw: 1 + 12
+                0x00000073,
+            ],
+            |_| {},
+        );
+        assert_eq!(cpu.reg(3), 10);
+        assert_eq!(cpu.reg(4), 13);
+    }
+
+    #[test]
+    fn test_thead_fmv_and_rev() {
+        let cpu = run_thead(
+            &[
+                th_r(0x60, 1, 3, 0), // th.fmv.x.hw x1, f3
+                addi(2, 0, 0x7AB),
+                th_r(0x50, 3, 2, 0), // th.fmv.hw.x f3, x2
+                addi(4, 0, 0),
+                th_r(0x41, 5, 1, 0), // th.rev x5, x1
+                0x00000073,
+            ],
+            |cpu| cpu.fregs[3] = 0x1234_5678_9ABC_DEF0,
+        );
+        assert_eq!(cpu.reg(1), 0x1234_5678);
+        assert_eq!(cpu.fregs[3], 0x0000_07AB_9ABC_DEF0);
+        assert_eq!(cpu.reg(5), 0x78563412_00000000);
+    }
+
+    #[test]
+    fn test_thead_meminc() {
+        let cpu = run_thead(
+            &[
+                sd(3, 1, 0),                 // SD x3, 0(x1)
+                th_inc(4, 0x0F, 2, 1, 8, 0), // th.ldia x2, 8(x1)
+                0x00000073,
+            ],
+            |cpu| {
+                cpu.set_reg(1, 0x100);
+                cpu.set_reg(3, 0x1122_3344_5566_7788);
+            },
+        );
+        assert_eq!(cpu.reg(2), 0x1122_3344_5566_7788);
+        assert_eq!(cpu.reg(1), 0x108);
+    }
+
+    #[test]
+    fn test_thead_memidx() {
+        let cpu = run_thead(
+            &[
+                th_idx(5, 0x0C, 3, 1, 2, 1), // th.srd x3, (x2 << 1)(x1)
+                th_idx(4, 0x0C, 4, 1, 2, 1), // th.lrd x4, (x2 << 1)(x1)
+                0x00000073,
+            ],
+            |cpu| {
+                cpu.set_reg(1, 0x100);
+                cpu.set_reg(2, 4);
+                cpu.set_reg(3, 0xDEAD_BEEF_CAFE_1234);
+            },
+        );
+        assert_eq!(cpu.reg(4), 0xDEAD_BEEF_CAFE_1234);
+    }
+
+    #[test]
+    fn test_thead_mempair() {
+        let cpu = run_thead(
+            &[
+                th_pair(5, 0x1F, 2, 1, 3, 1), // th.sdd x2, x3, 16(x1)
+                th_pair(4, 0x1F, 2, 1, 3, 1), // th.ldd x2, x3, 16(x1)
+                0x00000073,
+            ],
+            |cpu| {
+                cpu.set_reg(1, 0x100);
+                cpu.set_reg(2, 0x1111_2222_3333_4444);
+                cpu.set_reg(3, 0x5555_6666_7777_8888);
+            },
+        );
+        assert_eq!(cpu.reg(2), 0x1111_2222_3333_4444);
+        assert_eq!(cpu.reg(3), 0x5555_6666_7777_8888);
+    }
+
+    #[test]
+    fn test_thead_fmemidx() {
+        let cpu = run_thead(
+            &[
+                th_idx(7, 0x08, 3, 1, 2, 2), // th.fsrw f3, (x2 << 2)(x1)
+                th_idx(6, 0x08, 4, 1, 2, 2), // th.flrw f4, (x2 << 2)(x1)
+                0x00000073,
+            ],
+            |cpu| {
+                cpu.set_reg(1, 0x100);
+                cpu.set_reg(2, 4);
+                cpu.fregs[3] = 0xFFFF_FFFF_1122_3344;
+            },
+        );
+        assert_eq!(cpu.fregs[4], 0xFFFF_FFFF_1122_3344);
+    }
+
+    #[test]
+    fn test_thead_cmo_is_nop() {
+        let cpu = run_thead(
+            &[
+                0x0010000B, // th.dcache.call
+                addi(1, 0, 7),
+                0x00000073,
+            ],
+            |_| {},
+        );
+        assert_eq!(cpu.reg(1), 7);
+    }
+
+    #[test]
+    fn test_pmp_denies_s_mode_load() {
+        let mut cpu = RiscvCpu::new("pmp", 0x10000, 0);
+        // 4 KiB NAPOT RW region at 0x1000 for S/U.
+        cpu.csr_mut().pmpaddr[0] = (0x1000 >> 2) | (4096 / 8 - 1);
+        cpu.csr_mut().pmpcfg[0] = 0x1F;
+        let code = [
+            addi(1, 0, 0x200), // x1 = 0x200 (outside the PMP region)
+            0x0000A103,        // LW x2, 0(x1) → load access fault
+            0x00000073,
+        ];
+        for (i, insn) in code.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (0x1000 + i * 4) as u64);
+        }
+        cpu.set_pc(0x1000);
+        cpu.set_priv_mode(csr::PRV_S);
+        cpu.exec(16).unwrap();
+        assert!(cpu.is_halted());
+        assert_eq!(cpu.csr().mcause, 5);
+        assert_eq!(cpu.csr().mtval, 0x200);
     }
 
     // ── JIT / interpreter parity ───────────────────────────────
@@ -2397,6 +3149,38 @@ mod tests {
 
         assert_eq!(cpu.reg(3), 3);
         assert_eq!(cpu.reg(4), 31);
+    }
+
+    #[test]
+    fn bitmanip_zbc_zbs() {
+        let mut cpu = cpu_with(&[
+            0x0030_0093,                      // ADDI x1, x0, 3
+            0x0050_0113,                      // ADDI x2, x0, 5
+            bm_op(0x33, 0x05, 1, 3, 1, 2),    // CLMUL x3, x1, x2
+            bm_op(0x33, 0x14, 1, 4, 0, 2),    // BSET x4, x0, x2
+            bm_op(0x33, 0x24, 1, 5, 4, 2),    // BCLR x5, x4, x2
+            bm_op(0x33, 0x34, 1, 6, 4, 2),    // BINV x6, x4, x2
+            bm_op(0x33, 0x24, 5, 7, 4, 2),    // BEXT x7, x4, x2
+            bm_imm(0x13, 1, 8, 0, 0x280 | 7), // BSETI x8, x0, 7
+            bm_imm(0x13, 5, 9, 8, 0x480 | 7), // BEXTI x9, x8, 7
+            0x0000_0073,
+        ]);
+        cpu.exec(20).unwrap();
+
+        assert_eq!(cpu.reg(3), 0xF); // 0b11 * 0b101 without carries
+        assert_eq!(cpu.reg(4), 1 << 5);
+        assert_eq!(cpu.reg(5), 0);
+        assert_eq!(cpu.reg(6), 0); // BINV toggles the bit set by BSET
+        assert_eq!(cpu.reg(7), 1);
+        assert_eq!(cpu.reg(8), 1 << 7);
+        assert_eq!(cpu.reg(9), 1);
+    }
+
+    #[test]
+    fn thead_sync_is_a_noop() {
+        let mut cpu = cpu_with(&[0x0180_000B, 0x0000_0073]);
+        cpu.exec(10).unwrap();
+        assert!(cpu.is_halted());
     }
 
     #[test]

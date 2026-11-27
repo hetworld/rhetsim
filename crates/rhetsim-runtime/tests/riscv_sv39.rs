@@ -41,6 +41,10 @@ fn write_u64(cpu: &mut RiscvCpu, offset: u64, val: u64) {
 #[test]
 fn sv39_m_to_s_with_paging() {
     let mut cpu = RiscvCpu::new("rv0", 0x1_0000, 0);
+    // PMP default-denies S/U accesses without a matching entry; cover the
+    // whole address space like firmware would.
+    cpu.csr_mut().pmpaddr[0] = (1 << 54) - 1;
+    cpu.csr_mut().pmpcfg[0] = 0x1F; // NAPOT | R | W | X
 
     // ── Page tables ───────────────────────────────────────
     // PA layout: M-code@0x0, L2@0x1000, L1@0x2000, L0@0x3000,
