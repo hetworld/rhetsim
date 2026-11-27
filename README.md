@@ -63,7 +63,7 @@ Build the Linux kernel (a minimal config is provided in the repo):
 ```bash
 git clone --depth 1 --branch v6.1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git ../linux-6.1
 cd ../linux-6.1
-cp ../rhetsim/platforms/reference/server/linux-rv64ima.config .config
+cp ../rhetsim/platforms/reference/server/linux-rv64imac.config .config
 make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc)
 cd -
 ```

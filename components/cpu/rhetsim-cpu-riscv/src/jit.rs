@@ -12,6 +12,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use std::collections::HashMap;
 
 use crate::decode::{decode, decode_compressed, Instruction};
+use crate::profile::RiscvCpuType;
 
 const EXIT_ECALL: u64 = 1;
 const EXIT_TRAP: u64 = 2;
@@ -113,6 +114,7 @@ pub struct JitEngine {
     compiles: u64,
     executions: u64,
     invalidations: u64,
+    compressed: bool,
 }
 
 unsafe impl Send for JitEngine {}
@@ -130,6 +132,10 @@ impl Default for JitEngine {
 
 impl JitEngine {
     pub fn new() -> Self {
+        Self::new_for(RiscvCpuType::default())
+    }
+
+    pub fn new_for(cpu_type: RiscvCpuType) -> Self {
         let mut flag_builder = settings::builder();
         // Blocks average ~5 instructions, so compile time dominates; the
         // optimizer costs far more than the generated code saves. The IR
@@ -185,6 +191,7 @@ impl JitEngine {
             compiles: 0,
             executions: 0,
             invalidations: 0,
+            compressed: cpu_type.has_compressed(),
         }
     }
 
@@ -248,10 +255,26 @@ impl JitEngine {
             }
 
             let (insn, size) = if half & 0x3 != 0x3 {
+                if !self.compressed {
+                    return None;
+                }
                 (decode_compressed(half), 2u64)
             } else {
                 (decode(raw as u32), 4u64)
             };
+
+            // Floating-point instructions execute in the interpreter for now.
+            if matches!(
+                insn,
+                Instruction::FpLoad { .. }
+                    | Instruction::FpStore { .. }
+                    | Instruction::FpOp { .. }
+                    | Instruction::FpFma { .. }
+                    | Instruction::Bitmanip { .. }
+                    | Instruction::BitmanipImm { .. }
+            ) {
+                return None;
+            }
 
             let is_block_end = matches!(
                 insn,
@@ -875,6 +898,12 @@ impl JitEngine {
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
+                    Instruction::FpLoad { .. }
+                    | Instruction::FpStore { .. }
+                    | Instruction::FpOp { .. }
+                    | Instruction::FpFma { .. }
+                    | Instruction::Bitmanip { .. }
+                    | Instruction::BitmanipImm { .. } => return None,
                     Instruction::Fence => { /* no-op */ }
                     Instruction::Unknown(_) => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_TRAP, idx + 1, 0);

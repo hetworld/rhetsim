@@ -31,12 +31,14 @@ id   = "rv-core0"
 kind = "rhetsim-cpu-riscv"
 [units.config]
 mem_base = 0x80000000
+cpu_type = "rhetsim-rv64imac"
 
 [[units]]
 id   = "rv-core1"
 kind = "rhetsim-cpu-riscv"
 [units.config]
 mem_base = 0x80000000
+cpu_type = "rhetsim-rv64imac"
 
 [[buses]]
 kind       = "mem"

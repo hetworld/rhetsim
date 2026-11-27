@@ -1,5 +1,7 @@
 //! RISC-V CSR file — M-mode and S-mode
 
+use crate::profile::RiscvCpuType;
+
 // ── CSR addresses ─────────────────────────────────────────────
 
 // S-mode
@@ -34,6 +36,9 @@ pub const MEPC: u16 = 0x341;
 pub const MCAUSE: u16 = 0x342;
 pub const MTVAL: u16 = 0x343;
 pub const MIP: u16 = 0x344;
+pub const MCOUNTINHIBIT: u16 = 0x320;
+pub const MHPMEVENT3: u16 = 0x323;
+pub const MHPMCOUNTER3: u16 = 0xB03;
 
 // PMP
 pub const PMPCFG0: u16 = 0x3A0;
@@ -57,6 +62,13 @@ pub const MHARTID: u16 = 0xF14;
 
 // S-mode counter enable
 pub const SCOUNTEREN: u16 = 0x106;
+/// Sscofpmf: supervisor counter-overflow view.
+pub const SCOUNTOVF: u16 = 0xDA0;
+
+// Floating-point CSRs
+pub const FFLAGS: u16 = 0x001;
+pub const FRM: u16 = 0x002;
+pub const FCSR: u16 = 0x003;
 
 // ── mstatus bit positions ─────────────────────────────────────
 
@@ -67,6 +79,8 @@ pub const MSTATUS_MPIE: u64 = 1 << 7;
 pub const MSTATUS_SPP: u64 = 1 << 8;
 pub const MSTATUS_MPP_MASK: u64 = 3 << 11;
 pub const MSTATUS_MPP_M: u64 = 3 << 11;
+pub const MSTATUS_FS_MASK: u64 = 3 << 13;
+pub const MSTATUS_FS_DIRTY: u64 = 3 << 13;
 pub const MSTATUS_MPRV: u64 = 1 << 17;
 pub const MSTATUS_SUM: u64 = 1 << 18;
 pub const MSTATUS_MXR: u64 = 1 << 19;
@@ -80,6 +94,7 @@ const MSTATUS_WRITABLE: u64 = MSTATUS_SIE
     | MSTATUS_MPIE
     | MSTATUS_SPP
     | MSTATUS_MPP_MASK
+    | MSTATUS_FS_MASK
     | MSTATUS_MPRV
     | MSTATUS_SUM
     | MSTATUS_MXR
@@ -96,7 +111,8 @@ const SSTATUS_MASK: u64 = MSTATUS_SIE
     | MSTATUS_MXR
     | (1u64 << 63);
 
-const SSTATUS_WRITABLE: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_SUM | MSTATUS_MXR;
+const SSTATUS_WRITABLE: u64 =
+    MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_FS_MASK | MSTATUS_SUM | MSTATUS_MXR;
 
 // ── mie/mip bit positions ─────────────────────────────────────
 
@@ -106,9 +122,11 @@ pub const MIP_STIP: u64 = 1 << 5;
 pub const MIP_MTIP: u64 = 1 << 7;
 pub const MIP_SEIP: u64 = 1 << 9;
 pub const MIP_MEIP: u64 = 1 << 11;
+/// Sscofpmf local counter overflow interrupt.
+pub const MIP_LCOFI: u64 = 1 << 13;
 
-const SIE_MASK: u64 = MIP_SSIP | MIP_STIP | MIP_SEIP;
-const MIE_ALL: u64 = MIP_SSIP | MIP_MSIP | MIP_STIP | MIP_MTIP | MIP_SEIP | MIP_MEIP;
+const SIE_MASK: u64 = MIP_SSIP | MIP_STIP | MIP_SEIP | MIP_LCOFI;
+const MIE_ALL: u64 = MIP_SSIP | MIP_MSIP | MIP_STIP | MIP_MTIP | MIP_SEIP | MIP_MEIP | MIP_LCOFI;
 
 /// M-mode can write software-injected interrupt bits:
 /// - MSIP: software interrupt (CLINT/rv-virt)
@@ -116,7 +134,7 @@ const MIE_ALL: u64 = MIP_SSIP | MIP_MSIP | MIP_STIP | MIP_MTIP | MIP_SEIP | MIP_
 ///
 /// MEIP/MTIP are driven by the interrupt controllers (PLIC/CLINT) and stay
 /// read-only; the CPU syncs them from IrqLineSource.
-const MIP_WRITABLE: u64 = MIP_MSIP | MIP_SSIP | MIP_STIP | MIP_SEIP;
+const MIP_WRITABLE: u64 = MIP_MSIP | MIP_SSIP | MIP_STIP | MIP_SEIP | MIP_LCOFI;
 
 // ── mcause ────────────────────────────────────────────────────
 
@@ -128,21 +146,11 @@ pub const PRV_U: u8 = 0;
 pub const PRV_S: u8 = 1;
 pub const PRV_M: u8 = 3;
 
-// ── misa: RV64IMASU ───────────────────────────────────────────
-
-fn misa_rv64() -> u64 {
-    let mxl = 2u64 << 62;
-    let ext_i = 1 << 8;
-    let ext_m = 1 << 12;
-    let ext_a = 1 << 0;
-    let ext_s = 1 << 18;
-    let ext_u = 1 << 20;
-    mxl | ext_i | ext_m | ext_a | ext_s | ext_u
-}
-
 // ── CsrFile ───────────────────────────────────────────────────
 
 pub struct CsrFile {
+    // Floating-point control and status
+    pub fcsr: u32,
     // M-mode
     pub mstatus: u64,
     pub mie: u64,
@@ -153,6 +161,17 @@ pub struct CsrFile {
     pub mcause: u64,
     pub mtval: u64,
     pub mhartid: u64,
+    pub mcycle: u64,
+    pub minstret: u64,
+    pub mcountinhibit: u64,
+    /// Sscofpmf event selectors and counters (only 3..31 are meaningful).
+    pub mhpmevent: [u64; 32],
+    pub mhpmcounter: [u64; 32],
+    /// `misa` derived from the CPU profile's implemented extensions.
+    pub misa: u64,
+    pub mvendorid: u64,
+    pub marchid: u64,
+    pub mimpid: u64,
     pub medeleg: u64,
     pub mideleg: u64,
     pub mcounteren: u64,
@@ -175,7 +194,13 @@ pub struct CsrFile {
 
 impl CsrFile {
     pub fn new(hart_id: u64) -> Self {
+        Self::new_with_type(hart_id, RiscvCpuType::default())
+    }
+
+    pub fn new_with_type(hart_id: u64, cpu_type: RiscvCpuType) -> Self {
+        let profile = cpu_type.profile();
         Self {
+            fcsr: 0,
             mstatus: 0,
             mie: 0,
             mip: 0,
@@ -185,6 +210,15 @@ impl CsrFile {
             mcause: 0,
             mtval: 0,
             mhartid: hart_id,
+            mcycle: 0,
+            minstret: 0,
+            mcountinhibit: 0,
+            mhpmevent: [0; 32],
+            mhpmcounter: [0; 32],
+            misa: profile.misa(),
+            mvendorid: profile.mvendorid,
+            marchid: profile.marchid,
+            mimpid: profile.mimpid,
             medeleg: 0,
             mideleg: 0,
             mcounteren: 0,
@@ -204,8 +238,11 @@ impl CsrFile {
 
     pub fn read(&self, addr: u16, insn_count: u64) -> Option<u64> {
         match addr {
+            FFLAGS => Some((self.fcsr & 0x1F) as u64),
+            FRM => Some(((self.fcsr >> 5) & 0x7) as u64),
+            FCSR => Some((self.fcsr & 0xFF) as u64),
             MSTATUS => Some(self.mstatus),
-            MISA => Some(misa_rv64()),
+            MISA => Some(self.misa),
             MEDELEG => Some(self.medeleg),
             MIDELEG => Some(self.mideleg),
             MIE => Some(self.mie),
@@ -216,11 +253,23 @@ impl CsrFile {
             MCAUSE => Some(self.mcause),
             MTVAL => Some(self.mtval),
             MIP => Some(self.mip),
-            MCYCLE => Some(insn_count),
-            MINSTRET => Some(insn_count),
-            MVENDORID => Some(0),
-            MARCHID => Some(0),
-            MIMPID => Some(0),
+            MCOUNTINHIBIT => Some(self.mcountinhibit),
+            MCYCLE => Some(self.mcycle),
+            MINSTRET => Some(self.minstret),
+            a @ MHPMEVENT3..=0x33F => Some(self.mhpmevent[(a - MHPMEVENT3 + 3) as usize]),
+            a @ MHPMCOUNTER3..=0xB1F => Some(self.mhpmcounter[(a - MHPMCOUNTER3 + 3) as usize]),
+            SCOUNTOVF => {
+                let mut overflow = 0u64;
+                for (i, event) in self.mhpmevent.iter().enumerate().skip(3) {
+                    if event & (1 << 63) != 0 {
+                        overflow |= 1 << i;
+                    }
+                }
+                Some(overflow)
+            }
+            MVENDORID => Some(self.mvendorid),
+            MARCHID => Some(self.marchid),
+            MIMPID => Some(self.mimpid),
             MHARTID => Some(self.mhartid),
             PMPCFG0 => Some(self.pmpcfg[0]),
             PMPCFG2 => Some(self.pmpcfg[1]),
@@ -239,15 +288,18 @@ impl CsrFile {
             // Unsupported AIA CSRs must trap (illegal instruction) so
             // OpenSBI does not detect SMAIA/SSAIA.
             MTOPI | STOPI => None,
-            CYCLE => Some(insn_count),
+            CYCLE => Some(self.mcycle),
             TIME => Some(insn_count),
-            INSTRET => Some(insn_count),
+            INSTRET => Some(self.minstret),
             _ => Some(0),
         }
     }
 
     pub fn write(&mut self, addr: u16, val: u64) {
         match addr {
+            FFLAGS => self.fcsr = (self.fcsr & !0x1F) | (val as u32 & 0x1F),
+            FRM => self.fcsr = (self.fcsr & !(0x7 << 5)) | ((val as u32 & 0x7) << 5),
+            FCSR => self.fcsr = val as u32 & 0xFF,
             MSTATUS => self.mstatus = (self.mstatus & !MSTATUS_WRITABLE) | (val & MSTATUS_WRITABLE),
             MEDELEG => self.medeleg = val,
             MIDELEG => self.mideleg = val,
@@ -259,6 +311,11 @@ impl CsrFile {
             MCAUSE => self.mcause = val,
             MTVAL => self.mtval = val,
             MIP => self.mip = (self.mip & !MIP_WRITABLE) | (val & MIP_WRITABLE),
+            MCOUNTINHIBIT => self.mcountinhibit = val & 0xFFFF_FFFF,
+            MCYCLE => self.mcycle = val,
+            MINSTRET => self.minstret = val,
+            a @ MHPMEVENT3..=0x33F => self.mhpmevent[(a - MHPMEVENT3 + 3) as usize] = val,
+            a @ MHPMCOUNTER3..=0xB1F => self.mhpmcounter[(a - MHPMCOUNTER3 + 3) as usize] = val,
             PMPCFG0 => self.pmpcfg[0] = val,
             PMPCFG2 => self.pmpcfg[1] = val,
             a @ 0x3B0..=0x3BF => self.pmpaddr[(a - PMPADDR0) as usize] = val,
@@ -270,7 +327,7 @@ impl CsrFile {
             SEPC => self.sepc = val & !1,
             SCAUSE => self.scause = val,
             STVAL => self.stval = val,
-            SIP => self.mip = (self.mip & !MIP_SSIP) | (val & MIP_SSIP),
+            SIP => self.mip = (self.mip & !(MIP_SSIP | MIP_LCOFI)) | (val & (MIP_SSIP | MIP_LCOFI)),
             SATP => {
                 let mode = (val >> 60) & 0xF;
                 if mode == 0 || mode == 8 {
@@ -281,12 +338,13 @@ impl CsrFile {
                 self.stimecmp = val;
                 self.sstc_active = true;
             }
-            MISA | MVENDORID | MARCHID | MIMPID | MHARTID | MCYCLE | MINSTRET => {}
+            MISA | MVENDORID | MARCHID | MIMPID | MHARTID | SCOUNTOVF => {}
             _ => {}
         }
     }
 
     pub fn reset(&mut self) {
+        self.fcsr = 0;
         self.mstatus = 0;
         self.mie = 0;
         self.mip = 0;
@@ -307,8 +365,38 @@ impl CsrFile {
         self.stimecmp = u64::MAX;
         self.sstc_active = false;
         self.scounteren = 0;
+        self.mcycle = 0;
+        self.minstret = 0;
+        self.mcountinhibit = 0;
+        self.mhpmevent = [0; 32];
+        self.mhpmcounter = [0; 32];
         self.pmpcfg = [0; 2];
         self.pmpaddr = [0; 16];
+    }
+
+    /// Advance cycle/instruction/HPM counters by `steps` retired instructions.
+    pub fn advance_counters(&mut self, steps: u64) {
+        if steps == 0 {
+            return;
+        }
+        if self.mcountinhibit & 1 == 0 {
+            self.mcycle = self.mcycle.wrapping_add(steps);
+        }
+        if self.mcountinhibit & 4 == 0 {
+            self.minstret = self.minstret.wrapping_add(steps);
+        }
+        for i in 3..32 {
+            if self.mcountinhibit & (1 << i) != 0 {
+                continue;
+            }
+            let old = self.mhpmcounter[i];
+            let new = old.wrapping_add(steps);
+            if new < old && self.mhpmevent[i] & (1 << 63) == 0 {
+                self.mhpmevent[i] |= 1 << 63;
+                self.mip |= MIP_LCOFI;
+            }
+            self.mhpmcounter[i] = new;
+        }
     }
 
     pub fn pending_interrupt(&self, priv_mode: u8) -> Option<u64> {
@@ -333,6 +421,9 @@ impl CsrFile {
             if m_pending & MIP_MTIP != 0 {
                 return Some(7);
             }
+            if m_pending & MIP_LCOFI != 0 {
+                return Some(13);
+            }
         }
         if s_global && s_pending != 0 {
             if s_pending & MIP_SEIP != 0 {
@@ -343,6 +434,9 @@ impl CsrFile {
             }
             if s_pending & MIP_STIP != 0 {
                 return Some(5);
+            }
+            if s_pending & MIP_LCOFI != 0 {
+                return Some(13);
             }
         }
         None
@@ -415,7 +509,7 @@ impl CsrFile {
     }
 
     pub fn state_size() -> usize {
-        19 * 8
+        87 * 8
     }
 
     pub fn save(&self) -> Vec<u8> {
@@ -440,8 +534,15 @@ impl CsrFile {
             self.mhartid,
             self.stimecmp,
             self.sstc_active as u64,
+            self.fcsr as u64,
+            self.mcycle,
+            self.minstret,
+            self.mcountinhibit,
         ] {
             buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for value in self.mhpmevent.iter().chain(self.mhpmcounter.iter()) {
+            buf.extend_from_slice(&value.to_le_bytes());
         }
         buf
     }
@@ -483,13 +584,31 @@ impl CsrFile {
             return;
         }
 
-        if data.len() >= Self::state_size() {
+        if data.len() >= 20 * 8 {
             self.stimecmp = r(136);
             self.sstc_active = r(144) != 0;
+            self.fcsr = r(152) as u32;
         } else {
             // Pre-Sstc 17-field snapshot: timer state was not recorded.
             self.stimecmp = u64::MAX;
             self.sstc_active = false;
+            self.fcsr = 0;
+        }
+
+        if data.len() >= Self::state_size() {
+            self.mcycle = r(160);
+            self.minstret = r(168);
+            self.mcountinhibit = r(176);
+            for i in 0..32 {
+                self.mhpmevent[i] = r(184 + i * 8);
+                self.mhpmcounter[i] = r(440 + i * 8);
+            }
+        } else {
+            self.mcycle = 0;
+            self.minstret = 0;
+            self.mcountinhibit = 0;
+            self.mhpmevent = [0; 32];
+            self.mhpmcounter = [0; 32];
         }
     }
 }
@@ -506,8 +625,51 @@ mod tests {
         assert!(misa & (1 << 8) != 0); // I
         assert!(misa & (1 << 12) != 0); // M
         assert!(misa & (1 << 0) != 0); // A
+        assert!(misa & (1 << 2) != 0); // C
         assert!(misa & (1 << 18) != 0); // S
         assert!(misa & (1 << 20) != 0); // U
+    }
+
+    #[test]
+    fn test_misa_without_compressed() {
+        let csr = CsrFile::new_with_type(0, RiscvCpuType::RhetSimRv64Ima);
+        let misa = csr.read(MISA, 0).unwrap();
+        assert_eq!(misa & (1 << 2), 0); // C
+    }
+
+    #[test]
+    fn test_fcsr_views() {
+        let mut csr = CsrFile::new(0);
+        csr.write(FCSR, 0x5A);
+        assert_eq!(csr.read(FCSR, 0), Some(0x5A));
+        assert_eq!(csr.read(FFLAGS, 0), Some(0x1A));
+        assert_eq!(csr.read(FRM, 0), Some(2));
+
+        csr.write(FFLAGS, 0x05);
+        assert_eq!(csr.read(FCSR, 0), Some(0x45));
+        csr.write(FRM, 0x03);
+        assert_eq!(csr.read(FCSR, 0), Some(0x65));
+    }
+
+    #[test]
+    fn test_sscofpmf_counters() {
+        let mut csr = CsrFile::new(0);
+        csr.advance_counters(5);
+        assert_eq!(csr.read(MCYCLE, 0), Some(5));
+        assert_eq!(csr.read(MINSTRET, 0), Some(5));
+        assert_eq!(csr.read(MHPMCOUNTER3, 0), Some(5));
+
+        csr.write(MCOUNTINHIBIT, 1);
+        csr.advance_counters(1);
+        assert_eq!(csr.read(MCYCLE, 0), Some(5));
+        assert_eq!(csr.read(MINSTRET, 0), Some(6));
+
+        csr.write(MCOUNTINHIBIT, 0);
+        csr.mhpmcounter[3] = u64::MAX;
+        csr.advance_counters(1);
+        assert_ne!(csr.mhpmevent[3] & (1 << 63), 0);
+        assert_ne!(csr.mip & MIP_LCOFI, 0);
+        assert_ne!(csr.read(SCOUNTOVF, 0).unwrap() & (1 << 3), 0);
     }
 
     #[test]

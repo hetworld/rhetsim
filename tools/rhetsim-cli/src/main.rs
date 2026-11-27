@@ -8,7 +8,7 @@ use rhetsim_core::diag::{trace as trace_cat, TraceCategory};
 use rhetsim_core::irq::{IrqLine, IrqSink};
 use rhetsim_core::mem::{MemAttrs, MemTarget};
 use rhetsim_core::unit::{Unit, UnitCaps};
-use rhetsim_cpu_riscv::{csr, RiscvIrqLine};
+use rhetsim_cpu_riscv::{csr, RiscvCpuType, RiscvIrqLine};
 use rhetsim_intc_clint::ClintLine;
 use rhetsim_intc_plic::PlicContextLine;
 use rhetsim_manifest::manifest::{BusDesc, Manifest, UnitDesc};
@@ -372,7 +372,19 @@ fn boot_riscv_linux(
     let mut cpus: Vec<rhetsim_cpu_riscv::RiscvCpu> = Vec::with_capacity(num_harts);
     for (hart, desc) in cpu_descs.iter().enumerate() {
         let hart_mem_base = cfg_u64(&desc.config, "mem_base", dram_base);
-        let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus(&desc.id, bus.clone(), hart_mem_base);
+        let cpu_type = match cfg_riscv_cpu_type(&desc.config) {
+            Ok(cpu_type) => cpu_type,
+            Err(err) => {
+                error!(target: "boot", "{}", err);
+                std::process::exit(1);
+            }
+        };
+        let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus_type(
+            &desc.id,
+            bus.clone(),
+            hart_mem_base,
+            cpu_type,
+        );
         cpu.set_hartid(hart as u64);
         cpu.set_irq_line(
             RiscvIrqLine::MTimer,
@@ -922,14 +934,15 @@ fn create_unit(
     match desc.kind.as_str() {
         "rhetsim-cpu-riscv" => {
             let mem_base = cfg_u64(&desc.config, "mem_base", 0x8000_0000);
+            let cpu_type = cfg_riscv_cpu_type(&desc.config)?;
             if let Some(bus) = bus {
-                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::with_bus(
-                    &desc.id, bus, mem_base,
+                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::with_bus_type(
+                    &desc.id, bus, mem_base, cpu_type,
                 ))))
             } else {
                 let mem_size = cfg_usize(&desc.config, "mem_size", 64 * 1024);
-                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::new(
-                    &desc.id, mem_size, mem_base,
+                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::new_with_type(
+                    &desc.id, mem_size, mem_base, cpu_type,
                 ))))
             }
         }
@@ -1000,6 +1013,17 @@ fn find_bus_for_initiator(
         }
     }
     None
+}
+
+fn cfg_riscv_cpu_type(config: &serde_json::Value) -> Result<RiscvCpuType, String> {
+    let name = config
+        .get("cpu_type")
+        .and_then(|v| v.as_str())
+        .or_else(|| config.get("isa").and_then(|v| v.as_str()))
+        .unwrap_or("rhetsim-rv64imac");
+    let cpu_type = RiscvCpuType::parse(name)?;
+    cpu_type.ensure_implemented()?;
+    Ok(cpu_type)
 }
 
 fn cfg_u64(config: &serde_json::Value, key: &str, default: u64) -> u64 {
