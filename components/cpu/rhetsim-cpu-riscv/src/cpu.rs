@@ -1786,6 +1786,7 @@ impl ExecutionBackend for RiscvCpu {
                 self.step_one_interp();
             }
             let ran = self.insn_count - before;
+            self.csr.advance_counters(ran);
             if used_jit {
                 tracing::trace!(
                     target: trace_cat::JIT,
