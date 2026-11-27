@@ -1,5 +1,7 @@
 //! RISC-V CSR file — M-mode and S-mode
 
+use crate::profile::RiscvCpuType;
+
 // ── CSR addresses ─────────────────────────────────────────────
 
 // S-mode
@@ -128,18 +130,6 @@ pub const PRV_U: u8 = 0;
 pub const PRV_S: u8 = 1;
 pub const PRV_M: u8 = 3;
 
-// ── misa: RV64IMASU ───────────────────────────────────────────
-
-fn misa_rv64() -> u64 {
-    let mxl = 2u64 << 62;
-    let ext_i = 1 << 8;
-    let ext_m = 1 << 12;
-    let ext_a = 1 << 0;
-    let ext_s = 1 << 18;
-    let ext_u = 1 << 20;
-    mxl | ext_i | ext_m | ext_a | ext_s | ext_u
-}
-
 // ── CsrFile ───────────────────────────────────────────────────
 
 pub struct CsrFile {
@@ -153,6 +143,11 @@ pub struct CsrFile {
     pub mcause: u64,
     pub mtval: u64,
     pub mhartid: u64,
+    /// `misa` derived from the CPU profile's implemented extensions.
+    pub misa: u64,
+    pub mvendorid: u64,
+    pub marchid: u64,
+    pub mimpid: u64,
     pub medeleg: u64,
     pub mideleg: u64,
     pub mcounteren: u64,
@@ -175,6 +170,11 @@ pub struct CsrFile {
 
 impl CsrFile {
     pub fn new(hart_id: u64) -> Self {
+        Self::new_with_type(hart_id, RiscvCpuType::default())
+    }
+
+    pub fn new_with_type(hart_id: u64, cpu_type: RiscvCpuType) -> Self {
+        let profile = cpu_type.profile();
         Self {
             mstatus: 0,
             mie: 0,
@@ -185,6 +185,10 @@ impl CsrFile {
             mcause: 0,
             mtval: 0,
             mhartid: hart_id,
+            misa: profile.misa(),
+            mvendorid: profile.mvendorid,
+            marchid: profile.marchid,
+            mimpid: profile.mimpid,
             medeleg: 0,
             mideleg: 0,
             mcounteren: 0,
@@ -205,7 +209,7 @@ impl CsrFile {
     pub fn read(&self, addr: u16, insn_count: u64) -> Option<u64> {
         match addr {
             MSTATUS => Some(self.mstatus),
-            MISA => Some(misa_rv64()),
+            MISA => Some(self.misa),
             MEDELEG => Some(self.medeleg),
             MIDELEG => Some(self.mideleg),
             MIE => Some(self.mie),
@@ -218,9 +222,9 @@ impl CsrFile {
             MIP => Some(self.mip),
             MCYCLE => Some(insn_count),
             MINSTRET => Some(insn_count),
-            MVENDORID => Some(0),
-            MARCHID => Some(0),
-            MIMPID => Some(0),
+            MVENDORID => Some(self.mvendorid),
+            MARCHID => Some(self.marchid),
+            MIMPID => Some(self.mimpid),
             MHARTID => Some(self.mhartid),
             PMPCFG0 => Some(self.pmpcfg[0]),
             PMPCFG2 => Some(self.pmpcfg[1]),
@@ -506,8 +510,16 @@ mod tests {
         assert!(misa & (1 << 8) != 0); // I
         assert!(misa & (1 << 12) != 0); // M
         assert!(misa & (1 << 0) != 0); // A
+        assert!(misa & (1 << 2) != 0); // C
         assert!(misa & (1 << 18) != 0); // S
         assert!(misa & (1 << 20) != 0); // U
+    }
+
+    #[test]
+    fn test_misa_without_compressed() {
+        let csr = CsrFile::new_with_type(0, RiscvCpuType::RhetSimRv64Ima);
+        let misa = csr.read(MISA, 0).unwrap();
+        assert_eq!(misa & (1 << 2), 0); // C
     }
 
     #[test]

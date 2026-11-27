@@ -72,7 +72,7 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 
 **Acceptance:** Timer / PLIC / UART interrupt end-to-end tests pass; `/proc/interrupts` counters increase during Linux boot.
 
-**Capability boundary:** F/D floating-point extensions are not implemented; the DTS declaration of the C extension is not yet aligned with the kernel config (see Phase 6.6).
+**Capability boundary:** F/D floating-point extensions are not implemented; the DTS and kernel config now agree on the C extension (see Phase 6.5).
 
 ### Phase 4: GPGPU Compute Path (Done)
 
@@ -127,7 +127,7 @@ This document tracks the project-level implementation roadmap. Each Phase is a s
 - BusyBox-based root filesystem (rv64ima soft-float static build) ✓
 - `/init` interactive shell (ash) and basic command set ✓
 - JIT data-access page-fault delivery (userspace demand paging / A-bit handling) ✓
-- Align kernel config and DTS extension declarations (C extension)
+- Align kernel config and DTS extension declarations (C extension) ✓
 
 **Acceptance:**
 - Batch mode output contains `Run /init as init process` and `RHETSIM_INIT_OK`, process exit code 0

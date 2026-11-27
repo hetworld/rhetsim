@@ -72,7 +72,7 @@
 
 **验收：** 定时器 / PLIC / UART 中断端到端测试通过；Linux 启动中 `/proc/interrupts` 计数增长。
 
-**能力边界：** F/D 浮点扩展尚未实现；DTS 对 C 扩展的声明与内核配置尚未对齐（见 Phase 6.6）。
+**能力边界：** F/D 浮点扩展尚未实现；DTS 与内核配置已对齐 C 扩展（见 Phase 6.5）。
 
 ### Phase 4：GPGPU 计算通路（已完成）
 
@@ -127,7 +127,7 @@
 - 基于 BusyBox 的根文件系统（rv64ima 软浮点静态构建）✓
 - `/init` 交互式 shell（ash）与基础命令集 ✓
 - JIT 数据访问缺页异常交付（用户态按需分页 / A 位处理）✓
-- 内核配置 ↔ DTS 扩展声明一致性修复（C 扩展）
+- 内核配置 ↔ DTS 扩展声明一致性修复（C 扩展）✓
 
 **验收标准：**
 - batch 模式输出包含 `Run /init as init process` 与 `RHETSIM_INIT_OK`，进程退出码 0
