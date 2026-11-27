@@ -1097,10 +1097,20 @@ impl RiscvCpu {
             (0x33, 0x20, 4) => !(a ^ b),
             (0x33, 0x20, 6) => a | !b,
             (0x33, 0x20, 7) => a & !b,
+            (0x33, 0x05, 1) => Self::clmul(a, b).0,
+            (0x33, 0x05, 2) => {
+                let (lo, hi) = Self::clmul(a, b);
+                (lo >> 63) | (hi << 1)
+            }
+            (0x33, 0x05, 3) => Self::clmul(a, b).1,
             (0x33, 0x05, 4) => (a as i64).min(b as i64) as u64,
             (0x33, 0x05, 5) => a.min(b),
             (0x33, 0x05, 6) => (a as i64).max(b as i64) as u64,
             (0x33, 0x05, 7) => a.max(b),
+            (0x33, 0x14, 1) => a | (1u64 << (b & 63)),
+            (0x33, 0x24, 1) => a & !(1u64 << (b & 63)),
+            (0x33, 0x24, 5) => (a >> (b & 63)) & 1,
+            (0x33, 0x34, 1) => a ^ (1u64 << (b & 63)),
             (0x33, 0x30, 1) => a.rotate_left((b & 63) as u32),
             (0x33, 0x30, 5) => a.rotate_right((b & 63) as u32),
             (0x3B, 0x04, 0) => (a as u32 as u64).wrapping_add(b),
@@ -1119,6 +1129,20 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
+    fn clmul(a: u64, b: u64) -> (u64, u64) {
+        let mut lo = 0u64;
+        let mut hi = 0u64;
+        for i in 0..64 {
+            if (b >> i) & 1 != 0 {
+                lo ^= a << i;
+                if i != 0 {
+                    hi ^= a >> (64 - i);
+                }
+            }
+        }
+        (lo, hi)
+    }
+
     fn execute_bitmanip_imm(&mut self, opcode: u8, funct3: u8, rd: u8, rs1: u8, funct12: u16) {
         let a = self.regs[rs1 as usize];
         let value = if opcode == 0x13 && funct3 == 5 {
@@ -1134,6 +1158,7 @@ impl RiscvCpu {
                     out
                 }
                 f if (0x600..0x640).contains(&f) => a.rotate_right((f & 0x3F) as u32),
+                f if (0x480..0x4C0).contains(&f) => (a >> (f & 0x3F)) & 1,
                 _ => {
                     self.take_trap(2, 0);
                     return;
@@ -1163,6 +1188,9 @@ impl RiscvCpu {
                 0x602 => a.count_ones() as u64,
                 0x604 => a as i8 as i64 as u64,
                 0x605 => a as i16 as i64 as u64,
+                f if (0x280..0x2C0).contains(&f) => a | (1u64 << (f & 0x3F)),
+                f if (0x480..0x4C0).contains(&f) => a & !(1u64 << (f & 0x3F)),
+                f if (0x680..0x6C0).contains(&f) => a ^ (1u64 << (f & 0x3F)),
                 _ => {
                     self.take_trap(2, 0);
                     return;
@@ -2397,6 +2425,31 @@ mod tests {
 
         assert_eq!(cpu.reg(3), 3);
         assert_eq!(cpu.reg(4), 31);
+    }
+
+    #[test]
+    fn bitmanip_zbc_zbs() {
+        let mut cpu = cpu_with(&[
+            0x0030_0093,                      // ADDI x1, x0, 3
+            0x0050_0113,                      // ADDI x2, x0, 5
+            bm_op(0x33, 0x05, 1, 3, 1, 2),    // CLMUL x3, x1, x2
+            bm_op(0x33, 0x14, 1, 4, 0, 2),    // BSET x4, x0, x2
+            bm_op(0x33, 0x24, 1, 5, 4, 2),    // BCLR x5, x4, x2
+            bm_op(0x33, 0x34, 1, 6, 4, 2),    // BINV x6, x4, x2
+            bm_op(0x33, 0x24, 5, 7, 4, 2),    // BEXT x7, x4, x2
+            bm_imm(0x13, 1, 8, 0, 0x280 | 7), // BSETI x8, x0, 7
+            bm_imm(0x13, 5, 9, 8, 0x480 | 7), // BEXTI x9, x8, 7
+            0x0000_0073,
+        ]);
+        cpu.exec(20).unwrap();
+
+        assert_eq!(cpu.reg(3), 0xF); // 0b11 * 0b101 without carries
+        assert_eq!(cpu.reg(4), 1 << 5);
+        assert_eq!(cpu.reg(5), 0);
+        assert_eq!(cpu.reg(6), 0); // BINV toggles the bit set by BSET
+        assert_eq!(cpu.reg(7), 1);
+        assert_eq!(cpu.reg(8), 1 << 7);
+        assert_eq!(cpu.reg(9), 1);
     }
 
     #[test]

@@ -280,8 +280,8 @@ pub fn decode(insn: u32) -> Instruction {
             let f3 = funct3(insn);
             let f7 = funct7(insn);
             let funct12 = ((insn >> 20) & 0xFFF) as u16;
-            let bitmanip =
-                (f3 == 1 && f7 == 0x30) || (f3 == 5 && (f7 == 0x30 || f7 == 0x35 || f7 == 0x14));
+            let bitmanip = (f3 == 1 && (f7 == 0x30 || f7 == 0x14 || f7 == 0x24 || f7 == 0x34))
+                || (f3 == 5 && (f7 == 0x30 || f7 == 0x35 || f7 == 0x14 || f7 == 0x24));
             if bitmanip {
                 Instruction::BitmanipImm {
                     opcode: 0x13,
@@ -305,7 +305,14 @@ pub fn decode(insn: u32) -> Instruction {
             let f3 = funct3(insn);
             let bitmanip = matches!(
                 (f7, f3),
-                (0x10, 2 | 4 | 6) | (0x20, 4 | 6 | 7) | (0x05, 4..=7) | (0x30, 1 | 5)
+                (0x10, 2 | 4 | 6)
+                    | (0x20, 4 | 6 | 7)
+                    | (0x05, 1..=3)
+                    | (0x05, 4..=7)
+                    | (0x14, 1)
+                    | (0x24, 1 | 5)
+                    | (0x34, 1)
+                    | (0x30, 1 | 5)
             );
             if bitmanip {
                 Instruction::Bitmanip {
