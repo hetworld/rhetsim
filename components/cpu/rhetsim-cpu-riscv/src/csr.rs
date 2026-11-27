@@ -92,6 +92,9 @@ pub const MSTATUS_MXR: u64 = 1 << 19;
 pub const MSTATUS_TVM: u64 = 1 << 20;
 pub const MSTATUS_TW: u64 = 1 << 21;
 pub const MSTATUS_TSR: u64 = 1 << 22;
+/// mstatus.UXL (RV64): 2 = 64-bit user XLEN.
+pub const MSTATUS_UXL_MASK: u64 = 3 << 32;
+pub const MSTATUS_UXL_64: u64 = 2 << 32;
 
 const MSTATUS_WRITABLE: u64 = MSTATUS_SIE
     | MSTATUS_MIE
@@ -114,6 +117,7 @@ const SSTATUS_MASK: u64 = MSTATUS_SIE
     | (3 << 15)
     | MSTATUS_SUM
     | MSTATUS_MXR
+    | MSTATUS_UXL_MASK
     | (1u64 << 63);
 
 const SSTATUS_WRITABLE: u64 =
@@ -208,7 +212,7 @@ impl CsrFile {
         let profile = cpu_type.profile();
         Self {
             fcsr: 0,
-            mstatus: 0,
+            mstatus: MSTATUS_UXL_64,
             mie: 0,
             mip: 0,
             mtvec: 0,
@@ -375,7 +379,7 @@ impl CsrFile {
 
     pub fn reset(&mut self) {
         self.fcsr = 0;
-        self.mstatus = 0;
+        self.mstatus = MSTATUS_UXL_64;
         self.mie = 0;
         self.mip = 0;
         self.mtvec = 0;
@@ -407,14 +411,20 @@ impl CsrFile {
 
     /// Advance cycle/instruction/HPM counters by `steps` retired instructions.
     pub fn advance_counters(&mut self, steps: u64) {
-        if steps == 0 {
+        self.advance_counters_split(steps, steps);
+    }
+
+    /// Like `advance_counters`, but `minstret` advances by `minstret_steps`.
+    /// A write to `minstret` suppresses that instruction's own increment.
+    pub fn advance_counters_split(&mut self, steps: u64, minstret_steps: u64) {
+        if steps == 0 && minstret_steps == 0 {
             return;
         }
         if self.mcountinhibit & 1 == 0 {
             self.mcycle = self.mcycle.wrapping_add(steps);
         }
         if self.mcountinhibit & 4 == 0 {
-            self.minstret = self.minstret.wrapping_add(steps);
+            self.minstret = self.minstret.wrapping_add(minstret_steps);
         }
         for i in 3..32 {
             if self.mcountinhibit & (1 << i) != 0 {
@@ -451,6 +461,16 @@ impl CsrFile {
             }
             if m_pending & MIP_MTIP != 0 {
                 return Some(7);
+            }
+            // Undelegated supervisor-level sources are taken in M-mode too.
+            if m_pending & MIP_SEIP != 0 {
+                return Some(9);
+            }
+            if m_pending & MIP_SSIP != 0 {
+                return Some(1);
+            }
+            if m_pending & MIP_STIP != 0 {
+                return Some(5);
             }
             if m_pending & MIP_LCOFI != 0 {
                 return Some(13);

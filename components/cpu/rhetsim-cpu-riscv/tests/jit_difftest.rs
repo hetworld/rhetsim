@@ -8,7 +8,7 @@
 //! translation state are compared exactly.
 
 use rhetsim_core::backend::execution::ExecutionBackend;
-use rhetsim_cpu_riscv::csr::CsrFile;
+use rhetsim_cpu_riscv::csr::{CsrFile, MSTATUS_FS_DIRTY};
 use rhetsim_cpu_riscv::{RiscvCpu, RiscvCpuType};
 
 const MEM_SIZE: usize = 64 * 1024;
@@ -316,6 +316,8 @@ fn run(program: &Program, jit_enabled: bool) -> RiscvCpu {
     let mut cpu =
         RiscvCpu::new_with_type("difftest", MEM_SIZE, MEM_BASE, RiscvCpuType::THeadC908Full);
     cpu.set_jit_enabled(jit_enabled);
+    // FP instructions are illegal while mstatus.FS is Off.
+    cpu.csr_mut().mstatus |= MSTATUS_FS_DIRTY;
     for (i, insn) in program.insns.iter().enumerate() {
         cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
     }

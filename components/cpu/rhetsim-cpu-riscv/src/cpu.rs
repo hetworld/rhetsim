@@ -74,6 +74,8 @@ pub struct RiscvCpu {
     dram_host_ptr: Option<(*mut u8, u64, u64)>,
     /// Page fault raised by a JIT data-access helper, delivered on block exit.
     jit_fault: Option<(u64, u64)>,
+    /// The current instruction wrote `minstret`; suppress its own increment.
+    suppress_instret: bool,
     // Diagnostic counters, printed when RHETSIM_JIT_STATS is set.
     slow_loads: u64,
     slow_stores: u64,
@@ -115,6 +117,7 @@ impl RiscvCpu {
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
             jit_fault: None,
+            suppress_instret: false,
             slow_loads: 0,
             slow_stores: 0,
             sfence_count: 0,
@@ -153,6 +156,7 @@ impl RiscvCpu {
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             dram_host_ptr: None,
             jit_fault: None,
+            suppress_instret: false,
             slow_loads: 0,
             slow_stores: 0,
             sfence_count: 0,
@@ -233,6 +237,12 @@ impl RiscvCpu {
     /// Floating-point register bit pattern (NaN-boxed for single precision).
     pub fn freg(&self, idx: usize) -> u64 {
         self.fregs[idx]
+    }
+
+    /// Read guest physical memory. Intended for tests and diagnostics; normal
+    /// data access goes through the MMU and the bus.
+    pub fn read_phys(&self, addr: u64, size: usize) -> u64 {
+        self.phys_read(addr, size)
     }
 
     /// JIT counters `(compiled blocks, executions, invalidations, fallbacks)`
@@ -627,6 +637,7 @@ impl RiscvCpu {
             fregs: self.fregs.as_mut_ptr(),
             fcsr: self.csr.fcsr as u64,
             fp_dirty: 0,
+            fs: self.csr.mstatus & csr::MSTATUS_FS_MASK,
         };
 
         let self_ptr = self as *mut RiscvCpu as *mut u8;
@@ -715,26 +726,40 @@ impl RiscvCpu {
             5 => {
                 // MRET
                 self.pc = state.exit_pc;
-                let (pc, mode) = self.csr.mret();
-                self.trace_trap_return("mret", pc, mode);
-                self.pc = pc;
-                self.enter_priv(mode);
                 self.insn_count += 1;
+                if self.priv_mode != csr::PRV_M {
+                    self.take_trap(2, 0);
+                } else {
+                    let (pc, mode) = self.csr.mret();
+                    self.trace_trap_return("mret", pc, mode);
+                    self.pc = pc;
+                    self.enter_priv(mode);
+                }
             }
             6 => {
                 // SRET
                 self.pc = state.exit_pc;
-                let (pc, mode) = self.csr.sret();
-                self.trace_trap_return("sret", pc, mode);
-                self.pc = pc;
-                self.enter_priv(mode);
                 self.insn_count += 1;
+                if self.priv_mode < csr::PRV_S
+                    || (self.priv_mode == csr::PRV_S && self.csr.mstatus & csr::MSTATUS_TSR != 0)
+                {
+                    self.take_trap(2, 0);
+                } else {
+                    let (pc, mode) = self.csr.sret();
+                    self.trace_trap_return("sret", pc, mode);
+                    self.pc = pc;
+                    self.enter_priv(mode);
+                }
             }
             7 => {
                 // WFI
                 self.pc = state.exit_pc;
-                self.pc += 4; // WFI is always 4 bytes
                 self.insn_count += 1;
+                if self.priv_mode == csr::PRV_S && self.csr.mstatus & csr::MSTATUS_TW != 0 {
+                    self.take_trap(2, 0);
+                } else {
+                    self.pc += 4; // WFI is always 4 bytes
+                }
             }
             8 => {
                 // SFENCE — flush translation caches only. Translated blocks do
@@ -742,11 +767,17 @@ impl RiscvCpu {
                 // native code stays valid; instruction-memory changes are
                 // handled by FENCE.I instead.
                 self.pc = state.exit_pc;
-                self.pc += 4;
                 self.insn_count += 1;
-                self.sfence_count += 1;
-                self.tlb.flush();
-                self.flush_fast_tlb();
+                if self.priv_mode < csr::PRV_S
+                    || (self.priv_mode == csr::PRV_S && self.csr.mstatus & csr::MSTATUS_TVM != 0)
+                {
+                    self.take_trap(2, 0);
+                } else {
+                    self.pc += 4;
+                    self.sfence_count += 1;
+                    self.tlb.flush();
+                    self.flush_fast_tlb();
+                }
             }
             9 => {
                 // AMO — fall back to interpreter
@@ -793,10 +824,6 @@ impl RiscvCpu {
         };
 
         let half = self.phys_read(fetch_pa, 2) as u16;
-        if half == 0 {
-            self.halted = true;
-            return;
-        }
 
         let (raw_insn, insn) = if half & 0x3 != 0x3 {
             if !self.cpu_type.has_compressed() {
@@ -857,6 +884,17 @@ impl RiscvCpu {
     fn set_rd(&mut self, rd: u8, val: u64) {
         if rd != 0 {
             self.regs[rd as usize] = val;
+        }
+    }
+
+    /// FP instructions and the fflags/frm/fcsr CSRs are illegal while
+    /// `mstatus.FS` is Off.
+    fn require_fp(&mut self) -> bool {
+        if self.csr.mstatus & csr::MSTATUS_FS_MASK == 0 {
+            self.take_trap(2, 0);
+            false
+        } else {
+            true
         }
     }
 
@@ -1826,20 +1864,32 @@ impl RiscvCpu {
                 rd,
                 rs1,
                 offset,
-            } => self.execute_fp_load(width, rd, rs1, offset),
+            } => {
+                if self.require_fp() {
+                    self.execute_fp_load(width, rd, rs1, offset);
+                }
+            }
             Instruction::FpStore {
                 width,
                 rs1,
                 rs2,
                 offset,
-            } => self.execute_fp_store(width, rs1, rs2, offset),
+            } => {
+                if self.require_fp() {
+                    self.execute_fp_store(width, rs1, rs2, offset);
+                }
+            }
             Instruction::FpOp {
                 funct7,
                 funct3,
                 rd,
                 rs1,
                 rs2,
-            } => self.execute_fp_op(funct7, funct3, rd, rs1, rs2),
+            } => {
+                if self.require_fp() {
+                    self.execute_fp_op(funct7, funct3, rd, rs1, rs2);
+                }
+            }
             Instruction::FpFma {
                 opcode,
                 funct7,
@@ -1847,7 +1897,11 @@ impl RiscvCpu {
                 rs1,
                 rs2,
                 rs3,
-            } => self.execute_fp_fma(opcode, funct7, rd, rs1, rs2, rs3),
+            } => {
+                if self.require_fp() {
+                    self.execute_fp_fma(opcode, funct7, rd, rs1, rs2, rs3);
+                }
+            }
             Instruction::Bitmanip {
                 opcode,
                 funct7,
@@ -1985,6 +2039,27 @@ impl RiscvCpu {
                     self.take_trap(2, 0);
                     return;
                 }
+                if matches!(csr, csr::FFLAGS | csr::FRM | csr::FCSR) && !self.require_fp() {
+                    return;
+                }
+                if csr == csr::SATP
+                    && self.priv_mode == csr::PRV_S
+                    && self.csr.mstatus & csr::MSTATUS_TVM != 0
+                {
+                    self.take_trap(2, 0);
+                    return;
+                }
+                let writes = match funct3 {
+                    1 | 5 => true,
+                    2 | 3 | 6 | 7 => rs1 != 0,
+                    _ => false,
+                };
+                // CSR addresses with bits [11:10] == 11 are read-only; a
+                // writing instruction targeting one is illegal.
+                if writes && (csr >> 10) & 0x3 == 0x3 {
+                    self.take_trap(2, 0);
+                    return;
+                }
                 let old = match self.csr.read(csr, self.insn_count) {
                     Some(v) => v,
                     None => {
@@ -2029,6 +2104,14 @@ impl RiscvCpu {
                     }
                     _ => {}
                 }
+                let wrote = match funct3 {
+                    1 | 5 => true,
+                    2 | 3 | 6 | 7 => rs1 != 0,
+                    _ => false,
+                };
+                if wrote && csr == csr::MINSTRET {
+                    self.suppress_instret = true;
+                }
                 match csr {
                     csr::SATP => {
                         self.satp_writes += 1;
@@ -2057,21 +2140,41 @@ impl RiscvCpu {
                 self.pc += self.insn_size;
             }
             Instruction::Mret => {
+                if self.priv_mode != csr::PRV_M {
+                    self.take_trap(2, 0);
+                    return;
+                }
                 let (pc, mode) = self.csr.mret();
                 self.trace_trap_return("mret", pc, mode);
                 self.pc = pc;
                 self.enter_priv(mode);
             }
             Instruction::Sret => {
+                if self.priv_mode < csr::PRV_S
+                    || (self.priv_mode == csr::PRV_S && self.csr.mstatus & csr::MSTATUS_TSR != 0)
+                {
+                    self.take_trap(2, 0);
+                    return;
+                }
                 let (pc, mode) = self.csr.sret();
                 self.trace_trap_return("sret", pc, mode);
                 self.pc = pc;
                 self.enter_priv(mode);
             }
             Instruction::Wfi => {
+                if self.priv_mode == csr::PRV_S && self.csr.mstatus & csr::MSTATUS_TW != 0 {
+                    self.take_trap(2, 0);
+                    return;
+                }
                 self.pc += self.insn_size;
             }
             Instruction::SfenceVma { .. } => {
+                if self.priv_mode < csr::PRV_S
+                    || (self.priv_mode == csr::PRV_S && self.csr.mstatus & csr::MSTATUS_TVM != 0)
+                {
+                    self.take_trap(2, 0);
+                    return;
+                }
                 self.tlb.flush();
                 self.flush_fast_tlb();
                 self.pc += self.insn_size;
@@ -2326,6 +2429,7 @@ impl Unit for RiscvCpu {
         self.tlb.flush();
         self.flush_fast_tlb();
         self.jit_fault = None;
+        self.suppress_instret = false;
         self.slow_loads = 0;
         self.slow_stores = 0;
         self.sfence_count = 0;
@@ -2364,7 +2468,14 @@ impl ExecutionBackend for RiscvCpu {
                 self.step_one_interp();
             }
             let ran = self.insn_count - before;
-            self.csr.advance_counters(ran);
+            // A write to minstret suppresses that instruction's own increment.
+            let minstret_ran = if self.suppress_instret {
+                self.suppress_instret = false;
+                ran.saturating_sub(1)
+            } else {
+                ran
+            };
+            self.csr.advance_counters_split(ran, minstret_ran);
             if used_jit {
                 tracing::trace!(
                     target: trace_cat::JIT,
@@ -2786,11 +2897,12 @@ mod tests {
             cpu.load_binary(&insn.to_le_bytes(), (0x200 + i * 4) as u64);
         }
 
-        // M-mode trap handler at 0x100
+        // M-mode trap handler at 0x100. The handler spins after setting the
+        // marker so the CPU stops on the exec budget with mcause intact.
         let handler: Vec<u32> = vec![
             0x00100593, // ADDI x11, x0, 1
+            0x0000006F, // JAL x0, 0 (self-loop)
         ];
-        // After this instruction, next is 0x104 which is 0 → halt
         for (i, insn) in handler.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (0x100 + i * 4) as u64);
         }
@@ -3167,6 +3279,7 @@ mod tests {
             fp_op(0x09, 0, 4, 3, 2), // FMUL.D f4, f3, f2
             0x0000_0073,             // ECALL
         ]);
+        cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
         cpu.set_fp64(1, 1.5);
         cpu.set_fp64(2, 2.25);
         cpu.exec(10).unwrap();
@@ -3184,6 +3297,7 @@ mod tests {
             fp_op(0x71, 1, 3, 2, 0), // FCLASS.D x3, f2
             0x0000_0073,             // ECALL
         ]);
+        cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
         cpu.exec(10).unwrap();
 
         assert_eq!(cpu.fp64(2), 42.0);
@@ -3196,6 +3310,7 @@ mod tests {
             fp_fma(0x43, 0x01, 3, 1, 2, 4), // FMADD.D f3, f1, f2, f4
             0x0000_0073,
         ]);
+        cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
         cpu.set_fp64(1, 2.0);
         cpu.set_fp64(2, 3.0);
         cpu.set_fp64(4, 4.0);
@@ -3325,6 +3440,7 @@ mod tests {
             0x0000_0073,                // ecall
         ];
         let setup = |cpu: &mut RiscvCpu| {
+            cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
             cpu.set_fp64(1, 1.5);
             cpu.set_fp64(2, 2.75);
             cpu.set_fp64(21, f64::NAN);
@@ -3382,6 +3498,7 @@ mod tests {
             0x0000_0073,               // ecall
         ];
         let setup = |cpu: &mut RiscvCpu| {
+            cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
             cpu.set_fp64(21, f64::NAN);
             cpu.set_fp64(20, 3.0e9);
             cpu.set_fp64(22, 5.0e9);
@@ -3429,6 +3546,7 @@ mod tests {
             0x0000_0073,           // ecall
         ];
         let setup = |cpu: &mut RiscvCpu| {
+            cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
             cpu.set_fp64(2, -123.456);
             cpu.set_fp32(5, 3.5);
             cpu.set_fp64(6, 1.0e300);
@@ -3456,6 +3574,7 @@ mod tests {
             0x0000_0073,                       // ecall
         ];
         let setup = |cpu: &mut RiscvCpu| {
+            cpu.csr_mut().mstatus |= csr::MSTATUS_FS_DIRTY;
             cpu.set_fp64(1, 2.0);
             cpu.set_fp64(2, 3.0);
             cpu.set_fp64(4, 4.0);
@@ -3552,6 +3671,57 @@ mod tests {
             jit_cpu.reg(31),
             (a as u32 as u64).wrapping_shl(1).wrapping_add(b)
         );
+    }
+
+    #[test]
+    fn jit_interpreter_parity_div_overflow() {
+        let rtype = |opcode: u32, f3: u32, rd: u32, rs1: u32, rs2: u32| {
+            (0x01u32 << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | opcode
+        };
+        let insns = [
+            rtype(0x33, 4, 3, 1, 2), // div   x3, x1, x2  (MIN / -1)
+            rtype(0x33, 6, 4, 1, 2), // rem   x4, x1, x2
+            rtype(0x3B, 4, 5, 9, 2), // divw  x5, x9, x2  (MIN32 / -1)
+            rtype(0x3B, 6, 6, 9, 2), // remw  x6, x9, x2
+            rtype(0x33, 4, 7, 1, 0), // div   x7, x1, x0  (divide by zero)
+            rtype(0x33, 6, 8, 1, 0), // rem   x8, x1, x0
+            0x0000_0073,             // ecall
+        ];
+        let setup = |cpu: &mut RiscvCpu| {
+            cpu.set_reg(1, i64::MIN as u64);
+            cpu.set_reg(2, u64::MAX); // -1
+            cpu.set_reg(9, 0xFFFF_FFFF_8000_0000); // i32::MIN, zero-extended
+        };
+        let jit_cpu = run_jit_parity_program_setup(&insns, true, setup);
+        let interp_cpu = run_jit_parity_program_setup(&insns, false, setup);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        assert_eq!(jit_cpu.reg(3), i64::MIN as u64);
+        assert_eq!(jit_cpu.reg(4), 0);
+        assert_eq!(jit_cpu.reg(5), 0xFFFF_FFFF_8000_0000);
+        assert_eq!(jit_cpu.reg(6), 0);
+        assert_eq!(jit_cpu.reg(7), u64::MAX);
+        assert_eq!(jit_cpu.reg(8), i64::MIN as u64);
+    }
+
+    #[test]
+    fn jit_interpreter_parity_minstret_write() {
+        let insns = [
+            (0xB02u32 << 20) | (5 << 12) | 0x73, // csrwi minstret, 0
+            (0xB02u32 << 20) | (2 << 12) | (10 << 7) | 0x73, // csrr a0, minstret
+            0x0000_0073,                         // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+        assert_eq!(
+            jit_cpu.reg(10),
+            0,
+            "minstret write must suppress its own increment"
+        );
+        assert_eq!(interp_cpu.reg(10), 0);
     }
 
     #[test]

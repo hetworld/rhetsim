@@ -48,6 +48,8 @@ pub struct JitCpuState {
     pub fcsr: u64,
     /// Set by translated code when an FP instruction retires.
     pub fp_dirty: u64,
+    /// `mstatus.FS` (`MSTATUS_FS_MASK`); FP instructions trap when zero.
+    pub fs: u64,
 }
 
 // The generated code accesses these fields at hard-coded offsets.
@@ -60,6 +62,7 @@ const _: () = {
     assert!(std::mem::offset_of!(JitCpuState, fregs) == 304);
     assert!(std::mem::offset_of!(JitCpuState, fcsr) == 312);
     assert!(std::mem::offset_of!(JitCpuState, fp_dirty) == 320);
+    assert!(std::mem::offset_of!(JitCpuState, fs) == 328);
 };
 
 pub type JitBlockFn = unsafe extern "C" fn(*mut JitCpuState, *mut u8);
@@ -127,6 +130,7 @@ extern "C" fn helper_clmulr(a: u64, b: u64) -> u64 {
 const STATE_FREGS: i32 = 304;
 const STATE_FCSR: i32 = 312;
 const STATE_FP_DIRTY: i32 = 320;
+const STATE_FS: i32 = 328;
 
 pub const FAST_TLB_SIZE: usize = 256;
 
@@ -405,6 +409,14 @@ impl JitEngine {
                     | Instruction::FenceI
                     | Instruction::Unknown(_)
             );
+
+            // Start a fresh block at every CSR instruction: it is executed by
+            // the interpreter after the block exits, and counter reads after
+            // a minstret write must not observe pre-CSR increments applied
+            // late.
+            if matches!(insn, Instruction::Csr { .. }) && !insns.is_empty() {
+                break;
+            }
 
             insns.push((insn, pc, size, raw as u32));
             pc += size;
@@ -983,49 +995,49 @@ impl JitEngine {
                         builder.seal_block(nb);
                     }
                     Instruction::Mret => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_MRET, idx + 1, 0);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_MRET, idx, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
                     Instruction::Sret => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_SRET, idx + 1, 0);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_SRET, idx, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
                     Instruction::Wfi => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_WFI, idx + 1, 0);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_WFI, idx, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
                     Instruction::SfenceVma { .. } => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_SFENCE, idx + 1, 0);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_SFENCE, idx, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
                     Instruction::Csr { .. } => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_CSR, idx + 1, raw);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_CSR, idx, raw);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
                     Instruction::Amo { .. } => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_AMO, idx + 1, raw);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_AMO, idx, raw);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
                     Instruction::FenceI => {
-                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_FENCEI, idx + 1, 0);
+                        emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_FENCEI, idx, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
                         builder.switch_to_block(nb);
@@ -1088,7 +1100,18 @@ impl JitEngine {
                         rs1,
                         rs2,
                         rs3,
-                    } => emit_fp_fma(&mut builder, &emit, *opcode, *funct7, *rd, *rs1, *rs2, *rs3),
+                    } => emit_fp_fma(
+                        &mut builder,
+                        &emit,
+                        *opcode,
+                        *funct7,
+                        *rd,
+                        *rs1,
+                        *rs2,
+                        *rs3,
+                        insn_pc,
+                        idx + 1,
+                    ),
 
                     Instruction::Bitmanip {
                         opcode,
@@ -1248,17 +1271,20 @@ fn emit_m_op(
         }
         3 => builder.ins().umulhi(a, b),
         4 => {
-            // DIV signed: b==0 → -1, MIN/-1 → MIN (but sdiv traps on that)
-            // Use helper: check b==0 first
+            // DIV signed: b==0 → -1, MIN/-1 → MIN. Host idiv faults on both,
+            // so substitute a safe divisor and select the architectural result.
             let zero = builder.ins().iconst(I64, 0);
             let is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
             let neg1 = builder.ins().iconst(I64, -1i64);
-            // For b!=0 case, also check MIN/-1 overflow
             let one = builder.ins().iconst(I64, 1);
+            let min = builder.ins().iconst(I64, i64::MIN);
+            let a_min = builder.ins().icmp(IntCC::Equal, a, min);
+            let b_neg1 = builder.ins().icmp(IntCC::Equal, b, neg1);
+            let overflow = builder.ins().band(a_min, b_neg1);
             let safe_b = builder.ins().select(is_zero, one, b);
+            let safe_b = builder.ins().select(overflow, one, safe_b);
             let result = builder.ins().sdiv(a, safe_b);
-            // Check MIN/-1 case: if a==MIN && b==-1 → result=MIN (which sdiv gives us correctly)
-            // Actually cranelift sdiv with safe_b=1 when b==0 gives a/1=a, then we select -1
+            let result = builder.ins().select(overflow, a, result);
             builder.ins().select(is_zero, neg1, result)
         }
         5 => {
@@ -1271,11 +1297,19 @@ fn emit_m_op(
             builder.ins().select(is_zero, neg1, result)
         }
         6 => {
+            // REM signed: b==0 → a, MIN/-1 → 0.
             let zero = builder.ins().iconst(I64, 0);
             let is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
+            let neg1 = builder.ins().iconst(I64, -1i64);
             let one = builder.ins().iconst(I64, 1);
+            let min = builder.ins().iconst(I64, i64::MIN);
+            let a_min = builder.ins().icmp(IntCC::Equal, a, min);
+            let b_neg1 = builder.ins().icmp(IntCC::Equal, b, neg1);
+            let overflow = builder.ins().band(a_min, b_neg1);
             let safe_b = builder.ins().select(is_zero, one, b);
+            let safe_b = builder.ins().select(overflow, one, safe_b);
             let result = builder.ins().srem(a, safe_b);
+            let result = builder.ins().select(overflow, zero, result);
             builder.ins().select(is_zero, a, result)
         }
         7 => {
@@ -1323,6 +1357,25 @@ fn store_fp_bits(builder: &mut FunctionBuilder, ctx: &EmitCtx, reg: u8, val: Val
     builder
         .ins()
         .store(memflags(), val, ctx.fregs_base, (reg as i32) * 8);
+}
+
+/// Trap as an illegal instruction when `mstatus.FS` is Off, otherwise
+/// continue in a fresh block.
+fn emit_fp_guard(builder: &mut FunctionBuilder, ctx: &EmitCtx, insn_pc: u64, count: usize) {
+    let fs = builder.ins().load(I64, memflags(), ctx.state_ptr, STATE_FS);
+    let zero = builder.ins().iconst(I64, 0);
+    let disabled = builder.ins().icmp(IntCC::Equal, fs, zero);
+    let trap_block = builder.create_block();
+    let cont_block = builder.create_block();
+    builder
+        .ins()
+        .brif(disabled, trap_block, &[], cont_block, &[]);
+    builder.switch_to_block(trap_block);
+    builder.seal_block(trap_block);
+    emit_exit_insn(builder, ctx.state_ptr, insn_pc, EXIT_TRAP, count, 0);
+    builder.ins().jump(ctx.exit_block, &[]);
+    builder.switch_to_block(cont_block);
+    builder.seal_block(cont_block);
 }
 
 fn mark_fp_dirty(builder: &mut FunctionBuilder, ctx: &EmitCtx) {
@@ -1558,6 +1611,7 @@ fn emit_fp_load(
     insn_pc: u64,
     count: usize,
 ) {
+    emit_fp_guard(builder, ctx, insn_pc, count);
     let base = load_reg(builder, ctx.state_ptr, rs1);
     let off = builder.ins().iconst(I64, offset);
     let va = builder.ins().iadd(base, off);
@@ -1582,6 +1636,7 @@ fn emit_fp_store(
     insn_pc: u64,
     count: usize,
 ) {
+    emit_fp_guard(builder, ctx, insn_pc, count);
     let base = load_reg(builder, ctx.state_ptr, rs1);
     let off = builder.ins().iconst(I64, offset);
     let va = builder.ins().iadd(base, off);
@@ -1697,6 +1752,7 @@ fn emit_fp_op(
     insn_pc: u64,
     count: usize,
 ) {
+    emit_fp_guard(builder, ctx, insn_pc, count);
     let is_double = funct7 & 1 != 0;
     let a_bits = load_fp_bits(builder, ctx, rs1);
     let b_bits = load_fp_bits(builder, ctx, rs2);
@@ -1963,7 +2019,10 @@ fn emit_fp_fma(
     rs1: u8,
     rs2: u8,
     rs3: u8,
+    insn_pc: u64,
+    count: usize,
 ) {
+    emit_fp_guard(builder, ctx, insn_pc, count);
     let is_double = funct7 & 1 != 0;
     let a_bits = load_fp_bits(builder, ctx, rs1);
     let b_bits = load_fp_bits(builder, ctx, rs2);
@@ -2270,8 +2329,15 @@ fn emit_m32_op(
             let n32 = builder.ins().ireduce(I32, neg1);
             let one = builder.ins().iconst(I64, 1);
             let o32 = builder.ins().ireduce(I32, one);
+            let min = builder.ins().iconst(I64, i32::MIN as i64);
+            let min32 = builder.ins().ireduce(I32, min);
+            let a_min = builder.ins().icmp(IntCC::Equal, a, min32);
+            let b_neg1 = builder.ins().icmp(IntCC::Equal, b, n32);
+            let overflow = builder.ins().band(a_min, b_neg1);
             let safe_b = builder.ins().select(is_zero, o32, b);
+            let safe_b = builder.ins().select(overflow, o32, safe_b);
             let result = builder.ins().sdiv(a, safe_b);
+            let result = builder.ins().select(overflow, a, result);
             builder.ins().select(is_zero, n32, result)
         }
         5 => {
@@ -2290,10 +2356,19 @@ fn emit_m32_op(
             let zero = builder.ins().iconst(I64, 0);
             let z32 = builder.ins().ireduce(I32, zero);
             let is_zero = builder.ins().icmp(IntCC::Equal, b, z32);
+            let neg1 = builder.ins().iconst(I64, -1i64);
+            let n32 = builder.ins().ireduce(I32, neg1);
             let one = builder.ins().iconst(I64, 1);
             let o32 = builder.ins().ireduce(I32, one);
+            let min = builder.ins().iconst(I64, i32::MIN as i64);
+            let min32 = builder.ins().ireduce(I32, min);
+            let a_min = builder.ins().icmp(IntCC::Equal, a, min32);
+            let b_neg1 = builder.ins().icmp(IntCC::Equal, b, n32);
+            let overflow = builder.ins().band(a_min, b_neg1);
             let safe_b = builder.ins().select(is_zero, o32, b);
+            let safe_b = builder.ins().select(overflow, o32, safe_b);
             let result = builder.ins().srem(a, safe_b);
+            let result = builder.ins().select(overflow, z32, result);
             builder.ins().select(is_zero, a, result)
         }
         7 => {

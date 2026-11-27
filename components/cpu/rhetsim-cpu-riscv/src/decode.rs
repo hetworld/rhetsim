@@ -290,8 +290,10 @@ pub fn decode(insn: u32) -> Instruction {
             let f3 = funct3(insn);
             let f7 = funct7(insn);
             let funct12 = ((insn >> 20) & 0xFFF) as u16;
-            let bitmanip = (f3 == 1 && (f7 == 0x30 || f7 == 0x14 || f7 == 0x24 || f7 == 0x34))
-                || (f3 == 5 && (f7 == 0x30 || f7 == 0x35 || f7 == 0x14 || f7 == 0x24));
+            // RV64 shift-immediates carry shamt[5] in funct7 bit 0, so match
+            // the six-bit funct6 field when identifying the bitmanip forms.
+            let f6 = f7 >> 1;
+            let bitmanip = matches!(f3, 1 | 5) && matches!(f6, 0x0A | 0x12 | 0x18 | 0x1A);
             if bitmanip {
                 Instruction::BitmanipImm {
                     opcode: 0x13,
