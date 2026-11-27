@@ -1,0 +1,8 @@
+[package]
+name = "rhetsim-accel-gpgpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rhetsim-core = { workspace = true }
+rhetsim-cpu-riscv = { path = "../../cpu/rhetsim-cpu-riscv" }

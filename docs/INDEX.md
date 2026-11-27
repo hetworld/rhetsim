@@ -2,9 +2,9 @@
 
 ---
 
-# OmniSim — Documentation Index
+# RhetSim — Documentation Index
 
-This index covers all OmniSim technical documents. Each document is available in both English and Chinese.
+This index covers all RhetSim technical documents. Each document is available in both English and Chinese.
 
 ## Documents
 
@@ -14,20 +14,24 @@ This index covers all OmniSim technical documents. Each document is available in
 | 02 | Interface Specification | [02-interface-spec.md](./02-interface-spec.md) | [02-interface-spec.zh-CN.md](./02-interface-spec.zh-CN.md) |
 | 03 | Component Development Guide | [03-component-dev-guide.md](./03-component-dev-guide.md) | [03-component-dev-guide.zh-CN.md](./03-component-dev-guide.zh-CN.md) |
 | 04 | Use Case Handbook | [04-use-case-handbook.md](./04-use-case-handbook.md) | [04-use-case-handbook.zh-CN.md](./04-use-case-handbook.zh-CN.md) |
+| 05 | Roadmap | [05-roadmap.md](./05-roadmap.md) | [05-roadmap.zh-CN.md](./05-roadmap.zh-CN.md) |
 
 ## Document Descriptions
 
 **01 — Architecture Design**
-Top-level design of OmniSim: the four-layer architecture (L1–L4), five core abstractions (Unit, Bus, Backend, Manifest, Profile), and the overall design philosophy. Start here if you are new to the project.
+Top-level design of RhetSim: the four-layer architecture (L1–L4), five core abstractions (Unit, Bus, Backend, Manifest, Profile), and the overall design philosophy. Start here if you are new to the project.
 
 **02 — Interface Specification**
-Complete Rust trait and type definitions for all public interfaces across `omnisim-core`, `omnisim-manifest`, `omnisim-runtime`, `omnisim-tcg`, and `omnisim-compat`. The primary reference for framework and component developers.
+Complete Rust trait and type definitions for all public interfaces across `rhetsim-core`, `rhetsim-manifest`, `rhetsim-runtime`, `rhetsim-tcg`, and `rhetsim-compat`. The primary reference for framework and component developers.
 
 **03 — Component Development Guide**
 Step-by-step guide to implementing a hardware component: project layout, trait implementation patterns, self-registration, config schema, and testing conventions.
 
 **04 — Use Case Handbook**
 Sixteen end-to-end simulation scenarios covering heterogeneous SoC, PCIe accelerators, embedded systems, AI servers, nested virtualization, and more. Each scenario includes a Manifest example and notes on key configuration points.
+
+**05 — Roadmap**
+Phase-by-phase implementation roadmap: completed phases (0–6), active Phase 6.5, and planned phases (6.6–9). Includes dependency graph, per-phase capability boundaries, and mapping to the original M0–M6 milestones.
 
 ## Recommended Reading Order
 

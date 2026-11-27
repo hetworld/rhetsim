@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — Architecture Design
+# RhetSim — Architecture Design
 
 > **Document ID**: DOC-01 &nbsp;&nbsp; **Version**: v1.0 &nbsp;&nbsp; **Date**: 2026-Q1 &nbsp;&nbsp; **Author**: OpenFunTech
 
@@ -42,20 +42,20 @@ rust-vmm is a virtualization component library in the Rust ecosystem, providing 
 
 ```
 rust-vmm's Role
-Value: high-quality Rust safe virtualization primitives, reused directly by OmniSim
+Value: high-quality Rust safe virtualization primitives, reused directly by RhetSim
 Boundary: just a component library; no composition framework; users manage connections themselves
 Missing: no Bus abstraction, no Manifest, no scheduler
 ```
 
-### 1.4  What OmniSim Solves
+### 1.4  What RhetSim Solves
 
 ```
-OmniSim's Positioning
-OmniSim = rust-vmm's composition philosophy + heterogeneous platform topology description + libvirt/QEMU ecosystem compatibility
+RhetSim's Positioning
+RhetSim = rust-vmm's composition philosophy + heterogeneous platform topology description + libvirt/QEMU ecosystem compatibility
 Sits between QEMU (monolithic) and rust-vmm (pure component library): provides a minimal composition framework while preserving component independence
 ```
 
-| Dimension | QEMU | rust-vmm | OmniSim |
+| Dimension | QEMU | rust-vmm | RhetSim |
 | --- | --- | --- | --- |
 | Architecture Style | Monolithic, internally tightly coupled | Pure component library, no framework | Component library + minimal composition framework |
 | CPU Status | Privileged object with dedicated execution loop | No unified abstraction | Unit, fully equal to NPU/DPU |
@@ -67,7 +67,7 @@ Sits between QEMU (monolithic) and rust-vmm (pure component library): provides a
 
 ## 2  Core Abstractions
 
-OmniSim's entire design is built on five core concepts. Understanding these five concepts means understanding the essence of OmniSim.
+RhetSim's entire design is built on five core concepts. Understanding these five concepts means understanding the essence of RhetSim.
 
 ### 2.1  Five Core Concepts
 
@@ -93,9 +93,9 @@ There is only one criterion for determining Unit granularity: the smallest hardw
 
 ### 2.3  Bus: Connections Are First-Class Citizens
 
-This is the most fundamental difference between OmniSim and QEMU. In QEMU, connections between Units are buried in C initialization code — not queryable, not serializable. OmniSim elevates connections to first-class citizens, expressing them explicitly as Bus objects.
+This is the most fundamental difference between RhetSim and QEMU. In QEMU, connections between Units are buried in C initialization code — not queryable, not serializable. RhetSim elevates connections to first-class citizens, expressing them explicitly as Bus objects.
 
-OmniSim defines 10 types of Bus, covering all connection scenarios:
+RhetSim defines 10 types of Bus, covering all connection scenarios:
 
 | Bus Type | Responsibility | Typical Use Case |
 | --- | --- | --- |
@@ -116,19 +116,19 @@ A Backend describes how a Unit executes, along two completely orthogonal dimensi
 
 | Execution Dimension | Timing Dimension | Combined Use Case | Product Phase |
 | --- | --- | --- | --- |
-| Functional (TCG) | Untimed | Functional simulation, verifying software correctness, fastest | OmniSim P0 open source |
+| Functional (TCG) | Untimed | Functional simulation, verifying software correctness, fastest | RhetSim P0 open source |
 | Timing (performance model) | LooseTiming | Performance simulation, modeling latency/bandwidth/throughput | P1 |
 | Rtl (FPGA bridge) | CycleAccurate | RTL co-verification, cycle-accurate | P2 |
 | Kvm (hardware acceleration) | Untimed | Hypervisor, real hardware execution | LeoVirt-S |
 | Mock (test stub) | Untimed | Unit testing, CI verification | Test infrastructure |
-| SimtHart (RISC-V hart array) | Untimed/Loose | GPGPU SM route A | OmniSim P0 |
-| SimtWarp (SIMT Warp scheduler) | Untimed/Loose | GPGPU SM route B | OmniSim P1 |
+| SimtHart (RISC-V hart array) | Untimed/Loose | GPGPU SM route A | RhetSim P0 |
+| SimtWarp (SIMT Warp scheduler) | Untimed/Loose | GPGPU SM route B | RhetSim P1 |
 
 Within the same platform, different Units can use different Backends and different TimingModels; SyncBus coordinates the timing.
 
 ### 2.5  Manifest: Declarative Platform Description
 
-A Manifest is the complete declaration of a platform's topology, serializable to JSON or TOML. It is the language OmniSim uses to interact with the outside world. A Manifest describes "what Units exist" and "how they are connected" — it contains no execution logic.
+A Manifest is the complete declaration of a platform's topology, serializable to JSON or TOML. It is the language RhetSim uses to interact with the outside world. A Manifest describes "what Units exist" and "how they are connected" — it contains no execution logic.
 
 ```toml
 # A minimal Manifest example
@@ -224,7 +224,7 @@ Each Initiator Unit holds its own MemSpace (address routing table). The ARM Core
 
 ### 3.5  L3 — Manifest Layer
 
-Declarative platform description — the language OmniSim uses to communicate with the outside world. The Realizer translates a Manifest (static description) into a runtime Platform (Unit + Bus instances).
+Declarative platform description — the language RhetSim uses to communicate with the outside world. The Realizer translates a Manifest (static description) into a runtime Platform (Unit + Bus instances).
 
 L3 knows the configuration description of a Unit but knows nothing of Backend implementation details. The Realizer looks up the corresponding factory function by the `kind` field in the ComponentRegistry and instantiates the Unit. This allows new components to be integrated simply by registering a factory, with no changes to the framework.
 
@@ -234,7 +234,7 @@ Presents itself externally as a QEMU process, enabling libvirt / OpenStack to in
 
 #### CLI Parser
 
-Parses QEMU command-line argument format and translates it into an internal Manifest. `-machine` / `-cpu` / `-device` arguments generated by libvirt can be passed directly to the `omnisim-aarch64` / `omnisim-x86_64` executables (whose names are disguised as `qemu-system-*`).
+Parses QEMU command-line argument format and translates it into an internal Manifest. `-machine` / `-cpu` / `-device` arguments generated by libvirt can be passed directly to the `rhetsim-aarch64` / `rhetsim-x86_64` executables (whose names are disguised as `qemu-system-*`).
 
 #### QMP Server
 
@@ -242,7 +242,7 @@ Implements the subset of QMP commands required by libvirt: lifecycle (query-stat
 
 ## 4  Key Design Decisions
 
-This chapter records each important design decision and its rationale. These decisions define OmniSim's boundaries and trade-offs.
+This chapter records each important design decision and its rationale. These decisions define RhetSim's boundaries and trade-offs.
 
 ### 4.1  Bus Is a First-Class Citizen, Not Hidden Inside Units
 
@@ -282,15 +282,15 @@ Execution dimension (how to execute) and timing dimension (how time advances) ar
 
 Rationale: Different scenarios have independently varying requirements for execution and timing. Software correctness verification needs only Functional + Untimed (fastest). Performance modeling needs Timing + LooseTiming. RTL co-simulation needs Rtl + CycleAccurate. If the two are coupled, every new combination requires a new Backend type, causing combinatorial explosion.
 
-### 4.5  omnisim-core Has Zero Forced Dependencies
+### 4.5  rhetsim-core Has Zero Forced Dependencies
 
 ```
 Decision
-omnisim-core depends only on the Rust standard library; no third-party crates are introduced.
-All components depend only on omnisim-core; they do not depend on each other.
+rhetsim-core depends only on the Rust standard library; no third-party crates are introduced.
+All components depend only on rhetsim-core; they do not depend on each other.
 ```
 
-Rationale: Ensures components can be compiled, tested, and released independently. If core introduces heavy dependencies, all components will be contaminated by transitive dependencies. Zero dependencies also keeps omnisim-core's interface definitions stable enough to avoid breaking changes caused by upstream dependency upgrades.
+Rationale: Ensures components can be compiled, tested, and released independently. If core introduces heavy dependencies, all components will be contaminated by transitive dependencies. Zero dependencies also keeps rhetsim-core's interface definitions stable enough to avoid breaking changes caused by upstream dependency upgrades.
 
 ### 4.6  Composite Unit Recursive Nesting
 
@@ -316,7 +316,7 @@ Rationale: The existing libvirt / OpenStack ecosystem is a legacy asset; users c
 
 | Milestone | Goal | Key Deliverables |
 | --- | --- | --- |
-| M0 Architecture | omnisim-core interfaces finalized | Unit/Bus/Backend traits; MockBackend; two heterogeneous Units instantiated in the same Platform |
+| M0 Architecture | rhetsim-core interfaces finalized | Unit/Bus/Backend traits; MockBackend; two heterogeneous Units instantiated in the same Platform |
 | M1 Functional Simulation | Minimal runnable simulation | Ported QEMU TCG; ARM + RISC-V frontends; L3 Manifest loading; minimal EmbeddedProfile |
 | M2 Ecosystem Integration | libvirt-callable | L4 CLI Parser; core QMP Server subset; KvmBackend |
 | M3 Heterogeneous Platform | Scenarios 1 and 2 working | PCIe Bus; GPGPU Composite Unit; ResetBus; MemBus visible_to filtering |
@@ -328,7 +328,7 @@ Rationale: The existing libvirt / OpenStack ecosystem is a legacy asset; users c
 
 ```
 Interface Stability Rules
-P0: omnisim-core interfaces are non-breaking after 1.0; only additions are allowed
+P0: rhetsim-core interfaces are non-breaking after 1.0; only additions are allowed
 P1: Timing Backend interfaces; stability commitment follows milestone progress
 P2: RTL/security interfaces; versioned independently
 Cross-layer rule: upper-layer changes must not affect lower-layer interfaces; lower-layer interface changes require synchronized updates to upper layers

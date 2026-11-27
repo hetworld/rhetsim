@@ -1,0 +1,10 @@
+[package]
+name = "rhetsim-io-pcie"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rhetsim-core = { workspace = true }
+
+[dev-dependencies]
+rhetsim-mem-dram = { path = "../../memory/rhetsim-mem-dram" }

@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — 组件开发指南
+# RhetSim — 组件开发指南
 
 > **文档编号**：DOC-03 &nbsp;&nbsp; **版本**：v1.0 &nbsp;&nbsp; **日期**：2026-Q1 &nbsp;&nbsp; **作者**：OpenFunTech
 
@@ -19,28 +19,28 @@
 
 本指南面向组件开发者，回答"怎么写一个新组件"。阅读前请先完成 DOC-01（架构设计）和 DOC-02（接口规范）的阅读，本文不重复接口定义。
 
-### 1.1  组件在 OmniSim 中的位置
+### 1.1  组件在 RhetSim 中的位置
 
 ```
-omnisim/components/         ← 组件库根目录
+rhetsim/components/         ← 组件库根目录
 cpu/                      ← CPU 类组件
-omnisim-cpu-arm/        ← 一个组件 = 一个 crate
-omnisim-cpu-riscv/
+rhetsim-cpu-arm/        ← 一个组件 = 一个 crate
+rhetsim-cpu-riscv/
 accel/                    ← 加速器类组件
-omnisim-accel-gpgpu/    ← GPGPU Composite Unit
-omnisim-accel-dpu/
+rhetsim-accel-gpgpu/    ← GPGPU Composite Unit
+rhetsim-accel-dpu/
 io/                       ← I/O 类组件
-omnisim-io-uart/
-omnisim-io-pcie/
+rhetsim-io-uart/
+rhetsim-io-pcie/
 intc/                     ← 中断控制器
 memory/                   ← 内存组件
 soc/                      ← SoC 级组件
-omnisim-soc-core/       ← AXI Stream 等片上 Bus
+rhetsim-soc-core/       ← AXI Stream 等片上 Bus
 net/                      ← 网络组件
-omnisim-dpu-core/
-omnisim-net-hwfwd/
+rhetsim-dpu-core/
+rhetsim-net-hwfwd/
 storage/                  ← 存储组件
-omnisim-storage-nand/
+rhetsim-storage-nand/
 ```
 
 ### 1.2  组件类型速查
@@ -62,23 +62,23 @@ omnisim-storage-nand/
 
 ```toml
 # 在 components/io/ 目录下新建 crate
-cargo new --lib omnisim-io-uart
-cd omnisim-io-uart
+cargo new --lib rhetsim-io-uart
+cd rhetsim-io-uart
 # Cargo.toml
 [package]
-name    = "omnisim-io-uart"
+name    = "rhetsim-io-uart"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
-omnisim-core = { path = "../../crates/omnisim-core" }
-# 只允许依赖 omnisim-core，不允许依赖其他组件
+rhetsim-core = { path = "../../crates/rhetsim-core" }
+# 只允许依赖 rhetsim-core，不允许依赖其他组件
 ```
 
 ### 2.2  实现 MemTarget
 
 ```rust
 // src/lib.rs
-use omnisim_core::prelude::*;
+use rhetsim_core::prelude::*;
 pub struct Uart {
 // 寄存器状态
 tx_buf:  VecDeque<u8>,
@@ -150,7 +150,7 @@ Box::new(Uart::from_config(config)?) as Box<dyn Unit>
 #[cfg(test)]
 mod tests {
 use super::*;
-use omnisim_core::test_utils::MockIrqLine;
+use rhetsim_core::test_utils::MockIrqLine;
 #[test]
 fn test_uart_tx() {
 let mut uart = Uart::new("uart0");
@@ -173,7 +173,7 @@ assert!(irq.was_asserted());
 
 ## 3  可执行单元开发
 
-可执行单元实现 ExecutionBackend，会被 OmniSim 调度器周期性驱动执行。典型示例是 DMA Engine（不需要完整 CPU TCG，但需要主动搬移数据）。
+可执行单元实现 ExecutionBackend，会被 RhetSim 调度器周期性驱动执行。典型示例是 DMA Engine（不需要完整 CPU TCG，但需要主动搬移数据）。
 
 ### 3.1  实现 ExecutionBackend
 
@@ -247,7 +247,7 @@ net_switch:  NetSwitch,
 dma_engine:  DmaEngine,
 // 内部 Bus
 internal_mem_bus: MemBus,
-packet_bus:       PacketBus,    // omnisim-dpu-core 组件层
+packet_bus:       PacketBus,    // rhetsim-dpu-core 组件层
 // 对外接口（PCIe EP）
 bars:     Vec<BarDesc>,
 }
@@ -283,7 +283,7 @@ self.pcie_bus_ref.ep_dma_read(&self.id, host_addr, buf)
 
 ## 5  SIMT 执行单元开发（GPGPU SM）
 
-GPGPU 的 SM（Streaming Multiprocessor）是特殊的可执行单元，需要实现 SIMT 并行执行语义。OmniSim 提供两条路线，组件开发者按需选择。
+GPGPU 的 SM（Streaming Multiprocessor）是特殊的可执行单元，需要实现 SIMT 并行执行语义。RhetSim 提供两条路线，组件开发者按需选择。
 
 ### 5.1  路线 A：SimtHartBackend（RISC-V hart 阵列）
 
@@ -471,14 +471,14 @@ self.backend.rdma_read(remote_addr, buf)
 | --- | --- | --- | --- |
 | 单元测试 | 单个 Unit 内部逻辑 | MockBus + MockIrqLine + MockResetBus | cargo test（每次 commit） |
 | 集成测试 | 多个 Unit 组合 + Bus 连接 | RealizeCtx + MockBackend + 最小 Manifest | CI PR 合并前 |
-| 场景测试 | 完整 Manifest 加载运行 | omnisim-runtime + 测试 fixture Manifest | Nightly / Release 前 |
+| 场景测试 | 完整 Manifest 加载运行 | rhetsim-runtime + 测试 fixture Manifest | Nightly / Release 前 |
 
 ### 7.2  单元测试模板
 
 ```rust
 #[cfg(test)]
 mod tests {
-use omnisim_core::test_utils::*;
+use rhetsim_core::test_utils::*;
 fn make_unit() -> MyUnit {
 MyUnit::new("test-unit-0")
 }
@@ -541,7 +541,7 @@ assert!(gic.spi_pending(33));
 组件发布规则
 版本号遵循 SemVer：破坏性接口变更 → Major 版本升，新增接口 → Minor，修复 → Patch
 每个组件 crate 独立版本，不与框架版本绑定
-组件只能依赖 omnisim-core，不能依赖其他组件 crate（通过 Cargo.toml 工具链强制检查）
+组件只能依赖 rhetsim-core，不能依赖其他组件 crate（通过 Cargo.toml 工具链强制检查）
 公开 API 必须有文档注释（/// doc comment），CI 检查 rustdoc --deny=missing_docs
 每个 PR 必须包含对应测试，覆盖率不低于现有水平
 ```
@@ -550,35 +550,35 @@ assert!(gic.spi_pending(33));
 
 | 类型 | 命名模式 | 示例 |
 | --- | --- | --- |
-| CPU 类 | omnisim-cpu-{isa} | omnisim-cpu-arm、omnisim-cpu-riscv |
-| 中断控制器 | omnisim-intc-{name} | omnisim-intc-gicv3、omnisim-intc-plic |
-| 内存类 | omnisim-mem-{type} | omnisim-mem-dram、omnisim-mem-sram |
-| IO 类 | omnisim-io-{name} | omnisim-io-uart、omnisim-io-pcie |
-| 加速器类 | omnisim-accel-{name} | omnisim-accel-gpgpu、omnisim-accel-dpu |
-| SoC 级 | omnisim-soc-{name} | omnisim-soc-core |
-| 网络类 | omnisim-net-{name} | omnisim-net-hwfwd |
-| 存储类 | omnisim-storage-{name} | omnisim-storage-nand |
-| 安全类 | omnisim-security-{name} | omnisim-security-psp、omnisim-security-rmm |
+| CPU 类 | rhetsim-cpu-{isa} | rhetsim-cpu-arm、rhetsim-cpu-riscv |
+| 中断控制器 | rhetsim-intc-{name} | rhetsim-intc-gicv3、rhetsim-intc-plic |
+| 内存类 | rhetsim-mem-{type} | rhetsim-mem-dram、rhetsim-mem-sram |
+| IO 类 | rhetsim-io-{name} | rhetsim-io-uart、rhetsim-io-pcie |
+| 加速器类 | rhetsim-accel-{name} | rhetsim-accel-gpgpu、rhetsim-accel-dpu |
+| SoC 级 | rhetsim-soc-{name} | rhetsim-soc-core |
+| 网络类 | rhetsim-net-{name} | rhetsim-net-hwfwd |
+| 存储类 | rhetsim-storage-{name} | rhetsim-storage-nand |
+| 安全类 | rhetsim-security-{name} | rhetsim-security-psp、rhetsim-security-rmm |
 
 ## 8  CLI 快速参考
 
-OmniSim 的主要配置方式是 Manifest 文件（详见 DOC-04 应用场景手册）。CLI 只是启动入口，参数较少。
+RhetSim 的主要配置方式是 Manifest 文件（详见 DOC-04 应用场景手册）。CLI 只是启动入口，参数较少。
 
 ### 8.1  基本用法
 
 ```shell
 # 从 Manifest 文件启动
-omni-cli --manifest platform.toml
+rhetsim-cli --manifest platform.toml
 # 指定 Profile（覆盖 Manifest 中的默认 Profile）
-omni-cli --manifest platform.toml --profile server
+rhetsim-cli --manifest platform.toml --profile server
 # QEMU 兼容模式（libvirt 调用路径）
-omnisim-aarch64 -machine virt -cpu cortex-a57 -m 4096 \
+rhetsim-aarch64 -machine virt -cpu cortex-a57 -m 4096 \
 -device virtio-blk-pci,drive=d0 \
--qmp unix:/var/run/omnisim.sock,server
+-qmp unix:/var/run/rhetsim.sock,server
 # 调试模式：打印 realize 后的完整拓扑
-omni-cli --manifest platform.toml --dump-topology
+rhetsim-cli --manifest platform.toml --dump-topology
 # 验证 Manifest 但不运行
-omni-cli --manifest platform.toml --validate-only
+rhetsim-cli --manifest platform.toml --validate-only
 ```
 
 ### 8.2  常用选项

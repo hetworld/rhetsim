@@ -2,13 +2,13 @@
 
 ---
 
-# OmniSim
+# RhetSim
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](./Cargo.toml)
 [![Build Status](https://img.shields.io/badge/build-pending-lightgrey.svg)](#)
 
-OmniSim 是一个用 Rust 编写的开源异构硬件仿真框架。通过声明式 Manifest 系统、可插拔执行后端以及 QEMU 兼容接口层，实现多 ISA 混合平台仿真。
+RhetSim 是一个用 Rust 编写的开源异构硬件仿真框架。通过声明式 Manifest 系统、可插拔执行后端以及 QEMU 兼容接口层，实现多 ISA 混合平台仿真。
 
 ## 核心特性
 
@@ -21,8 +21,6 @@ OmniSim 是一个用 Rust 编写的开源异构硬件仿真框架。通过声明
 
 ## 快速上手
 
-> 🚧 建设中 — 工程骨架已就绪，核心 crate 达到功能完整后将提供可运行示例。
-
 **环境要求**
 
 ```bash
@@ -34,16 +32,100 @@ rustup update stable
 **构建**
 
 ```bash
-git clone https://github.com/openfuntech/omnisim.git
-cd omnisim
+git clone https://github.com/openfuntech/rhetsim.git
+cd rhetsim
 cargo build --workspace
 ```
 
-**运行**
+**启动 RISC-V Linux**
+
+安装 RISC-V 交叉编译工具链：
 
 ```bash
-# TODO: 补充示例 profile 运行命令
+# Ubuntu/Debian
+sudo apt install gcc-riscv64-linux-gnu
+
+# Arch Linux
+sudo pacman -S riscv64-linux-gnu-gcc
 ```
+
+编译 OpenSBI 固件：
+
+```bash
+git clone https://github.com/riscv-software-src/opensbi.git ../opensbi
+cd ../opensbi
+make CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP_ADDR=0x80200000
+cd -
+```
+
+编译 Linux 内核（仓库内提供了最小化配置）：
+
+```bash
+git clone --depth 1 --branch v6.1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git ../linux-6.1
+cd ../linux-6.1
+cp ../rhetsim/platforms/reference/server/linux-rv64ima.config .config
+make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc)
+cd -
+```
+
+设备树文件（`riscv-virt.dtb`）已包含在仓库中。
+
+启动模拟器：
+
+```bash
+# 快速启动 — 默认使用 ../opensbi 和 ../linux-6.1
+./run.sh
+
+# 或显式指定路径
+./run.sh --firmware /path/to/fw_jump.bin --kernel /path/to/Image
+
+# 非交互批处理模式
+./run.sh --batch --steps 100000000
+```
+
+也可以通过环境变量覆盖默认路径：
+
+```bash
+RHETSIM_FIRMWARE=/path/to/fw_jump.bin RHETSIM_KERNEL=/path/to/Image ./run.sh
+```
+
+CLI 选项：
+
+| 选项 | 说明 |
+|------|------|
+| `--batch` | 非交互模式（UART 输出到 stdout） |
+| `--steps <n>` | 批处理模式下最大指令步数（默认 100000000） |
+| `--firmware <path>` | 覆盖固件路径 |
+| `--kernel <path>` | 覆盖内核镜像路径 |
+| `--dtb <path>` | 覆盖设备树路径 |
+| `--uart-log <path>` | UART 输出写入文件，而不是 stdout |
+| `--log-level <level>` | 模拟器日志级别：`error`、`warn`、`info`（默认）、`debug`、`trace` |
+| `--log-file <path>` | 模拟器日志写入文件（默认 stderr） |
+| `--trace <items>` | 执行 trace 分类：`exec,cpu,jit,int,plic,clint,uart,loader,all` |
+| `--trace-file <path>` | 执行 trace 写入文件（默认 stderr） |
+| `--list-units` | 列出可用的硬件单元类型 |
+
+ELF 和 raw binary 格式自动检测。ELF 文件按 PT_LOAD 段加载，入口点自动提取。
+
+### 输出通道
+
+输出分为三条独立通道，与 QEMU 的模型一致：
+
+| 通道 | 内容 | 去向 |
+|------|------|------|
+| Guest 控制台 | OpenSBI / Linux 的 UART 输出 | stdout，或 `--uart-log <path>` |
+| 模拟器日志 | Boot layout、进度、警告、错误 | stderr，或 `--log-file <path>` |
+| 执行 trace | 指令、trap、PLIC/CLINT/UART 事件 | 默认关闭；`--trace` + `--trace-file` |
+
+```bash
+# 指令 trace 写文件，Linux 控制台仍然留在终端
+./run.sh --batch --trace exec,int --trace-file trace.log
+
+# 更详细的模拟器日志
+./run.sh --log-level debug
+```
+
+`--trace exec` 和 `--trace cpu` 会关闭 JIT，让每条指令都经过解释器，保证逐指令 trace，但速度会明显变慢；只想观察 JIT basic block 时用 `--trace jit`。
 
 ## 文档
 
@@ -59,21 +141,21 @@ cargo build --workspace
 ## 工程结构
 
 ```
-omnisim/
+rhetsim/
 ├── crates/                  # 框架核心（严格分层）
-│   ├── omnisim-core/        # L1+L2：trait 与抽象，零业务依赖
-│   ├── omnisim-manifest/    # L3：声明式平台描述与 Realizer
-│   ├── omnisim-runtime/     # 调度器、UnitThread、SimClock、BootSequencer
-│   ├── omnisim-tcg/         # TCG 执行引擎（ARM / RISC-V / x86 前端）
-│   └── omnisim-compat/      # L4：QEMU CLI 解析器与 QMP Server
+│   ├── rhetsim-core/        # L1+L2：trait 与抽象，零业务依赖
+│   ├── rhetsim-manifest/    # L3：声明式平台描述与 Realizer
+│   ├── rhetsim-runtime/     # 调度器、UnitThread、SimClock、BootSequencer
+│   ├── rhetsim-tcg/         # TCG 执行引擎（ARM / RISC-V / x86 前端）
+│   └── rhetsim-compat/      # L4：QEMU CLI 解析器与 QMP Server
 ├── components/              # 硬件组件库
 │   ├── cpu/                 # ARM Cortex-A、RISC-V、x86、Mock
 │   ├── intc/                # GICv3、PLIC、CLINT
 │   ├── memory/              # DRAM、SRAM、GDDR
 │   ├── io/                  # UART、PCIe、DMA、Mailbox、VirtIO
 │   └── accel/               # GPGPU、DPU
-├── profiles/                # 预置平台 Profile（TOML/JSON）
-├── tools/                   # omni-cli、omni-dbg（GDB stub）
+├── platforms/                # 预置平台 Profile（TOML/JSON）
+├── tools/                   # rhetsim-cli、rhetsim-dbg（GDB stub）
 ├── tests/                   # 集成与系统测试（16 个场景）
 └── docs/                    # 技术文档
 ```
@@ -86,4 +168,4 @@ omnisim/
 
 ## 开源协议
 
-OmniSim 采用 [Apache License 2.0](./LICENSE) 开源协议。
+RhetSim 采用 [Apache License 2.0](./LICENSE) 开源协议。

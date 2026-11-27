@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — 架构设计
+# RhetSim — 架构设计
 
 > **文档编号**：DOC-01 &nbsp;&nbsp; **版本**：v1.0 &nbsp;&nbsp; **日期**：2026-Q1 &nbsp;&nbsp; **作者**：OpenFunTech
 
@@ -42,20 +42,20 @@ rust-vmm 是 Rust 生态下的虚拟化组件库，提供了优质的模块化�
 
 ```
 rust-vmm 的定位
-价值：高质量的 Rust 安全虚拟化原语，OmniSim 直接复用
+价值：高质量的 Rust 安全虚拟化原语，RhetSim 直接复用
 边界：只是组件库，没有组合框架，使用者自行管理连接关系
 缺失：没有 Bus 抽象，没有 Manifest，没有调度器
 ```
 
-### 1.4  OmniSim 要解决的问题
+### 1.4  RhetSim 要解决的问题
 
 ```
-OmniSim 的定位
-OmniSim = rust-vmm 的组合哲学 + 异构平台的拓扑描述能力 + libvirt/QEMU 的生态兼容性
+RhetSim 的定位
+RhetSim = rust-vmm 的组合哲学 + 异构平台的拓扑描述能力 + libvirt/QEMU 的生态兼容性
 介于 QEMU（单体）和 rust-vmm（纯组件库）之间：提供最小组合框架，保持组件独立性
 ```
 
-| 维度 | QEMU | rust-vmm | OmniSim |
+| 维度 | QEMU | rust-vmm | RhetSim |
 | --- | --- | --- | --- |
 | 架构风格 | 单体，内部高度耦合 | 纯组件库，无框架 | 组件库 + 最小组合框架 |
 | CPU 地位 | 特权对象，专属执行循环 | 无统一抽象 | Unit，与 NPU/DPU 完全对等 |
@@ -67,7 +67,7 @@ OmniSim = rust-vmm 的组合哲学 + 异构平台的拓扑描述能力 + libvirt
 
 ## 2  核心抽象
 
-OmniSim 的整个设计建立在五个核心概念上。理解这五个概念，就理解了 OmniSim 的本质。
+RhetSim 的整个设计建立在五个核心概念上。理解这五个概念，就理解了 RhetSim 的本质。
 
 ### 2.1  五个核心概念
 
@@ -93,9 +93,9 @@ Unit 的粒度判断标准只有一条：可以独立替换的最小硬件功能
 
 ### 2.3  Bus：连接关系是一等公民
 
-这是 OmniSim 与 QEMU 最根本的区别。在 QEMU 中，Unit 之间的连接关系藏在 C 初始化代码里，无法查询、无法序列化。OmniSim 把连接关系提升为一等公民，以 Bus 对象显式表达。
+这是 RhetSim 与 QEMU 最根本的区别。在 QEMU 中，Unit 之间的连接关系藏在 C 初始化代码里，无法查询、无法序列化。RhetSim 把连接关系提升为一等公民，以 Bus 对象显式表达。
 
-OmniSim 定义了 10 种 Bus，覆盖所有连接场景：
+RhetSim 定义了 10 种 Bus，覆盖所有连接场景：
 
 | Bus 类型 | 职责 | 典型使用场景 |
 | --- | --- | --- |
@@ -116,19 +116,19 @@ Backend 描述 Unit 如何执行，有两个完全正交的维度：
 
 | 执行维度 | 时序维度 | 组合场景 | 产品阶段 |
 | --- | --- | --- | --- |
-| Functional（TCG） | Untimed | 功能仿真，验证软件正确性，速度最快 | OmniSim P0 开源 |
+| Functional（TCG） | Untimed | 功能仿真，验证软件正确性，速度最快 | RhetSim P0 开源 |
 | Timing（性能模型） | LooseTiming | 性能仿真，建模延迟/带宽/吞吐 | P1 |
 | Rtl（FPGA 桥接） | CycleAccurate | RTL 协同验证，周期精确 | P2 |
 | Kvm（硬件加速） | Untimed | Hypervisor，真实硬件执行 | LeoVirt-S |
 | Mock（测试桩） | Untimed | 单元测试，CI 验证 | 测试基础设施 |
-| SimtHart（RISC-V hart 阵列） | Untimed/Loose | GPGPU SM 路线 A | OmniSim P0 |
-| SimtWarp（SIMT Warp 调度器） | Untimed/Loose | GPGPU SM 路线 B | OmniSim P1 |
+| SimtHart（RISC-V hart 阵列） | Untimed/Loose | GPGPU SM 路线 A | RhetSim P0 |
+| SimtWarp（SIMT Warp 调度器） | Untimed/Loose | GPGPU SM 路线 B | RhetSim P1 |
 
 同一个平台内，不同 Unit 可以使用不同 Backend 和不同 TimingModel，SyncBus 负责协调时序。
 
 ### 2.5  Manifest：声明式平台描述
 
-Manifest 是平台拓扑的完整声明，可序列化为 JSON 或 TOML，是 OmniSim 和外部世界交互的语言。Manifest 描述"有什么 Unit"和"它们怎么连接"，不包含任何执行逻辑。
+Manifest 是平台拓扑的完整声明，可序列化为 JSON 或 TOML，是 RhetSim 和外部世界交互的语言。Manifest 描述"有什么 Unit"和"它们怎么连接"，不包含任何执行逻辑。
 
 ```toml
 # 一个最小的 Manifest 示例
@@ -224,7 +224,7 @@ Unit 内部包含 sub_units，realize() 时递归 realize 所有子 Unit。子 U
 
 ### 3.5  L3 — Manifest Layer
 
-声明式平台描述，是 OmniSim 和外部世界交互的语言。Realizer 负责把 Manifest（静态描述）翻译成运行时 Platform（Unit + Bus 实例）。
+声明式平台描述，是 RhetSim 和外部世界交互的语言。Realizer 负责把 Manifest（静态描述）翻译成运行时 Platform（Unit + Bus 实例）。
 
 L3 知道 Unit 的配置描述，但不知道 Backend 的实现细节；Realizer 通过 ComponentRegistry 按 kind 字段找到对应工厂函数，实例化 Unit。这使得新组件无需修改框架，只需注册工厂即可接入。
 
@@ -234,7 +234,7 @@ L3 知道 Unit 的配置描述，但不知道 Backend 的实现细节；Realizer
 
 #### CLI Parser
 
-解析 QEMU 命令行参数格式，翻译为内部 Manifest。libvirt 生成的 -machine / -cpu / -device 参数可直接传入 omnisim-aarch64 / omnisim-x86_64 可执行文件（名字伪装为 qemu-system-*）。
+解析 QEMU 命令行参数格式，翻译为内部 Manifest。libvirt 生成的 -machine / -cpu / -device 参数可直接传入 rhetsim-aarch64 / rhetsim-x86_64 可执行文件（名字伪装为 qemu-system-*）。
 
 #### QMP Server
 
@@ -242,7 +242,7 @@ L3 知道 Unit 的配置描述，但不知道 Backend 的实现细节；Realizer
 
 ## 4  关键设计决策
 
-本章记录每个重要设计决策及其理由。这些决策定义了 OmniSim 的边界和取舍。
+本章记录每个重要设计决策及其理由。这些决策定义了 RhetSim 的边界和取舍。
 
 ### 4.1  Bus 是一等公民，不藏在 Unit 内部
 
@@ -280,14 +280,14 @@ Unit trait 对所有硬件单元统一，框架层没有 CPU 专属路径。CPU 
 
 理由：不同场景对执行和时序的需求独立变化。验证软件正确性时只需 Functional + Untimed（最快）。性能建模时需要 Timing + LooseTiming。RTL 协同时需要 Rtl + CycleAccurate。如果两者耦合，每新增一种组合就需要一个新的 Backend 类型，指数爆炸。
 
-### 4.5  omnisim-core 零强制依赖
+### 4.5  rhetsim-core 零强制依赖
 
 ```
 决策
-omnisim-core 只依赖 Rust 标准库，不引入任何第三方 crate。所有组件只依赖 omnisim-core，不互相依赖。
+rhetsim-core 只依赖 Rust 标准库，不引入任何第三方 crate。所有组件只依赖 rhetsim-core，不互相依赖。
 ```
 
-理由：保证组件可以独立编译、独立测试、独立发布。如果 core 引入重型依赖，所有组件都会被传递依赖污染。零依赖也使 omnisim-core 的接口定义足够稳定，不因上游依赖升级而产生破坏性变更。
+理由：保证组件可以独立编译、独立测试、独立发布。如果 core 引入重型依赖，所有组件都会被传递依赖污染。零依赖也使 rhetsim-core 的接口定义足够稳定，不因上游依赖升级而产生破坏性变更。
 
 ### 4.6  Composite Unit 递归嵌套
 
@@ -313,7 +313,7 @@ L4 兼容层完整实现 QEMU CLI 和 QMP 协议，即使这使 L4 代码复杂�
 
 | 里程碑 | 目标 | 关键交付 |
 | --- | --- | --- |
-| M0 架构 | omnisim-core 接口定稿 | Unit/Bus/Backend trait；MockBackend；两个异构 Unit 在同一 Platform 实例化 |
+| M0 架构 | rhetsim-core 接口定稿 | Unit/Bus/Backend trait；MockBackend；两个异构 Unit 在同一 Platform 实例化 |
 | M1 功能仿真 | 最小可运行仿真 | 移植 QEMU TCG；ARM + RISC-V 前端；L3 Manifest 加载；最小 EmbeddedProfile |
 | M2 生态接入 | libvirt 可调用 | L4 CLI Parser；QMP Server 核心子集；KvmBackend |
 | M3 异构平台 | 场景一、二跑通 | PCIe Bus；GPGPU Composite Unit；ResetBus；MemBus visible_to 过滤 |
@@ -325,7 +325,7 @@ L4 兼容层完整实现 QEMU CLI 和 QMP 协议，即使这使 L4 代码复杂�
 
 ```
 接口稳定性规则
-P0：omnisim-core 接口进入 1.0 后不做破坏性变更，只允许新增
+P0：rhetsim-core 接口进入 1.0 后不做破坏性变更，只允许新增
 P1：Timing Backend 接口，稳定性承诺随里程碑进度明确
 P2：RTL/安全接口，版本独立管理
 跨层规则：上层变更不影响下层接口；下层接口变更时上层必须同步更新

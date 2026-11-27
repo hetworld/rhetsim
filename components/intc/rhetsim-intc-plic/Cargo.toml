@@ -1,0 +1,8 @@
+[package]
+name = "rhetsim-intc-plic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rhetsim-core = { workspace = true }
+tracing = { workspace = true }

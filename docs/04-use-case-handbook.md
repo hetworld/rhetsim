@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — Use Case Handbook
+# RhetSim — Use Case Handbook
 
 > **Document ID**: DOC-04 &nbsp;&nbsp; **Version**: v1.0 &nbsp;&nbsp; **Date**: 2026-Q1 &nbsp;&nbsp; **Author**: OpenFunTech
 
@@ -11,7 +11,7 @@
 | Document ID | DOC-04 |
 | --- | --- |
 | Version | v1.0 |
-| Audience | External users (building platforms with OmniSim) · New contributors |
+| Audience | External users (building platforms with RhetSim) · New contributors |
 | Prerequisites | DOC-01 Architecture Design (recommended) |
 | Related Docs | DOC-02 Interface Spec · DOC-03 Component Dev Guide |
 | Last Updated | 2026-Q1 |
@@ -341,7 +341,7 @@ id = "np0"; kind = "net-processor-card"; backend = "functional"
 [units.config]
 core_count  = 8
 core_isa    = "mips64"
-hw_fwd_table = true   # omnisim-net-hwfwd component
+hw_fwd_table = true   # rhetsim-net-hwfwd component
 crypto_engine = true  # MockBackend
 [[buses]]
 kind = "pcie"; id = "pcie0"
@@ -478,19 +478,19 @@ base_addr = "0x800000000000"; size = "0x800000000"
 
 ### 5.1  Scenario 11: Nested Virtualization
 
-OmniSim simulates a complete physical machine (TCG full-system simulation); a real Hypervisor (KVM / LeoVirt-S) runs on the physical machine; the Hypervisor then manages multiple VMs. The framework requires zero changes; nested capability is entirely provided by omnisim-tcg's EL2/VMX/H-extension frontend.
+RhetSim simulates a complete physical machine (TCG full-system simulation); a real Hypervisor (KVM / LeoVirt-S) runs on the physical machine; the Hypervisor then manages multiple VMs. The framework requires zero changes; nested capability is entirely provided by rhetsim-tcg's EL2/VMX/H-extension frontend.
 
 ```
 Version Requirements
-ARM nested virtualization: requires omnisim-tcg P1 (EL2 privilege-level simulation + vGIC) — not available in P0 open-source version
-x86 nested virtualization: requires omnisim-tcg P1 (VMX instruction set + EPT) — not available in P0 open-source version
-RISC-V nested virtualization: requires omnisim-tcg P1 (H extension) — not available in P0 open-source version
+ARM nested virtualization: requires rhetsim-tcg P1 (EL2 privilege-level simulation + vGIC) — not available in P0 open-source version
+x86 nested virtualization: requires rhetsim-tcg P1 (VMX instruction set + EPT) — not available in P0 open-source version
+RISC-V nested virtualization: requires rhetsim-tcg P1 (H extension) — not available in P0 open-source version
 ```
 
 ```toml
 [platform]
 name = "nested-virt"
-# Simulated physical machine (not a VM! this is hardware simulated by OmniSim)
+# Simulated physical machine (not a VM! this is hardware simulated by RhetSim)
 [[units]]
 id = "phys-cpu"; kind = "arm-cortex-a78-core"; backend = "functional"
 [units.config]
@@ -505,7 +505,7 @@ enable_virt = true  # GICv3 virtualization extension (vGIC)
 id = "phys-dram"; kind = "ddr-ctrl"; backend = "functional"
 [units.config]
 size_gb = 64
-# Stage-2 MMU is automatically managed by the omnisim-tcg EL2 frontend
+# Stage-2 MMU is automatically managed by the rhetsim-tcg EL2 frontend
 # No explicit configuration needed in the Manifest
 # Hypervisor software (KVM / LeoVirt-S) is loaded as an ordinary ELF
 [[boot.sequence]]
@@ -551,8 +551,8 @@ unit = "secure-sram"; base = "0x0e000000"
 
 ```
 P2 Feature — Not Yet Implemented in Current Version
-AMD SEV-SNP: requires omnisim-security-psp component (P2)
-ARM CCA: requires omnisim-security-rmm component (P2) + omnisim-tcg Realm World support
+AMD SEV-SNP: requires rhetsim-security-psp component (P2)
+ARM CCA: requires rhetsim-security-rmm component (P2) + rhetsim-tcg Realm World support
 P0/P1 versions: MemSecurity enum is reserved, interfaces are defined, but isolation checks are no-ops
 ```
 

@@ -1,0 +1,16 @@
+[package]
+name = "rhetsim-cpu-riscv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rhetsim-core = { workspace = true }
+tracing = { workspace = true }
+cranelift-codegen = "0.138"
+cranelift-frontend = "0.138"
+cranelift-module = "0.138"
+cranelift-jit = "0.138"
+target-lexicon = "0.13"
+
+[dev-dependencies]
+rhetsim-mem-dram = { path = "../../memory/rhetsim-mem-dram" }

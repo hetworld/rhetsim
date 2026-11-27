@@ -1,7 +1,9 @@
-name = "minimal"
+name = "minimal-test"
 
 [[units]]
 id   = "cpu0"
-kind = "omnisim-cpu-mock"
+kind = "mock-cpu"
 
-[boot]
+[[units]]
+id   = "cpu1"
+kind = "mock-cpu"

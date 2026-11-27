@@ -1,0 +1,64 @@
+name = "riscv-virt"
+
+[[units]]
+id   = "dram0"
+kind = "rhetsim-mem-dram"
+[units.config]
+size_mb = 64
+base    = 0x80000000
+
+[[units]]
+id   = "clint0"
+kind = "rhetsim-intc-clint"
+[units.config]
+num_harts = 2
+base      = 0x02000000
+
+[[units]]
+id   = "plic0"
+kind = "rhetsim-intc-plic"
+[units.config]
+num_sources  = 64
+num_contexts = 4
+base         = 0x0c000000
+
+[[units]]
+id   = "uart0"
+kind = "rhetsim-io-uart"
+
+[[units]]
+id   = "rv-core0"
+kind = "rhetsim-cpu-riscv"
+[units.config]
+mem_base = 0x80000000
+
+[[units]]
+id   = "rv-core1"
+kind = "rhetsim-cpu-riscv"
+[units.config]
+mem_base = 0x80000000
+
+[[buses]]
+kind       = "mem"
+id         = "sys-bus"
+overlap    = false
+initiators = ["rv-core0", "rv-core1"]
+
+[[buses.targets]]
+unit = "dram0"
+base = 0x80000000
+
+[[buses.targets]]
+unit = "clint0"
+base = 0x02000000
+
+[[buses.targets]]
+unit = "plic0"
+base = 0x0c000000
+
+[[buses.targets]]
+unit = "uart0"
+base = 0x10000000
+
+[boot]
+dtb = "riscv-virt.dtb"

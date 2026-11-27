@@ -2,7 +2,7 @@
 
 ---
 
-# OmniSim — Component Development Guide
+# RhetSim — Component Development Guide
 
 > **Document ID**: DOC-03 &nbsp;&nbsp; **Version**: v1.0 &nbsp;&nbsp; **Date**: 2026-Q1 &nbsp;&nbsp; **Author**: OpenFunTech
 
@@ -19,28 +19,28 @@
 
 This guide is for component developers and answers the question "how do I write a new component?" Please complete DOC-01 (Architecture Design) and DOC-02 (Interface Spec) before reading this guide; interface definitions are not repeated here.
 
-### 1.1  Where Components Fit in OmniSim
+### 1.1  Where Components Fit in RhetSim
 
 ```
-omnisim/components/         ← component library root
+rhetsim/components/         ← component library root
   cpu/                      ← CPU-class components
-    omnisim-cpu-arm/        ← one component = one crate
-    omnisim-cpu-riscv/
+    rhetsim-cpu-arm/        ← one component = one crate
+    rhetsim-cpu-riscv/
   accel/                    ← accelerator-class components
-    omnisim-accel-gpgpu/    ← GPGPU Composite Unit
-    omnisim-accel-dpu/
+    rhetsim-accel-gpgpu/    ← GPGPU Composite Unit
+    rhetsim-accel-dpu/
   io/                       ← I/O-class components
-    omnisim-io-uart/
-    omnisim-io-pcie/
+    rhetsim-io-uart/
+    rhetsim-io-pcie/
   intc/                     ← interrupt controllers
   memory/                   ← memory components
   soc/                      ← SoC-level components
-    omnisim-soc-core/       ← AXI Stream and other on-chip Buses
+    rhetsim-soc-core/       ← AXI Stream and other on-chip Buses
   net/                      ← network components
-    omnisim-dpu-core/
-    omnisim-net-hwfwd/
+    rhetsim-dpu-core/
+    rhetsim-net-hwfwd/
   storage/                  ← storage components
-    omnisim-storage-nand/
+    rhetsim-storage-nand/
 ```
 
 ### 1.2  Component Type Quick Reference
@@ -62,23 +62,23 @@ Simple peripherals are the most common component type: they have a set of MMIO r
 
 ```toml
 # Create a new crate under components/io/
-cargo new --lib omnisim-io-uart
-cd omnisim-io-uart
+cargo new --lib rhetsim-io-uart
+cd rhetsim-io-uart
 # Cargo.toml
 [package]
-name    = "omnisim-io-uart"
+name    = "rhetsim-io-uart"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
-omnisim-core = { path = "../../crates/omnisim-core" }
-# Only omnisim-core dependency is allowed; other component crates are forbidden
+rhetsim-core = { path = "../../crates/rhetsim-core" }
+# Only rhetsim-core dependency is allowed; other component crates are forbidden
 ```
 
 ### 2.2  Implement MemTarget
 
 ```rust
 // src/lib.rs
-use omnisim_core::prelude::*;
+use rhetsim_core::prelude::*;
 pub struct Uart {
 // Register state
 tx_buf:  VecDeque<u8>,
@@ -150,7 +150,7 @@ Box::new(Uart::from_config(config)?) as Box<dyn Unit>
 #[cfg(test)]
 mod tests {
 use super::*;
-use omnisim_core::test_utils::MockIrqLine;
+use rhetsim_core::test_utils::MockIrqLine;
 #[test]
 fn test_uart_tx() {
 let mut uart = Uart::new("uart0");
@@ -173,7 +173,7 @@ assert!(irq.was_asserted());
 
 ## 3  Executable Unit Development
 
-An executable unit implements ExecutionBackend and is periodically driven by the OmniSim scheduler. A typical example is a DMA Engine (no full CPU TCG required, but it must actively transfer data).
+An executable unit implements ExecutionBackend and is periodically driven by the RhetSim scheduler. A typical example is a DMA Engine (no full CPU TCG required, but it must actively transfer data).
 
 ### 3.1  Implement ExecutionBackend
 
@@ -247,7 +247,7 @@ net_switch:  NetSwitch,
 dma_engine:  DmaEngine,
 // Internal Buses
 internal_mem_bus: MemBus,
-packet_bus:       PacketBus,    // omnisim-dpu-core component layer
+packet_bus:       PacketBus,    // rhetsim-dpu-core component layer
 // External interface (PCIe EP)
 bars:     Vec<BarDesc>,
 }
@@ -283,7 +283,7 @@ self.pcie_bus_ref.ep_dma_read(&self.id, host_addr, buf)
 
 ## 5  SIMT Execution Unit Development (GPGPU SM)
 
-A GPGPU's SM (Streaming Multiprocessor) is a special executable unit that must implement SIMT parallel execution semantics. OmniSim provides two routes; component developers choose based on their needs.
+A GPGPU's SM (Streaming Multiprocessor) is a special executable unit that must implement SIMT parallel execution semantics. RhetSim provides two routes; component developers choose based on their needs.
 
 ### 5.1  Route A: SimtHartBackend (RISC-V Hart Array)
 
@@ -471,14 +471,14 @@ self.backend.rdma_read(remote_addr, buf)
 | --- | --- | --- | --- |
 | Unit tests | Single Unit internal logic | MockBus + MockIrqLine + MockResetBus | cargo test (every commit) |
 | Integration tests | Multiple Units + Bus connections | RealizeCtx + MockBackend + minimal Manifest | CI before PR merge |
-| Scenario tests | Full Manifest load and run | omnisim-runtime + test fixture Manifest | Nightly / before Release |
+| Scenario tests | Full Manifest load and run | rhetsim-runtime + test fixture Manifest | Nightly / before Release |
 
 ### 7.2  Unit Test Template
 
 ```rust
 #[cfg(test)]
 mod tests {
-use omnisim_core::test_utils::*;
+use rhetsim_core::test_utils::*;
 fn make_unit() -> MyUnit {
 MyUnit::new("test-unit-0")
 }
@@ -541,7 +541,7 @@ assert!(gic.spi_pending(33));
 Component Release Rules
 Version numbers follow SemVer: breaking interface changes → bump Major, new interfaces → Minor, fixes → Patch
 Each component crate has an independent version, not tied to the framework version
-Components may only depend on omnisim-core; cross-component-crate dependencies are forbidden (enforced via Cargo.toml tooling)
+Components may only depend on rhetsim-core; cross-component-crate dependencies are forbidden (enforced via Cargo.toml tooling)
 All public APIs must have doc comments (/// doc comment); CI checks with rustdoc --deny=missing_docs
 Every PR must include corresponding tests; coverage must not drop below the current level
 ```
@@ -550,35 +550,35 @@ Every PR must include corresponding tests; coverage must not drop below the curr
 
 | Type | Naming Pattern | Examples |
 | --- | --- | --- |
-| CPU-class | omnisim-cpu-{isa} | omnisim-cpu-arm, omnisim-cpu-riscv |
-| Interrupt controller | omnisim-intc-{name} | omnisim-intc-gicv3, omnisim-intc-plic |
-| Memory-class | omnisim-mem-{type} | omnisim-mem-dram, omnisim-mem-sram |
-| IO-class | omnisim-io-{name} | omnisim-io-uart, omnisim-io-pcie |
-| Accelerator-class | omnisim-accel-{name} | omnisim-accel-gpgpu, omnisim-accel-dpu |
-| SoC-level | omnisim-soc-{name} | omnisim-soc-core |
-| Network-class | omnisim-net-{name} | omnisim-net-hwfwd |
-| Storage-class | omnisim-storage-{name} | omnisim-storage-nand |
-| Security-class | omnisim-security-{name} | omnisim-security-psp, omnisim-security-rmm |
+| CPU-class | rhetsim-cpu-{isa} | rhetsim-cpu-arm, rhetsim-cpu-riscv |
+| Interrupt controller | rhetsim-intc-{name} | rhetsim-intc-gicv3, rhetsim-intc-plic |
+| Memory-class | rhetsim-mem-{type} | rhetsim-mem-dram, rhetsim-mem-sram |
+| IO-class | rhetsim-io-{name} | rhetsim-io-uart, rhetsim-io-pcie |
+| Accelerator-class | rhetsim-accel-{name} | rhetsim-accel-gpgpu, rhetsim-accel-dpu |
+| SoC-level | rhetsim-soc-{name} | rhetsim-soc-core |
+| Network-class | rhetsim-net-{name} | rhetsim-net-hwfwd |
+| Storage-class | rhetsim-storage-{name} | rhetsim-storage-nand |
+| Security-class | rhetsim-security-{name} | rhetsim-security-psp, rhetsim-security-rmm |
 
 ## 8  CLI Quick Reference
 
-OmniSim's primary configuration method is the Manifest file (see DOC-04 Use Case Handbook for details). The CLI is merely the startup entry point and has few options.
+RhetSim's primary configuration method is the Manifest file (see DOC-04 Use Case Handbook for details). The CLI is merely the startup entry point and has few options.
 
 ### 8.1  Basic Usage
 
 ```shell
 # Start from a Manifest file
-omni-cli --manifest platform.toml
+rhetsim-cli --manifest platform.toml
 # Specify a Profile (overrides the default Profile in the Manifest)
-omni-cli --manifest platform.toml --profile server
+rhetsim-cli --manifest platform.toml --profile server
 # QEMU compatibility mode (libvirt invocation path)
-omnisim-aarch64 -machine virt -cpu cortex-a57 -m 4096 \
+rhetsim-aarch64 -machine virt -cpu cortex-a57 -m 4096 \
 -device virtio-blk-pci,drive=d0 \
--qmp unix:/var/run/omnisim.sock,server
+-qmp unix:/var/run/rhetsim.sock,server
 # Debug mode: print the full topology after realize
-omni-cli --manifest platform.toml --dump-topology
+rhetsim-cli --manifest platform.toml --dump-topology
 # Validate Manifest without running
-omni-cli --manifest platform.toml --validate-only
+rhetsim-cli --manifest platform.toml --validate-only
 ```
 
 ### 8.2  Common Options

@@ -1,8 +1,8 @@
-# Contributing to OmniSim
+# Contributing to RhetSim
 
 > 🚧 Full contributing guidelines are coming soon.
 
-Thank you for your interest in contributing to OmniSim. We welcome issues, discussions, and pull requests.
+Thank you for your interest in contributing to RhetSim. We welcome issues, discussions, and pull requests.
 
 <!-- TODO: add when ready
 - Development setup
