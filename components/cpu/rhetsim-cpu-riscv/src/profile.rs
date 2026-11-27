@@ -292,8 +292,11 @@ const THEAD_C908_FULL_PROFILE: CpuProfile = CpuProfile {
         .declared
         .union(IsaExtensions::SMEPMP)
         .union(IsaExtensions::XTHEAD),
-    implemented: THEAD_C908_PROFILE.implemented,
-    dts_isa: THEAD_C908_PROFILE.dts_isa,
+    implemented: THEAD_C908_PROFILE
+        .implemented
+        .union(IsaExtensions::SMEPMP)
+        .union(IsaExtensions::XTHEAD),
+    dts_isa: "rv64imafdc_zicsr_zifencei_zba_zbb_zbc_zbs_zbkc_zkt_zicbom_zicboz_zihintpause_svinval_svnapot_svpbmt_sstc_sscofpmf_xtheadba_xtheadbb_xtheadbs_xtheadcmo_xtheadcondmov_xtheadfmemidx_xtheadfmv_xtheadmac_xtheadmemidx_xtheadmempair_xtheadsync",
     dts_compatible: &["thead,c908"],
     mvendorid: 0x5b7,
     marchid: 0x8d143000,
@@ -425,10 +428,19 @@ mod tests {
             .implemented
             .contains(IsaExtensions::SMEPMP));
 
-        let full = RiscvCpuType::THeadC908Full.profile().missing();
-        assert!(full.contains(IsaExtensions::XTHEAD));
-        assert!(full.contains(IsaExtensions::SMEPMP));
-        assert!(!full.contains(IsaExtensions::XTHEAD_SYNC));
+        assert!(RiscvCpuType::THeadC908Full.ensure_implemented().is_ok());
+        assert!(RiscvCpuType::THeadC908Full
+            .profile()
+            .implemented
+            .contains(IsaExtensions::XTHEAD));
+        assert!(RiscvCpuType::THeadC908Full
+            .profile()
+            .implemented
+            .contains(IsaExtensions::SMEPMP));
+        assert!(!RiscvCpuType::THeadC908Full
+            .profile()
+            .missing()
+            .contains(IsaExtensions::XTHEAD_SYNC));
         // Vector is optional on C908 and is not part of the base profile.
         assert!(!RiscvCpuType::THeadC908
             .profile()

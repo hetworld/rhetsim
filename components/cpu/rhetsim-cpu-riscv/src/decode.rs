@@ -137,6 +137,10 @@ pub enum Instruction {
     },
     /// T-Head XTheadSync barrier (no architectural state).
     TheadSync,
+    /// Other T-Head XThead vendor instruction (decoded by mask at execution).
+    Thead {
+        raw: u32,
+    },
     // Atomics (A extension)
     Amo {
         funct5: u8,
@@ -425,7 +429,7 @@ pub fn decode(insn: u32) -> Instruction {
                 rs1: rs1(insn),
                 rs2: rs2(insn),
             },
-            _ => Instruction::Unknown(insn),
+            _ => Instruction::Thead { raw: insn },
         },
         0x0F => match funct3(insn) {
             1 => Instruction::FenceI,

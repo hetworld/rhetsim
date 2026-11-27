@@ -274,6 +274,7 @@ impl JitEngine {
                     | Instruction::BitmanipImm { .. }
                     | Instruction::Cbo { .. }
                     | Instruction::TheadSync
+                    | Instruction::Thead { .. }
             ) {
                 return None;
             }
@@ -907,7 +908,8 @@ impl JitEngine {
                     | Instruction::Bitmanip { .. }
                     | Instruction::BitmanipImm { .. }
                     | Instruction::Cbo { .. }
-                    | Instruction::TheadSync => return None,
+                    | Instruction::TheadSync
+                    | Instruction::Thead { .. } => return None,
                     Instruction::Fence => { /* no-op */ }
                     Instruction::Unknown(_) => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_TRAP, idx + 1, 0);

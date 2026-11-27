@@ -39,6 +39,16 @@ impl PageFault {
         };
         Self { cause, tval: va }
     }
+
+    /// Physical access fault (PMP denial): cause 1/5/7.
+    pub fn access_fault(access: AccessType, va: u64) -> Self {
+        let cause = match access {
+            AccessType::Fetch => 1,
+            AccessType::Load => 5,
+            AccessType::Store => 7,
+        };
+        Self { cause, tval: va }
+    }
 }
 
 pub fn translate_sv39(
