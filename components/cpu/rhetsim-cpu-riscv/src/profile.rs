@@ -65,6 +65,11 @@ impl IsaExtensions {
         if self.contains(Self::A) {
             bits |= 1 << 0;
         }
+        // The ratified B extension is Zba + Zbb + Zbs; expose it when all
+        // three are present (matches Spike for the same ISA string).
+        if self.contains(Self::ZBA) && self.contains(Self::ZBB) && self.contains(Self::ZBS) {
+            bits |= 1 << 1;
+        }
         if self.contains(Self::C) {
             bits |= 1 << 2;
         }

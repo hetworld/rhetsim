@@ -5,13 +5,13 @@
 //! no-op when the variable is absent, matching the `linux_boot` integration
 //! test's behaviour.
 
-use object::{Object, ObjectSegment, ObjectSymbol};
+mod common;
+
+use common::{is_riscv_ptest, parse_image, Image, MEM_BASE, MEM_SIZE};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_cpu_riscv::{RiscvCpu, RiscvCpuType};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-const MEM_BASE: u64 = 0x8000_0000;
-const MEM_SIZE: usize = 16 * 1024 * 1024;
 const MAX_STEPS: u64 = 2_000_000;
 const SLICE: u64 = 20_000;
 
@@ -19,48 +19,6 @@ const SLICE: u64 = 20_000;
 /// currently empty: all selected riscv-tests pass in both engines. A listed
 /// test that starts passing fails the run so the list cannot go stale.
 const KNOWN_FP_GAPS: &[&str] = &[];
-
-struct Image {
-    entry: u64,
-    segments: Vec<(u64, Vec<u8>)>,
-    tohost: u64,
-    signature: Option<(u64, u64)>,
-}
-
-fn parse_image(path: &Path) -> Image {
-    let data = std::fs::read(path).expect("read ELF");
-    let file = object::File::parse(&*data).expect("parse ELF");
-
-    let mut segments = Vec::new();
-    for segment in file.segments() {
-        let bytes = segment.data().unwrap_or(&[]);
-        if bytes.is_empty() {
-            continue;
-        }
-        let addr = segment.address();
-        assert!(addr >= MEM_BASE, "segment below DRAM: {addr:#x}");
-        segments.push((addr - MEM_BASE, bytes.to_vec()));
-    }
-
-    let mut tohost = None;
-    let mut begin_signature = None;
-    let mut end_signature = None;
-    for symbol in file.symbols() {
-        match symbol.name() {
-            Ok("tohost") => tohost = Some(symbol.address()),
-            Ok("begin_signature") => begin_signature = Some(symbol.address()),
-            Ok("end_signature") => end_signature = Some(symbol.address()),
-            _ => {}
-        }
-    }
-
-    Image {
-        entry: file.entry(),
-        segments,
-        tohost: tohost.expect("tohost symbol"),
-        signature: begin_signature.zip(end_signature),
-    }
-}
 
 struct Outcome {
     tohost: u64,
@@ -215,16 +173,7 @@ fn riscv_tests_match_the_interpreter() {
         .expect("read ISA test directory")
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            let name = path.file_name()?.to_string_lossy();
-            if path.is_file()
-                && name.starts_with("rv64")
-                && name.contains("-p-")
-                && !name.contains('.')
-            {
-                Some(path)
-            } else {
-                None
-            }
+            is_riscv_ptest(&path).then_some(path)
         })
         .collect();
     entries.sort();

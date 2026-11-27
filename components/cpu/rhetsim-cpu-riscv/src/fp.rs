@@ -243,37 +243,40 @@ pub fn fcvt_to_int(value: f64, kind: u8, rm: u8, frm: u8) -> (u64, u32) {
 
 /// Integer -> FP conversion. Returns the f-register bits (NaN-boxed for a
 /// single-precision result) and the exception flags.
+///
+/// The source is widened to `i128` so every RV64 integer source, including the
+/// full unsigned 64-bit range, is represented exactly. Inexactness is judged
+/// against the final destination width: converting 4294967294 to f32 is
+/// inexact even though the intermediate f64 value is exact.
 pub fn fcvt_from_int(value: u64, kind: u8, is_double: bool, rm: u8, frm: u8) -> (u64, u32) {
-    let (signed, integer) = match kind {
-        0 => (true, value as i32 as i128),
-        1 => (false, value as u32 as u128 as i128),
-        2 => (true, value as i64 as i128),
-        _ => (false, value as u128 as i128),
+    begin(rm, frm);
+    let integer: i128 = match kind {
+        0 => value as i32 as i128,
+        1 => value as u32 as i128,
+        2 => value as i64 as i128,
+        _ => value as u128 as i128,
     };
-    let exact = if signed {
-        integer as f64
-    } else {
-        (integer as u128) as f64
-    };
-    let flags = if signed {
-        if exact as i128 != integer {
+    let (bits, flags) = if is_double {
+        let converted = integer as f64;
+        let flags = if converted as i128 != integer {
             FFLAG_NX
         } else {
             0
-        }
-    } else if exact as u128 != integer as u128 {
-        FFLAG_NX
+        };
+        (converted.to_bits(), flags)
     } else {
-        0
+        let converted = integer as f32;
+        let flags = if converted as i128 != integer {
+            FFLAG_NX
+        } else {
+            0
+        };
+        (nan_box(converted.to_bits()), flags)
     };
-    // Values covered by riscv-tests are not ties for the requested rounding
-    // mode; the host RNE result is used for the value.
-    let _ = (rm, frm);
-
-    if is_double {
-        return (exact.to_bits(), flags);
-    }
-    (nan_box((exact as f32).to_bits()), flags)
+    // RMM and non-RNE int->FP rounding remain approximated by the host cast;
+    // `end` restores round-to-nearest and clears the host exception state.
+    let _ = end();
+    (bits, flags)
 }
 
 /// FCVT.S.D / FCVT.D.S conversion with canonical NaN and sNaN flags.

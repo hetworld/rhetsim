@@ -95,6 +95,9 @@ pub const MSTATUS_TSR: u64 = 1 << 22;
 /// mstatus.UXL (RV64): 2 = 64-bit user XLEN.
 pub const MSTATUS_UXL_MASK: u64 = 3 << 32;
 pub const MSTATUS_UXL_64: u64 = 2 << 32;
+/// mstatus.SXL (RV64): 2 = 64-bit supervisor XLEN (read-only).
+pub const MSTATUS_SXL_MASK: u64 = 3 << 34;
+pub const MSTATUS_SXL_64: u64 = 2 << 34;
 
 const MSTATUS_WRITABLE: u64 = MSTATUS_SIE
     | MSTATUS_MIE
@@ -212,7 +215,7 @@ impl CsrFile {
         let profile = cpu_type.profile();
         Self {
             fcsr: 0,
-            mstatus: MSTATUS_UXL_64,
+            mstatus: MSTATUS_UXL_64 | MSTATUS_SXL_64,
             mie: 0,
             mip: 0,
             mtvec: 0,
@@ -379,7 +382,7 @@ impl CsrFile {
 
     pub fn reset(&mut self) {
         self.fcsr = 0;
-        self.mstatus = MSTATUS_UXL_64;
+        self.mstatus = MSTATUS_UXL_64 | MSTATUS_SXL_64;
         self.mie = 0;
         self.mip = 0;
         self.mtvec = 0;
