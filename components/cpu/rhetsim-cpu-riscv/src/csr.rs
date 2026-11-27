@@ -60,6 +60,11 @@ pub const MHARTID: u16 = 0xF14;
 // S-mode counter enable
 pub const SCOUNTEREN: u16 = 0x106;
 
+// Floating-point CSRs
+pub const FFLAGS: u16 = 0x001;
+pub const FRM: u16 = 0x002;
+pub const FCSR: u16 = 0x003;
+
 // ── mstatus bit positions ─────────────────────────────────────
 
 pub const MSTATUS_SIE: u64 = 1 << 1;
@@ -69,6 +74,8 @@ pub const MSTATUS_MPIE: u64 = 1 << 7;
 pub const MSTATUS_SPP: u64 = 1 << 8;
 pub const MSTATUS_MPP_MASK: u64 = 3 << 11;
 pub const MSTATUS_MPP_M: u64 = 3 << 11;
+pub const MSTATUS_FS_MASK: u64 = 3 << 13;
+pub const MSTATUS_FS_DIRTY: u64 = 3 << 13;
 pub const MSTATUS_MPRV: u64 = 1 << 17;
 pub const MSTATUS_SUM: u64 = 1 << 18;
 pub const MSTATUS_MXR: u64 = 1 << 19;
@@ -82,6 +89,7 @@ const MSTATUS_WRITABLE: u64 = MSTATUS_SIE
     | MSTATUS_MPIE
     | MSTATUS_SPP
     | MSTATUS_MPP_MASK
+    | MSTATUS_FS_MASK
     | MSTATUS_MPRV
     | MSTATUS_SUM
     | MSTATUS_MXR
@@ -98,7 +106,8 @@ const SSTATUS_MASK: u64 = MSTATUS_SIE
     | MSTATUS_MXR
     | (1u64 << 63);
 
-const SSTATUS_WRITABLE: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_SUM | MSTATUS_MXR;
+const SSTATUS_WRITABLE: u64 =
+    MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_FS_MASK | MSTATUS_SUM | MSTATUS_MXR;
 
 // ── mie/mip bit positions ─────────────────────────────────────
 
@@ -133,6 +142,8 @@ pub const PRV_M: u8 = 3;
 // ── CsrFile ───────────────────────────────────────────────────
 
 pub struct CsrFile {
+    // Floating-point control and status
+    pub fcsr: u32,
     // M-mode
     pub mstatus: u64,
     pub mie: u64,
@@ -176,6 +187,7 @@ impl CsrFile {
     pub fn new_with_type(hart_id: u64, cpu_type: RiscvCpuType) -> Self {
         let profile = cpu_type.profile();
         Self {
+            fcsr: 0,
             mstatus: 0,
             mie: 0,
             mip: 0,
@@ -208,6 +220,9 @@ impl CsrFile {
 
     pub fn read(&self, addr: u16, insn_count: u64) -> Option<u64> {
         match addr {
+            FFLAGS => Some((self.fcsr & 0x1F) as u64),
+            FRM => Some(((self.fcsr >> 5) & 0x7) as u64),
+            FCSR => Some((self.fcsr & 0xFF) as u64),
             MSTATUS => Some(self.mstatus),
             MISA => Some(self.misa),
             MEDELEG => Some(self.medeleg),
@@ -252,6 +267,9 @@ impl CsrFile {
 
     pub fn write(&mut self, addr: u16, val: u64) {
         match addr {
+            FFLAGS => self.fcsr = (self.fcsr & !0x1F) | (val as u32 & 0x1F),
+            FRM => self.fcsr = (self.fcsr & !(0x7 << 5)) | ((val as u32 & 0x7) << 5),
+            FCSR => self.fcsr = val as u32 & 0xFF,
             MSTATUS => self.mstatus = (self.mstatus & !MSTATUS_WRITABLE) | (val & MSTATUS_WRITABLE),
             MEDELEG => self.medeleg = val,
             MIDELEG => self.mideleg = val,
@@ -291,6 +309,7 @@ impl CsrFile {
     }
 
     pub fn reset(&mut self) {
+        self.fcsr = 0;
         self.mstatus = 0;
         self.mie = 0;
         self.mip = 0;
@@ -419,7 +438,7 @@ impl CsrFile {
     }
 
     pub fn state_size() -> usize {
-        19 * 8
+        20 * 8
     }
 
     pub fn save(&self) -> Vec<u8> {
@@ -444,6 +463,7 @@ impl CsrFile {
             self.mhartid,
             self.stimecmp,
             self.sstc_active as u64,
+            self.fcsr as u64,
         ] {
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -490,10 +510,12 @@ impl CsrFile {
         if data.len() >= Self::state_size() {
             self.stimecmp = r(136);
             self.sstc_active = r(144) != 0;
+            self.fcsr = r(152) as u32;
         } else {
             // Pre-Sstc 17-field snapshot: timer state was not recorded.
             self.stimecmp = u64::MAX;
             self.sstc_active = false;
+            self.fcsr = 0;
         }
     }
 }
@@ -520,6 +542,20 @@ mod tests {
         let csr = CsrFile::new_with_type(0, RiscvCpuType::RhetSimRv64Ima);
         let misa = csr.read(MISA, 0).unwrap();
         assert_eq!(misa & (1 << 2), 0); // C
+    }
+
+    #[test]
+    fn test_fcsr_views() {
+        let mut csr = CsrFile::new(0);
+        csr.write(FCSR, 0x5A);
+        assert_eq!(csr.read(FCSR, 0), Some(0x5A));
+        assert_eq!(csr.read(FFLAGS, 0), Some(0x1A));
+        assert_eq!(csr.read(FRM, 0), Some(2));
+
+        csr.write(FFLAGS, 0x05);
+        assert_eq!(csr.read(FCSR, 0), Some(0x45));
+        csr.write(FRM, 0x03);
+        assert_eq!(csr.read(FCSR, 0), Some(0x65));
     }
 
     #[test]

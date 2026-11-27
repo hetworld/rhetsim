@@ -37,6 +37,36 @@ pub enum Instruction {
         rs2: u8,
         offset: i64,
     },
+    // Floating-point load/store
+    FpLoad {
+        width: u8,
+        rd: u8,
+        rs1: u8,
+        offset: i64,
+    },
+    FpStore {
+        width: u8,
+        rs1: u8,
+        rs2: u8,
+        offset: i64,
+    },
+    // Floating-point arithmetic/compare/convert
+    FpOp {
+        funct7: u8,
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+    },
+    // Fused multiply-add family
+    FpFma {
+        opcode: u8,
+        funct7: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+        rs3: u8,
+    },
     OpImm {
         funct3: u8,
         rd: u8,
@@ -178,11 +208,56 @@ pub fn decode(insn: u32) -> Instruction {
             rs1: rs1(insn),
             offset: i_imm(insn),
         },
+        0x07 => match funct3(insn) {
+            2 => Instruction::FpLoad {
+                width: 4,
+                rd: rd(insn),
+                rs1: rs1(insn),
+                offset: i_imm(insn),
+            },
+            3 => Instruction::FpLoad {
+                width: 8,
+                rd: rd(insn),
+                rs1: rs1(insn),
+                offset: i_imm(insn),
+            },
+            _ => Instruction::Unknown(insn),
+        },
         0x23 => Instruction::Store {
             funct3: funct3(insn),
             rs1: rs1(insn),
             rs2: rs2(insn),
             offset: s_imm(insn),
+        },
+        0x27 => match funct3(insn) {
+            2 => Instruction::FpStore {
+                width: 4,
+                rs1: rs1(insn),
+                rs2: rs2(insn),
+                offset: s_imm(insn),
+            },
+            3 => Instruction::FpStore {
+                width: 8,
+                rs1: rs1(insn),
+                rs2: rs2(insn),
+                offset: s_imm(insn),
+            },
+            _ => Instruction::Unknown(insn),
+        },
+        0x53 => Instruction::FpOp {
+            funct7: funct7(insn),
+            funct3: funct3(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            rs2: rs2(insn),
+        },
+        0x43 | 0x47 | 0x4B | 0x4F => Instruction::FpFma {
+            opcode: (insn & 0x7F) as u8,
+            funct7: funct7(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            rs2: rs2(insn),
+            rs3: ((insn >> 27) & 0x1F) as u8,
         },
         0x13 => Instruction::OpImm {
             funct3: funct3(insn),
