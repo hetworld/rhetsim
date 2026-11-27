@@ -566,6 +566,26 @@ impl RiscvCpu {
         0
     }
 
+    fn jit_cbo_zero(cpu_ptr: *mut u8, base: u64, fault_out: *mut u64) -> u64 {
+        let cpu = unsafe { &mut *(cpu_ptr as *mut RiscvCpu) };
+        let base = base & !0x3F;
+        for offset in (0..64).step_by(8) {
+            let va = base + offset;
+            let pa = match cpu.translate(va, mmu::AccessType::Store, 8) {
+                Ok(pa) => pa,
+                Err(f) => {
+                    cpu.jit_fault = Some((f.cause, f.tval));
+                    unsafe {
+                        *fault_out = 1;
+                    }
+                    return 1;
+                }
+            };
+            cpu.phys_write(pa, 8, 0);
+        }
+        0
+    }
+
     fn jit_step(&mut self) -> bool {
         let jit = match self.jit.as_mut() {
             Some(j) => j as *mut JitEngine,
@@ -590,6 +610,9 @@ impl RiscvCpu {
             _pad: 0,
             insn_count: 0,
             raw_insn: 0,
+            fregs: self.fregs.as_mut_ptr(),
+            fcsr: self.csr.fcsr as u64,
+            fp_dirty: 0,
         };
 
         let self_ptr = self as *mut RiscvCpu as *mut u8;
@@ -602,6 +625,7 @@ impl RiscvCpu {
             read_tlb: read_tlb_ptr,
             write_tlb: write_tlb_ptr,
             fault: 0,
+            cbo_zero_fn: Self::jit_cbo_zero,
         };
         self.jit_fault = None;
 
@@ -638,6 +662,12 @@ impl RiscvCpu {
             return false;
         }
 
+        // FP registers were updated in place through `state.fregs`; the
+        // control/status register travels by value.
+        self.csr.fcsr = state.fcsr as u32;
+        if state.fp_dirty != 0 {
+            self.csr.mstatus |= csr::MSTATUS_FS_DIRTY;
+        }
         self.regs = state.regs;
         self.regs[0] = 0;
         self.insn_count += state.insn_count;
@@ -907,6 +937,29 @@ impl RiscvCpu {
         }
     }
 
+    /// RISC-V FMIN/FMAX semantics: a single NaN operand is ignored, two NaN
+    /// operands produce the canonical NaN, and two zeros keep the sign the
+    /// instruction requires.
+    fn fp_minmax(a: f64, b: f64, take_max: bool) -> f64 {
+        if a.is_nan() && b.is_nan() {
+            return f64::from_bits(0x7FF8_0000_0000_0000);
+        }
+        if a.is_nan() {
+            return b;
+        }
+        if b.is_nan() {
+            return a;
+        }
+        if a == 0.0 && b == 0.0 {
+            return if take_max { 0.0 } else { -0.0 };
+        }
+        if take_max {
+            a.max(b)
+        } else {
+            a.min(b)
+        }
+    }
+
     fn fp_class(bits: u64, double: bool) -> u64 {
         let (sign, exp, frac, qnan) = if double {
             (
@@ -1041,10 +1094,10 @@ impl RiscvCpu {
                 let take_max = funct3 != 0;
                 if is_double {
                     let (a, b) = (self.fp64(rs1), self.fp64(rs2));
-                    self.set_fp64(rd, if take_max { a.max(b) } else { a.min(b) });
+                    self.set_fp64(rd, Self::fp_minmax(a, b, take_max));
                 } else {
                     let (a, b) = (self.fp32(rs1), self.fp32(rs2));
-                    self.set_fp32(rd, if take_max { a.max(b) } else { a.min(b) });
+                    self.set_fp32(rd, Self::fp_minmax(a as f64, b as f64, take_max) as f32);
                 }
             }
             0x20 => {
@@ -2976,12 +3029,21 @@ mod tests {
     // ── JIT / interpreter parity ───────────────────────────────
 
     fn run_jit_parity_program(insns: &[u32], jit_enabled: bool) -> RiscvCpu {
+        run_jit_parity_program_setup(insns, jit_enabled, |_| {})
+    }
+
+    fn run_jit_parity_program_setup(
+        insns: &[u32],
+        jit_enabled: bool,
+        setup: impl FnOnce(&mut RiscvCpu),
+    ) -> RiscvCpu {
         let mut cpu = RiscvCpu::new("parity", 8192, 0);
         cpu.set_jit_enabled(jit_enabled);
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
         cpu.set_pc(0);
+        setup(&mut cpu);
         cpu.exec(100_000).unwrap();
         cpu
     }
@@ -2989,6 +3051,7 @@ mod tests {
     fn assert_jit_parity(jit_cpu: &RiscvCpu, interp_cpu: &RiscvCpu) {
         for i in 0..32 {
             assert_eq!(jit_cpu.reg(i), interp_cpu.reg(i), "x{i} differs");
+            assert_eq!(jit_cpu.fregs[i], interp_cpu.fregs[i], "f{i} differs");
         }
         assert_eq!(jit_cpu.pc(), interp_cpu.pc(), "pc differs");
         assert_eq!(
@@ -3002,6 +3065,18 @@ mod tests {
             "mscratch differs"
         );
         assert_eq!(jit_cpu.csr().mie, interp_cpu.csr().mie, "mie differs");
+        assert_eq!(jit_cpu.csr().fcsr, interp_cpu.csr().fcsr, "fcsr differs");
+        assert_eq!(
+            jit_cpu.csr().mstatus & csr::MSTATUS_FS_MASK,
+            interp_cpu.csr().mstatus & csr::MSTATUS_FS_MASK,
+            "mstatus.FS differs"
+        );
+    }
+
+    fn assert_jit_lowered(cpu: &RiscvCpu) {
+        let jit = cpu.jit.as_ref().expect("JIT engine");
+        assert_eq!(jit.fallback_count(), 0, "JIT fell back to the interpreter");
+        assert!(jit.stats().0 > 0, "JIT compiled no blocks");
     }
 
     #[test]
@@ -3193,5 +3268,298 @@ mod tests {
 
         assert_eq!(cpu.csr().mcause, 2); // illegal instruction
         assert_eq!(cpu.csr().misa & (1 << 2), 0); // C is not advertised
+    }
+
+    // ── JIT lowering parity: F/D, bitmanip and CMO ─────────────
+
+    fn fp_load(funct3: u32, rd: u32, rs1: u32, offset: i32) -> u32 {
+        ((offset as u32) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x07
+    }
+
+    fn fp_store(funct3: u32, rs1: u32, rs2: u32, offset: i32) -> u32 {
+        let off = offset as u32;
+        ((off >> 5) << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | ((off & 0x1F) << 7) | 0x27
+    }
+
+    fn cbo(op: u32, rs1: u32) -> u32 {
+        (op << 20) | (rs1 << 15) | (2 << 12) | 0x0F
+    }
+
+    #[test]
+    fn jit_interpreter_parity_fp_arith() {
+        let insns = [
+            fp_op(0x01, 0, 3, 1, 2),    // fadd.d f3, f1, f2
+            fp_op(0x05, 0, 4, 3, 2),    // fsub.d f4, f3, f2
+            fp_op(0x09, 0, 5, 4, 2),    // fmul.d f5, f4, f2
+            fp_op(0x0D, 0, 6, 5, 2),    // fdiv.d f6, f5, f2
+            fp_op(0x0D, 0, 7, 6, 0),    // fdiv.d f7, f6, f0 (DZ)
+            fp_op(0x0D, 0, 26, 0, 0),   // fdiv.d f26, f0, f0 (NV)
+            fp_op(0x2D, 0, 8, 6, 0),    // fsqrt.d f8, f6
+            fp_op(0x2D, 0, 28, 27, 0),  // fsqrt.d f28, f27 (negative, NV)
+            fp_op(0x15, 1, 9, 1, 2),    // fmax.d f9, f1, f2
+            fp_op(0x15, 0, 10, 1, 2),   // fmin.d f10, f1, f2
+            fp_op(0x15, 1, 21, 21, 22), // fmax.d f21, NaN, NaN
+            fp_op(0x15, 0, 25, 23, 24), // fmin.d f25, 1.0, NaN
+            fp_op(0x11, 0, 11, 1, 2),   // fsgnj.d f11, f1, f2
+            fp_op(0x11, 1, 12, 1, 2),   // fsgnjn.d f12, f1, f2
+            fp_op(0x11, 2, 13, 1, 2),   // fsgnjx.d f13, f1, f2
+            fp_op(0x51, 2, 14, 1, 2),   // feq.d x14, f1, f2
+            fp_op(0x51, 1, 15, 1, 2),   // flt.d x15, f1, f2
+            fp_op(0x51, 0, 16, 1, 2),   // fle.d x16, f1, f2
+            fp_op(0x21, 0, 19, 18, 0),  // fcvt.d.s f19, f18
+            fp_op(0x20, 0, 20, 19, 0),  // fcvt.s.d f20, f19
+            0x0000_0073,                // ecall
+        ];
+        let setup = |cpu: &mut RiscvCpu| {
+            cpu.set_fp64(1, 1.5);
+            cpu.set_fp64(2, 2.75);
+            cpu.set_fp64(21, f64::NAN);
+            cpu.set_fp64(22, f64::NAN);
+            cpu.set_fp64(23, 1.0);
+            cpu.set_fp64(24, f64::NAN);
+            cpu.set_fp64(27, -4.0);
+            cpu.set_fp32(18, -2.5);
+        };
+        let jit_cpu = run_jit_parity_program_setup(&insns, true, setup);
+        let interp_cpu = run_jit_parity_program_setup(&insns, false, setup);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        assert_eq!(jit_cpu.fp64(3), 4.25);
+        assert_eq!(jit_cpu.fp64(9), 2.75);
+        assert_eq!(jit_cpu.fp64(10), 1.5);
+        assert_eq!(jit_cpu.reg(14), 0);
+        assert_eq!(jit_cpu.reg(15), 1);
+        assert_eq!(jit_cpu.reg(16), 1);
+        assert_eq!(jit_cpu.fp64(19), -2.5);
+        assert_eq!(jit_cpu.fp32(20), -2.5);
+        assert_eq!(jit_cpu.fp64(21).to_bits(), 0x7FF8_0000_0000_0000);
+        assert_eq!(jit_cpu.fp64(25), 1.0);
+        assert!(jit_cpu.fp64(7).is_infinite());
+        assert!(jit_cpu.fp64(26).is_nan());
+        assert!(jit_cpu.fp64(28).is_nan());
+        assert_ne!(jit_cpu.csr().fcsr & (1 << 3), 0, "DZ flag missing");
+        assert_ne!(jit_cpu.csr().fcsr & (1 << 4), 0, "NV flag missing");
+    }
+
+    #[test]
+    fn jit_interpreter_parity_fp_convert() {
+        let insns = [
+            0xFF60_0093,               // addi x1, x0, -10
+            fp_op(0x69, 0, 2, 1, 0),   // fcvt.d.w f2, x1
+            fp_op(0x68, 0, 3, 1, 0),   // fcvt.s.w f3, x1
+            fp_op(0x61, 0, 4, 2, 0),   // fcvt.w.d x4, f2
+            fp_op(0x61, 0, 5, 2, 1),   // fcvt.wu.d x5, f2
+            fp_op(0x61, 0, 6, 2, 2),   // fcvt.l.d x6, f2
+            fp_op(0x61, 0, 7, 2, 3),   // fcvt.lu.d x7, f2
+            fp_op(0x71, 0, 8, 2, 0),   // fmv.x.d x8, f2
+            fp_op(0x71, 1, 9, 2, 0),   // fclass.d x9, f2
+            fp_op(0x79, 0, 10, 8, 0),  // fmv.d.x f10, x8
+            fp_op(0x70, 1, 11, 3, 0),  // fclass.s x11, f3
+            fp_op(0x70, 0, 12, 3, 0),  // fmv.x.w x12, f3
+            fp_op(0x78, 0, 13, 1, 0),  // fmv.w.x f13, x1
+            fp_op(0x61, 0, 14, 21, 0), // fcvt.w.d x14, f21 (NaN)
+            fp_op(0x71, 1, 15, 21, 0), // fclass.d x15, f21
+            fp_op(0x61, 0, 16, 20, 0), // fcvt.w.d 3e9 (saturate)
+            fp_op(0x61, 0, 17, 20, 1), // fcvt.wu.d 3e9 (saturate)
+            fp_op(0x61, 0, 18, 23, 2), // fcvt.l.d 1e300 (saturate)
+            fp_op(0x61, 0, 19, 23, 3), // fcvt.lu.d 1e300 (saturate)
+            fp_op(0x61, 0, 24, 22, 1), // fcvt.wu.d 5e9 (saturate)
+            0x0000_0073,               // ecall
+        ];
+        let setup = |cpu: &mut RiscvCpu| {
+            cpu.set_fp64(21, f64::NAN);
+            cpu.set_fp64(20, 3.0e9);
+            cpu.set_fp64(22, 5.0e9);
+            cpu.set_fp64(23, 1.0e300);
+        };
+        let jit_cpu = run_jit_parity_program_setup(&insns, true, setup);
+        let interp_cpu = run_jit_parity_program_setup(&insns, false, setup);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        assert_eq!(jit_cpu.fp64(2), -10.0);
+        assert_eq!(jit_cpu.fp32(3), -10.0);
+        assert_eq!(jit_cpu.reg(4) as i64, -10);
+        assert_eq!(jit_cpu.reg(5), 0);
+        assert_eq!(jit_cpu.reg(6) as i64, -10);
+        assert_eq!(jit_cpu.reg(7), 0);
+        assert_eq!(jit_cpu.reg(8), (-10.0f64).to_bits());
+        assert_eq!(jit_cpu.reg(9), 1 << 1); // negative normal
+        assert_eq!(jit_cpu.fp64(10).to_bits(), (-10.0f64).to_bits());
+        assert_eq!(jit_cpu.reg(11), 1 << 1);
+        assert_eq!(jit_cpu.reg(12), 0xFFFF_FFFF_C120_0000);
+        assert_eq!(jit_cpu.fregs[13], 0xFFFF_FFFF_FFFF_FFF6);
+        assert_eq!(jit_cpu.reg(14), 0);
+        assert_eq!(jit_cpu.reg(15), 1 << 9); // quiet NaN
+        assert_eq!(jit_cpu.reg(16), i32::MAX as u64);
+        assert_eq!(jit_cpu.reg(17), 3_000_000_000);
+        assert_eq!(jit_cpu.reg(18), i64::MAX as u64);
+        assert_eq!(jit_cpu.reg(19), u64::MAX);
+        assert_eq!(jit_cpu.reg(24), u32::MAX as u64);
+        assert_ne!(jit_cpu.csr().fcsr & (1 << 4), 0, "NV flag missing");
+    }
+
+    #[test]
+    fn jit_interpreter_parity_fp_mem() {
+        let insns = [
+            0x1000_0093,           // addi x1, x0, 0x100
+            fp_store(3, 1, 2, 0),  // fsd f2, 0(x1)
+            fp_load(3, 3, 1, 0),   // fld f3, 0(x1)
+            fp_store(2, 1, 5, 8),  // fsw f5, 8(x1)
+            fp_load(2, 4, 1, 8),   // flw f4, 8(x1)
+            fp_store(3, 1, 6, 16), // fsd f6, 16(x1)
+            fp_load(3, 7, 1, 16),  // fld f7, 16(x1)
+            0x0000_B203,           // ld x4, 0(x1)
+            0x0080_B183,           // ld x3, 8(x1)
+            0x0000_0073,           // ecall
+        ];
+        let setup = |cpu: &mut RiscvCpu| {
+            cpu.set_fp64(2, -123.456);
+            cpu.set_fp32(5, 3.5);
+            cpu.set_fp64(6, 1.0e300);
+        };
+        let jit_cpu = run_jit_parity_program_setup(&insns, true, setup);
+        let interp_cpu = run_jit_parity_program_setup(&insns, false, setup);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        assert_eq!(jit_cpu.fp64(3), -123.456);
+        assert_eq!(jit_cpu.fp32(4), 3.5);
+        assert_eq!(jit_cpu.fp64(7), 1.0e300);
+        assert_eq!(jit_cpu.reg(4), (-123.456f64).to_bits());
+        assert_eq!(jit_cpu.reg(3) as u32, 3.5f32.to_bits());
+    }
+
+    #[test]
+    fn jit_interpreter_parity_fp_fma() {
+        let insns = [
+            fp_fma(0x43, 0x01, 3, 1, 2, 4),    // fmadd.d
+            fp_fma(0x47, 0x01, 5, 1, 2, 4),    // fmsub.d
+            fp_fma(0x4B, 0x01, 6, 1, 2, 4),    // fnmsub.d
+            fp_fma(0x4F, 0x01, 7, 1, 2, 4),    // fnmadd.d
+            fp_fma(0x43, 0x00, 8, 11, 12, 14), // fmadd.s
+            0x0000_0073,                       // ecall
+        ];
+        let setup = |cpu: &mut RiscvCpu| {
+            cpu.set_fp64(1, 2.0);
+            cpu.set_fp64(2, 3.0);
+            cpu.set_fp64(4, 4.0);
+            cpu.set_fp32(11, 2.0);
+            cpu.set_fp32(12, 3.0);
+            cpu.set_fp32(14, 4.0);
+        };
+        let jit_cpu = run_jit_parity_program_setup(&insns, true, setup);
+        let interp_cpu = run_jit_parity_program_setup(&insns, false, setup);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        assert_eq!(jit_cpu.fp64(3), 10.0);
+        assert_eq!(jit_cpu.fp64(5), 2.0);
+        assert_eq!(jit_cpu.fp64(6), -2.0);
+        assert_eq!(jit_cpu.fp64(7), -10.0);
+        assert_eq!(jit_cpu.fp32(8), 10.0);
+    }
+
+    #[test]
+    fn jit_interpreter_parity_bitmanip() {
+        let insns = [
+            bm_op(0x33, 0x10, 2, 10, 1, 2), // sh1add
+            bm_op(0x33, 0x10, 4, 11, 1, 2), // sh2add
+            bm_op(0x33, 0x10, 6, 12, 1, 2), // sh3add
+            bm_op(0x33, 0x20, 4, 13, 1, 2), // xnor
+            bm_op(0x33, 0x20, 6, 14, 1, 2), // orn
+            bm_op(0x33, 0x20, 7, 15, 1, 2), // andn
+            bm_op(0x33, 0x05, 4, 16, 1, 2), // min
+            bm_op(0x33, 0x05, 5, 17, 1, 2), // minu
+            bm_op(0x33, 0x05, 6, 18, 1, 2), // max
+            bm_op(0x33, 0x05, 7, 19, 1, 2), // maxu
+            bm_op(0x33, 0x14, 1, 20, 1, 2), // bset
+            bm_op(0x33, 0x24, 1, 21, 1, 2), // bclr
+            bm_op(0x33, 0x24, 5, 22, 1, 2), // bext
+            bm_op(0x33, 0x34, 1, 23, 1, 2), // binv
+            bm_op(0x33, 0x30, 1, 24, 1, 2), // rol
+            bm_op(0x33, 0x30, 5, 25, 1, 2), // ror
+            bm_op(0x33, 0x05, 1, 26, 1, 2), // clmul
+            bm_op(0x33, 0x05, 2, 27, 1, 2), // clmulr
+            bm_op(0x33, 0x05, 3, 28, 1, 2), // clmulh
+            bm_op(0x3B, 0x04, 0, 29, 1, 2), // add.uw
+            bm_op(0x3B, 0x04, 4, 30, 1, 2), // zext.h
+            bm_op(0x3B, 0x10, 2, 31, 1, 2), // sh1add.uw
+            bm_op(0x3B, 0x30, 1, 5, 1, 3),  // rolw
+            bm_op(0x3B, 0x30, 5, 6, 1, 3),  // rorw
+            bm_imm(0x13, 1, 7, 1, 0x600),   // clz
+            bm_imm(0x13, 1, 8, 1, 0x601),   // ctz
+            bm_imm(0x13, 1, 9, 1, 0x602),   // cpop
+            bm_imm(0x13, 1, 10, 1, 0x604),  // sext.b
+            bm_imm(0x13, 1, 11, 1, 0x605),  // sext.h
+            bm_imm(0x13, 5, 12, 1, 0x6B8),  // rev8
+            bm_imm(0x13, 5, 13, 1, 0x287),  // orc.b
+            bm_imm(0x13, 5, 14, 1, 0x603),  // rori 3
+            bm_imm(0x13, 5, 15, 1, 0x485),  // bexti 5
+            bm_imm(0x13, 1, 16, 1, 0x282),  // bseti 2
+            bm_imm(0x13, 1, 17, 1, 0x485),  // bclri 5
+            bm_imm(0x13, 1, 18, 1, 0x683),  // binvi 3
+            bm_imm(0x1B, 1, 19, 4, 0x600),  // clzw
+            bm_imm(0x1B, 1, 20, 4, 0x601),  // ctzw
+            bm_imm(0x1B, 1, 21, 4, 0x602),  // cpopw
+            bm_imm(0x1B, 5, 22, 4, 0x603),  // roriw 3
+            bm_imm(0x1B, 1, 23, 4, 0x087),  // slli.uw 7
+            0x0000_0073,                    // ecall
+        ];
+        let setup = |cpu: &mut RiscvCpu| {
+            cpu.set_reg(1, 0x0123_4567_89AB_CDEF);
+            cpu.set_reg(2, 0xF0F0_0F0F_AAAA_5555);
+            cpu.set_reg(3, 37);
+            cpu.set_reg(4, 1);
+        };
+        let jit_cpu = run_jit_parity_program_setup(&insns, true, setup);
+        let interp_cpu = run_jit_parity_program_setup(&insns, false, setup);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        let a = 0x0123_4567_89AB_CDEFu64;
+        let b = 0xF0F0_0F0F_AAAA_5555u64;
+        assert_eq!(jit_cpu.reg(24), a.rotate_left((b & 63) as u32));
+        assert_eq!(jit_cpu.reg(25), a.rotate_right((b & 63) as u32));
+        let (lo, hi) = RiscvCpu::clmul(a, b);
+        assert_eq!(jit_cpu.reg(26), lo);
+        assert_eq!(jit_cpu.reg(27), (lo >> 63) | (hi << 1));
+        assert_eq!(jit_cpu.reg(28), hi);
+        assert_eq!(jit_cpu.reg(12), a.swap_bytes());
+        assert_eq!(jit_cpu.reg(19), 31); // clzw 1
+        assert_eq!(jit_cpu.reg(20), 0); // ctzw 1
+        assert_eq!(jit_cpu.reg(21), 1); // cpopw 1
+        assert_eq!(jit_cpu.reg(22), 0x2000_0000); // roriw 3
+        assert_eq!(jit_cpu.reg(23), 0x80); // slli.uw 7
+        assert_eq!(jit_cpu.reg(29), (a as u32 as u64).wrapping_add(b));
+        assert_eq!(jit_cpu.reg(30), a & 0xFFFF);
+        assert_eq!(
+            jit_cpu.reg(31),
+            (a as u32 as u64).wrapping_shl(1).wrapping_add(b)
+        );
+    }
+
+    #[test]
+    fn jit_interpreter_parity_cbo() {
+        let insns = [
+            0x1000_0093, // addi x1, x0, 0x100
+            0x05A0_0113, // addi x2, x0, 0x5A
+            0x0020_B023, // sd x2, 0(x1)
+            cbo(4, 1),   // cbo.zero x1
+            0x0000_B183, // ld x3, 0(x1)
+            0x0380_B203, // ld x4, 56(x1)
+            cbo(1, 1),   // cbo.clean (no-op)
+            cbo(2, 1),   // cbo.flush (no-op)
+            cbo(0, 1),   // cbo.inval (no-op)
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+        assert_jit_lowered(&jit_cpu);
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+
+        assert_eq!(jit_cpu.reg(3), 0);
+        assert_eq!(jit_cpu.reg(4), 0);
     }
 }
