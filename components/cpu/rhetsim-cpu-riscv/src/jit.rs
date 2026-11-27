@@ -122,6 +122,12 @@ fn memflags() -> MemFlagsData {
     MemFlagsData::new()
 }
 
+impl Default for JitEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JitEngine {
     pub fn new() -> Self {
         let mut flag_builder = settings::builder();
@@ -235,12 +241,7 @@ impl JitEngine {
         let mut pc = start_pc;
         let max_insns = 128;
 
-        loop {
-            let raw = match fetch_fn(pc) {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-
+        while let Ok(raw) = fetch_fn(pc) {
             let half = raw as u16;
             if half == 0 {
                 break;
@@ -594,7 +595,7 @@ impl JitEngine {
                         let size_arg = builder.ins().iconst(I64, size_val);
                         let call = builder.ins().call(load_ref, &[mem_ctx, va, size_arg]);
                         let raw_slow = builder.inst_results(call)[0];
-                        let fault_ptr = builder.ins().iadd_imm(mem_ctx, 40);
+                        let fault_ptr = builder.ins().iadd_imm_s(mem_ctx, 40);
                         let fault = builder.ins().load(I64, memflags(), fault_ptr, 0);
                         let zero = builder.ins().iconst(I64, 0);
                         let faulted = builder.ins().icmp(IntCC::NotEqual, fault, zero);
@@ -709,7 +710,7 @@ impl JitEngine {
                         builder.seal_block(slow_block);
                         let size_arg = builder.ins().iconst(I64, size_val);
                         let _ = builder.ins().call(store_ref, &[mem_ctx, va, size_arg, val]);
-                        let fault_ptr = builder.ins().iadd_imm(mem_ctx, 40);
+                        let fault_ptr = builder.ins().iadd_imm_s(mem_ctx, 40);
                         let fault = builder.ins().load(I64, memflags(), fault_ptr, 0);
                         let zero = builder.ins().iconst(I64, 0);
                         let faulted = builder.ins().icmp(IntCC::NotEqual, fault, zero);
@@ -909,7 +910,7 @@ impl JitEngine {
         let code_ptr = self.module.get_finalized_function(func_id);
 
         Some(TranslationBlock {
-            code: unsafe { std::mem::transmute(code_ptr) },
+            code: unsafe { std::mem::transmute::<*const u8, JitBlockFn>(code_ptr) },
             guest_pc: start_pc,
             guest_end_pc: end_pc,
             insn_count,

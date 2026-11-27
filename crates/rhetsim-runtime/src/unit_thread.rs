@@ -1,6 +1,5 @@
 //! UnitThread — 单元执行线程
 
-use rhetsim_core::error::OmniResult;
 use rhetsim_core::unit::UnitId;
 
 #[derive(Debug)]

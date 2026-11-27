@@ -165,7 +165,7 @@ impl Realizer {
         let expanded = expander.expand(manifest)?;
 
         let mut unit_reg = UnitRegistry::new();
-        let mut irq_router = IrqRouter::new();
+        let irq_router = IrqRouter::new();
 
         for desc in &expanded.units {
             if let Some(factory) = self.registry.get_factory(&desc.kind) {

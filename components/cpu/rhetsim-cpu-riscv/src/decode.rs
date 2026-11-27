@@ -428,7 +428,7 @@ pub fn decode_compressed(half: u16) -> Instruction {
                         if nzimm == 0 {
                             return Instruction::Unknown(half as u32);
                         }
-                        let imm = (nzimm << 12) as i64;
+                        let imm = nzimm << 12;
                         Instruction::Lui { rd, imm }
                     }
                 }
@@ -687,6 +687,9 @@ pub fn decode_compressed(half: u16) -> Instruction {
 
 #[cfg(test)]
 mod tests {
+    // Instruction encodings are written with explicit zero fields for clarity.
+    #![allow(clippy::identity_op)]
+
     use super::*;
 
     #[test]
@@ -775,8 +778,6 @@ mod tests {
         // CSRRW x1, mstatus(0x300), x2
         // funct3=001, csr=0x300, rs1=x2, rd=x1
         // 0011_0000_0000_00010_001_00001_1110011
-        let raw = 0x300_11_0_73u32;
-        // Let me construct properly:
         // [31:20]=0x300, [19:15]=rs1=2, [14:12]=001, [11:7]=rd=1, [6:0]=0x73
         let raw = (0x300 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
         let insn = decode(raw);

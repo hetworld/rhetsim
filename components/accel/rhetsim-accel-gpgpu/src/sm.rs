@@ -232,7 +232,7 @@ impl StreamingMultiprocessor {
                 let val = match funct3 {
                     0 => src.wrapping_add(imm as u64),
                     1 => src << shamt,
-                    2 => ((src as i64) < (imm as i64)) as u64,
+                    2 => ((src as i64) < imm) as u64,
                     3 => (src < (imm as u64)) as u64,
                     4 => src ^ (imm as u64),
                     5 => {
@@ -278,13 +278,7 @@ impl StreamingMultiprocessor {
                                 sa.wrapping_div(sb) as u64
                             }
                         }
-                        5 => {
-                            if b == 0 {
-                                u64::MAX
-                            } else {
-                                a / b
-                            }
-                        }
+                        5 => a.checked_div(b).unwrap_or(u64::MAX),
                         6 => {
                             let (sa, sb) = (a as i64, b as i64);
                             if sb == 0 {
@@ -368,13 +362,7 @@ impl StreamingMultiprocessor {
                                 sa.wrapping_div(sb) as u32
                             }
                         }
-                        5 => {
-                            if b == 0 {
-                                u32::MAX
-                            } else {
-                                a / b
-                            }
-                        }
+                        5 => a.checked_div(b).unwrap_or(u32::MAX),
                         6 => {
                             let (sa, sb) = (a as i32, b as i32);
                             if sb == 0 {
@@ -422,6 +410,9 @@ impl StreamingMultiprocessor {
 
 #[cfg(test)]
 mod tests {
+    // Test instruction encodings spell out zero fields for readability.
+    #![allow(clippy::identity_op, clippy::eq_op)]
+
     use super::*;
 
     fn write_insn(vram: &GpgpuVram, offset: u64, insn: u32) {
@@ -514,14 +505,7 @@ mod tests {
         // SLLI x1, x10, 2; LUI x5, 0; ADD x5, x5, x1; SW x10, 512(x5); ECALL
         //
         // Store to offset 512 + tid*4
-        let kernel: Vec<u32> = vec![
-            0x00251093, // SLLI x1, x10, 2
-            0x20051023, // SH... no, let me use SW with offset
-                        // Actually let's make it simpler: SW x10, 0(x1) where x1 = 0x200 + tid*4
-                        // ADDI x1, x0, 0x200; SLLI x2, x10, 2; ADD x1, x1, x2; SW x10, 0(x1); ECALL
-        ];
-
-        // Let me re-encode:
+        // Encode the kernel:
         // ADDI x1, x0, 0x200: 0x20000093
         // SLLI x2, x10, 2:    0x00251113
         // ADD  x1, x1, x2:    0x002080B3

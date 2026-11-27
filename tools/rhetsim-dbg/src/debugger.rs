@@ -3,10 +3,13 @@ use rhetsim_core::error::OmniResult;
 use rhetsim_core::mem::{MemAccessSize, MemTarget};
 use std::collections::HashSet;
 
+/// Reserved interactive debugger session surface.
+#[allow(dead_code)]
 pub struct DebugSession {
     breakpoints: HashSet<u64>,
 }
 
+#[allow(dead_code)]
 impl DebugSession {
     pub fn new() -> Self {
         Self {

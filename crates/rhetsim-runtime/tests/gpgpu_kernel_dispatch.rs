@@ -12,6 +12,9 @@
 //!   4. GPGPU SIMT-executes the kernel across multiple warps/SMs
 //!   5. RISC-V host reads results from GPGPU VRAM, verifies sum
 
+// Test instruction encodings spell out zero fields for readability.
+#![allow(clippy::identity_op, clippy::eq_op)]
+
 use rhetsim_accel_gpgpu::Gpgpu;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
@@ -47,7 +50,7 @@ fn build_host_program() -> Vec<u32> {
                            // vec_a = [1,2,3,4,5,6,7,8]
     for (i, val) in [1u32, 2, 3, 4, 5, 6, 7, 8].iter().enumerate() {
         // ADDI x1, x0, val
-        code.push((((*val as u32) & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
+        code.push(((*val & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
         // SW x1, offset(x20)
         let off = (i * 4) as u32;
         let imm_hi = (off >> 5) & 0x7F;
@@ -60,7 +63,7 @@ fn build_host_program() -> Vec<u32> {
     code.push(0x40006AB7); // LUI x21, 0x40006
     for (i, val) in [10u32, 20, 30, 40, 50, 60, 70, 80].iter().enumerate() {
         // ADDI x1, x0, val
-        code.push((((*val as u32) & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
+        code.push(((*val & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
         // SW x1, offset(x21)
         let off = (i * 4) as u32;
         let imm_hi = (off >> 5) & 0x7F;

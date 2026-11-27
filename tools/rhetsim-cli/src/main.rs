@@ -537,7 +537,7 @@ fn boot_riscv_linux(
         }
 
         if !interactive {
-            if total_steps % 10_000_000 == 0 {
+            if total_steps.is_multiple_of(10_000_000) {
                 let cpu0 = &cpus[0];
                 debug!(target: "boot", steps = total_steps, harts = num_harts,
                     pc = format_args!("0x{:X}", cpu0.pc()),

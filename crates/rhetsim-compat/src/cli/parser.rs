@@ -7,6 +7,8 @@ use std::collections::HashMap;
 pub struct DeviceFactory;
 
 pub struct QemuCliParser {
+    /// Reserved for -machine presets in the future parser implementation.
+    #[allow(dead_code)]
     machine_map: HashMap<String, Manifest>,
 }
 
@@ -17,7 +19,7 @@ impl QemuCliParser {
         }
     }
 
-    pub fn parse(&self, args: &[String]) -> OmniResult<Manifest> {
+    pub fn parse(&self, _args: &[String]) -> OmniResult<Manifest> {
         // TODO: 解析 -machine / -cpu / -m / -smp / -device 等参数
         Err(rhetsim_core::error::OmniError::NotSupported("cli parse"))
     }

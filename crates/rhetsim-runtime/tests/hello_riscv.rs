@@ -10,7 +10,7 @@ const UART_ADDR: u64 = 0x1000_0000;
 fn hello_program() -> Vec<u8> {
     let mut program: Vec<u32> = Vec::new();
     // LUI a1(x11), 0x10000 → a1 = 0x10000000
-    program.push(0x10000_5B7);
+    program.push(0x1000_05B7);
     for &ch in b"Hello from RhetSim!\n" {
         // ADDI a0(x10), x0, ch
         program.push(((ch as u32) << 20) | 0x0000_0513);

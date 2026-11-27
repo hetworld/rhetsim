@@ -39,7 +39,7 @@ fn build_vector_add_program() -> Vec<u8> {
     //   x4 = UART base (0x10000000)
     //   x5 = temp
 
-    let mut prog: Vec<u32> = Vec::new();
+    let mut prog: Vec<u32> = Vec::with_capacity(64);
 
     // --- Setup base addresses ---
     // LUI x2, 0x40001  → x2 = 0x40001000 (GPU VRAM)

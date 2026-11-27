@@ -16,9 +16,11 @@ use std::sync::Arc;
 pub struct UnitId(String);
 
 impl UnitId {
+    /// 创建 Unit ID
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+    /// 以字符串形式返回 ID
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -86,25 +88,61 @@ impl<'a> RealizeCtx<'a> {
 #[derive(Debug, Clone)]
 pub enum BootStep {
     /// 拉低复位信号
-    AssertReset { bus: String },
+    AssertReset {
+        /// 复位总线名称
+        bus: String,
+    },
     /// 释放复位信号
-    DeassertReset { bus: String, target: Option<UnitId> },
+    DeassertReset {
+        /// 复位总线名称
+        bus: String,
+        /// 目标 Unit；None 表示总线上的全部目标
+        target: Option<UnitId>,
+    },
     /// 等待链路就绪
-    WaitLinksUp { bus: String, timeout_ns: u64 },
+    WaitLinksUp {
+        /// 链路总线名称
+        bus: String,
+        /// 超时时间（纳秒）
+        timeout_ns: u64,
+    },
     /// 等待 Unit 就绪信号
-    WaitReady { unit: UnitId, timeout_ns: u64 },
+    WaitReady {
+        /// 目标 Unit
+        unit: UnitId,
+        /// 超时时间（纳秒）
+        timeout_ns: u64,
+    },
     /// 上电
-    PowerOn { bus: String, target: UnitId },
+    PowerOn {
+        /// 电源总线名称
+        bus: String,
+        /// 目标 Unit
+        target: UnitId,
+    },
     /// 下电
-    PowerOff { bus: String, target: UnitId },
+    PowerOff {
+        /// 电源总线名称
+        bus: String,
+        /// 目标 Unit
+        target: UnitId,
+    },
     /// 加载固件
-    LoadFirmware { unit: UnitId, path: String },
+    LoadFirmware {
+        /// 目标 Unit
+        unit: UnitId,
+        /// 固件路径
+        path: String,
+    },
 }
 
 /// 所有硬件实体的统一抽象
 pub trait Unit: Send + Sync {
+    /// Unit 的唯一 ID
     fn id(&self) -> &UnitId;
+    /// Unit 类型名称
     fn kind(&self) -> &'static str;
+    /// Unit 能力标志
     fn caps(&self) -> UnitCaps;
 
     /// realize：连接 Bus、获取资源（平台组装时调用一次）
@@ -123,67 +161,83 @@ pub trait Unit: Send + Sync {
     }
 
     // ── 接口向下转型 ────────────────────────────────────────
+    /// 以内存目标视图访问此 Unit
     fn as_mem_target(&self) -> Option<&dyn MemTarget> {
         None
     }
+    /// 以中断接收端视图访问此 Unit
     fn as_irq_sink(&self) -> Option<Arc<dyn IrqSink>> {
         None
     }
+    /// 以数据流端点视图访问此 Unit
     fn as_data_endpoint(&self) -> Option<Arc<dyn DataEndpoint>> {
         None
     }
+    /// 以执行后端视图访问此 Unit
     fn execution_backend(&mut self) -> Option<&mut dyn ExecutionBackend> {
         None
     }
 
     // ── Composite Unit ──────────────────────────────────────
+    /// 返回子 Unit 列表（复合单元）
     fn sub_units(&self) -> Option<&[Box<dyn Unit>]> {
         None
     }
+    /// 返回可变的子 Unit 列表（复合单元）
     fn sub_units_mut(&mut self) -> Option<&mut Vec<Box<dyn Unit>>> {
         None
     }
 
     // ── 中断源描述 ──────────────────────────────────────────
+    /// 返回中断输出描述
     fn irq_source_descs(&self) -> &[IrqSourceDesc] {
         &[]
     }
 
     // ── 快照 ────────────────────────────────────────────────
+    /// 保存此 Unit 的状态快照
     fn save_snapshot(&self) -> OmniResult<UnitSnapshot> {
         Err(crate::error::OmniError::NotSupported("snapshot"))
     }
+    /// 从快照恢复此 Unit 的状态
     fn load_snapshot(&mut self, _snap: &UnitSnapshot) -> OmniResult<()> {
         Err(crate::error::OmniError::NotSupported("snapshot"))
     }
 
     // ── 属性（QMP query 用）─────────────────────────────────
+    /// 读取属性（QMP 查询）
     fn get_property(&self, _key: &str) -> Option<String> {
         None
     }
+    /// 设置属性（QMP 配置）
     fn set_property(&mut self, _key: &str, _val: &str) -> OmniResult<()> {
         Err(crate::error::OmniError::NotSupported("set_property"))
     }
 
     // ── 安全接口（P0 预留，P2 实现）────────────────────────
+    /// 当前执行安全世界
     fn security_world(&self) -> SecurityWorld {
         SecurityWorld::Normal
     }
+    /// 切换执行安全世界（P2 预留）
     fn switch_world(&mut self, _target: SecurityWorld) -> OmniResult<()> {
         Err(crate::error::OmniError::NotSupported(
             "security world switch",
         ))
     }
+    /// 当前 CPU 特权级
     fn current_privilege(&self) -> Option<crate::mem::PrivilegeLevel> {
         None
     }
 
     // ── 电源管理（PowerBus 相关）────────────────────────────
+    /// 返回电源管理接收端
     fn power_sink(&self) -> Option<Arc<dyn crate::bus::power_bus::PowerSink>> {
         None
     }
 
     // ── 复位管理（ResetBus 相关）────────────────────────────
+    /// 返回复位管理接收端
     fn reset_sink(&self) -> Option<Arc<dyn crate::bus::reset_bus::ResetSink>> {
         None
     }

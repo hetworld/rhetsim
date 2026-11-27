@@ -97,16 +97,28 @@ pub enum BackendKind {
 #[derive(Debug)]
 pub enum BackendEvent {
     /// VM exit（KVM）
-    VmExit { reason: u32, addr: u64 },
+    VmExit {
+        /// VM exit 原因码
+        reason: u32,
+        /// 触发 exit 的客户机地址
+        addr: u64,
+    },
     /// MMIO 访问请求
     MmioAccess {
+        /// 访问地址
         addr: u64,
+        /// 访问宽度（字节）
         size: u8,
+        /// 是否为写访问
         is_write: bool,
+        /// 读结果或写数据
         data: u64,
     },
     /// 中断注入完成
-    IrqDelivered { irq: u32 },
+    IrqDelivered {
+        /// 已注入的中断号
+        irq: u32,
+    },
     /// 执行停止
     Halted,
 }

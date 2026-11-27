@@ -4,12 +4,17 @@ use crate::frontend::TcgFrontend;
 use crate::host_backend::TcgHostBackend;
 use crate::optimizer::Optimizer;
 use crate::tb_cache::TbCache;
-use rhetsim_core::error::OmniResult;
 
 pub struct TcgEngine<F: TcgFrontend, B: TcgHostBackend> {
+    /// Reserved for the translation frontend.
+    #[allow(dead_code)]
     frontend: F,
+    /// Reserved for the host code generator.
+    #[allow(dead_code)]
     host_backend: B,
     cache: TbCache,
+    /// Reserved for IR optimization.
+    #[allow(dead_code)]
     optimizer: Optimizer,
 }
 

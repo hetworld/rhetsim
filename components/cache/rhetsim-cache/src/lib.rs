@@ -4,8 +4,6 @@
 //! P1 阶段：LooseTiming，通过 capacity/latency/associativity 参数区分层级
 //! P2 阶段：可按需拆分为独立 crate 支持 RTL 协同
 
-use rhetsim_core::error::OmniResult;
-
 /// Cache 层级参数
 #[derive(Debug, Clone)]
 pub struct CacheParams {

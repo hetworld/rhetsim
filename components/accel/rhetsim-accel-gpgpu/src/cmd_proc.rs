@@ -105,8 +105,8 @@ impl GpgpuCtrl {
 
     fn exec_kernel(&self) -> u64 {
         let kern_addr = self.kern_addr.load(Ordering::Acquire) as u64;
-        let grid_dim = self.grid_dim.load(Ordering::Acquire) as u32;
-        let block_dim = self.block_dim.load(Ordering::Acquire) as u32;
+        let grid_dim = self.grid_dim.load(Ordering::Acquire);
+        let block_dim = self.block_dim.load(Ordering::Acquire);
         let warp_size = DEFAULT_WARP_SIZE;
         let num_sms = DEFAULT_NUM_SMS;
 

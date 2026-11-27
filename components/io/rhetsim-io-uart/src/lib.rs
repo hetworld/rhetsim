@@ -31,6 +31,8 @@ const LCR_DLAB: u8 = 0x80;
 const IER_RDI: u8 = 1 << 0; // received data available
 const IER_THRI: u8 = 1 << 1; // transmitter holding register empty
 const IER_RLSI: u8 = 1 << 2; // receiver line status
+                             // Reserved for future modem-status interrupt support.
+#[allow(dead_code)]
 const IER_MSI: u8 = 1 << 3; // modem status
 
 // IIR interrupt-identification values

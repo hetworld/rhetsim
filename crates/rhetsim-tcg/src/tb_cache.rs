@@ -26,7 +26,11 @@ pub struct TbCacheStats {
 pub struct TbCache {
     fast: Vec<Option<CachedTb>>,
     slow: HashMap<u64, Arc<CompiledTb>>,
+    /// Reserved for size-based eviction.
+    #[allow(dead_code)]
     max_bytes: usize,
+    /// Reserved for cache accounting.
+    #[allow(dead_code)]
     used_bytes: usize,
     stats: TbCacheStats,
 }

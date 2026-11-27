@@ -85,9 +85,9 @@ pub fn translate_sv39(
             }
 
             let mut pa = page_offset;
-            for l in 0..LEVELS {
+            for (l, &vpn_l) in vpn.iter().enumerate() {
                 let bits = if l < level {
-                    vpn[l]
+                    vpn_l
                 } else {
                     (ppn >> (l * 9)) & 0x1FF
                 };
@@ -170,6 +170,12 @@ pub struct Tlb {
     entries: [TlbEntry; TLB_SIZE],
 }
 
+impl Default for Tlb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tlb {
     pub fn new() -> Self {
         Self {
@@ -225,6 +231,9 @@ fn access_mask(access: AccessType) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    // Page-table test addresses spell out the zero offset for readability.
+    #![allow(clippy::erasing_op)]
+
     use super::*;
 
     fn make_pte(ppn: u64, flags: u64) -> u64 {

@@ -1,6 +1,5 @@
 //! machine_map — -machine 名 → 基础 Manifest 模板
 
-use rhetsim_manifest::manifest::Manifest;
 use std::collections::HashMap;
 
 pub fn builtin_machines() -> HashMap<String, &'static str> {

@@ -142,13 +142,13 @@ impl MemTarget for Clint {
     }
 
     fn read(&self, offset: u64, size: MemAccessSize) -> OmniResult<u64> {
-        if offset >= MTIME_OFFSET && offset < MTIME_OFFSET + 8 {
+        if (MTIME_OFFSET..MTIME_OFFSET + 8).contains(&offset) {
             let mtime = self.mtime.load(Ordering::Relaxed);
             let byte_off = (offset - MTIME_OFFSET) as usize;
             return Ok(extract_bytes(mtime, byte_off, size));
         }
 
-        if offset >= MTIMECMP_BASE && offset < MTIME_OFFSET {
+        if (MTIMECMP_BASE..MTIME_OFFSET).contains(&offset) {
             let rel = offset - MTIMECMP_BASE;
             let hart = (rel / 8) as usize;
             if hart < self.num_harts {
@@ -161,7 +161,7 @@ impl MemTarget for Clint {
             }
         }
 
-        if offset >= MSIP_BASE && offset < MTIMECMP_BASE {
+        if (MSIP_BASE..MTIMECMP_BASE).contains(&offset) {
             let rel = offset - MSIP_BASE;
             let hart = (rel / 4) as usize;
             if hart < self.num_harts {
@@ -178,7 +178,7 @@ impl MemTarget for Clint {
     }
 
     fn write(&self, offset: u64, size: MemAccessSize, val: u64) -> OmniResult<()> {
-        if offset >= MTIME_OFFSET && offset < MTIME_OFFSET + 8 {
+        if (MTIME_OFFSET..MTIME_OFFSET + 8).contains(&offset) {
             let byte_off = (offset - MTIME_OFFSET) as usize;
             let old = self.mtime.load(Ordering::Relaxed);
             let new = deposit_bytes(old, byte_off, size, val);
@@ -187,7 +187,7 @@ impl MemTarget for Clint {
             return Ok(());
         }
 
-        if offset >= MTIMECMP_BASE && offset < MTIME_OFFSET {
+        if (MTIMECMP_BASE..MTIME_OFFSET).contains(&offset) {
             let rel = offset - MTIMECMP_BASE;
             let hart = (rel / 8) as usize;
             if hart < self.num_harts {
@@ -207,7 +207,7 @@ impl MemTarget for Clint {
             return Ok(());
         }
 
-        if offset >= MSIP_BASE && offset < MTIMECMP_BASE {
+        if (MSIP_BASE..MTIMECMP_BASE).contains(&offset) {
             let rel = offset - MSIP_BASE;
             let hart = (rel / 4) as usize;
             if hart < self.num_harts {

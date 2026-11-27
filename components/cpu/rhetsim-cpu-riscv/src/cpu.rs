@@ -839,7 +839,7 @@ impl RiscvCpu {
                 let val = match funct3 {
                     0 => src.wrapping_add(imm as u64),
                     1 => src << shamt,
-                    2 => ((src as i64) < (imm as i64)) as u64,
+                    2 => ((src as i64) < imm) as u64,
                     3 => (src < (imm as u64)) as u64,
                     4 => src ^ (imm as u64),
                     5 => {
@@ -1082,13 +1082,7 @@ impl RiscvCpu {
                     sa.wrapping_div(sb) as u64
                 }
             }
-            5 => {
-                if b == 0 {
-                    u64::MAX
-                } else {
-                    a / b
-                }
-            }
+            5 => a.checked_div(b).unwrap_or(u64::MAX),
             6 => {
                 let sa = a as i64;
                 let sb = b as i64;
@@ -1125,13 +1119,7 @@ impl RiscvCpu {
                     sa.wrapping_div(sb) as u32
                 }
             }
-            5 => {
-                if b == 0 {
-                    u32::MAX
-                } else {
-                    a / b
-                }
-            }
+            5 => a.checked_div(b).unwrap_or(u32::MAX),
             6 => {
                 let sa = a as i32;
                 let sb = b as i32;
@@ -1352,11 +1340,11 @@ impl ExecutionBackend for RiscvCpu {
         if data.len() < min_size {
             return Err(OmniError::SnapshotError("riscv state too short".into()));
         }
-        for i in 0..32 {
+        for (i, reg) in self.regs.iter_mut().enumerate() {
             let off = i * 8;
             let mut buf = [0u8; 8];
             buf.copy_from_slice(&data[off..off + 8]);
-            self.regs[i] = u64::from_le_bytes(buf);
+            *reg = u64::from_le_bytes(buf);
         }
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&data[256..264]);
@@ -1382,6 +1370,9 @@ impl ExecutionBackend for RiscvCpu {
 
 #[cfg(test)]
 mod tests {
+    // Instruction encodings are written with explicit zero fields for clarity.
+    #![allow(clippy::identity_op)]
+
     use super::*;
 
     fn cpu_with(insns: &[u32]) -> RiscvCpu {

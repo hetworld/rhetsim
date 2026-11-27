@@ -175,7 +175,7 @@ fn linux_boot() {
             all_output.extend_from_slice(&out);
         }
 
-        if total_steps % 10_000_000 == 0 {
+        if total_steps.is_multiple_of(10_000_000) {
             eprintln!(
                 "[{}M steps] PC0=0x{:X} mode0={} PC1=0x{:X} mode1={} uart={}B",
                 total_steps / 1_000_000,

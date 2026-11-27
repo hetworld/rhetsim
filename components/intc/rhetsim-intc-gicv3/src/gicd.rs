@@ -19,6 +19,8 @@
 use std::sync::RwLock;
 
 const MAX_SPIS: usize = 988; // INTIDs 32..1019
+                             // Reserved for future INTID range validation.
+#[allow(dead_code)]
 const MAX_INTIDS: usize = 1020;
 
 pub struct Gicd {
@@ -35,7 +37,7 @@ impl Gicd {
     pub fn new(num_spis: usize) -> Self {
         assert!(num_spis <= MAX_SPIS);
         let total = 32 + num_spis; // SGI/PPI (0..31) + SPIs
-        let words = (total + 31) / 32;
+        let words = total.div_ceil(32);
         Self {
             enabled: false,
             num_spis,
@@ -193,7 +195,7 @@ impl Gicd {
                 }
             }
             0x0004 => {
-                let it_lines = ((self.num_intids() + 31) / 32 - 1) as u64;
+                let it_lines = (self.num_intids().div_ceil(32) - 1) as u64;
                 it_lines & 0x1F
             }
             o if (0x0100..0x0180).contains(&o) => {

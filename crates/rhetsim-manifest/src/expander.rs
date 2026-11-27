@@ -5,6 +5,12 @@ use rhetsim_core::error::OmniResult;
 
 pub struct Expander;
 
+impl Default for Expander {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Expander {
     pub fn new() -> Self {
         Self

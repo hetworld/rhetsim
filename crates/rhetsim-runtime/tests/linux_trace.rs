@@ -121,7 +121,6 @@ fn linux_trace() {
 
             // Now trace kernel WITH CLINT ticking (like linux_boot test)
             let mut entry_count = 0u64;
-            let mut last_interesting_pc = cpu.pc();
             for k_step in 0..200_000u64 {
                 let kpc = cpu.pc();
                 let mode = cpu.priv_mode();

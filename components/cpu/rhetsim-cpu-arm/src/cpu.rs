@@ -265,7 +265,7 @@ impl ArmCpu {
 
     fn set_nzcv_logic(&mut self, result: u64, sf: bool) {
         let (n, z) = if sf {
-            (((result >> 63) & 1) as u64, (result == 0) as u64)
+            (((result >> 63) & 1), (result == 0) as u64)
         } else {
             (
                 (((result as u32) >> 31) & 1) as u64,
@@ -645,7 +645,7 @@ impl ArmCpu {
                         self.read_gpr(rm) & 0xFFFF_FFFF,
                     )
                 };
-                let result = if b == 0 { 0 } else { a / b };
+                let result = a.checked_div(b).unwrap_or(0);
                 let result = if sf { result } else { Self::trunc32(result) };
                 self.write_gpr(rd, result);
                 self.pc += 4;
@@ -1086,11 +1086,11 @@ impl ExecutionBackend for ArmCpu {
         if data.len() < min {
             return Err(OmniError::SnapshotError("aarch64 state too short".into()));
         }
-        for i in 0..31 {
+        for (i, reg) in self.regs.iter_mut().take(31).enumerate() {
             let off = i * 8;
             let mut buf = [0u8; 8];
             buf.copy_from_slice(&data[off..off + 8]);
-            self.regs[i] = u64::from_le_bytes(buf);
+            *reg = u64::from_le_bytes(buf);
         }
         let mut buf8 = [0u8; 8];
         buf8.copy_from_slice(&data[248..256]);

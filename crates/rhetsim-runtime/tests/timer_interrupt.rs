@@ -10,6 +10,9 @@
 //!   3. At mtime >= 50, timer interrupt fires → handler sets x10=1, disables MTIE, MRETs
 //!   4. Main code continues, sets x11=42, ECALLs
 
+// Test instruction encodings spell out zero fields for readability.
+#![allow(clippy::identity_op)]
+
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::{MemAttrs, MemTarget};

@@ -8,7 +8,6 @@ use crate::cmd_proc::GpgpuCtrl;
 use crate::vram_ctrl::GpgpuVram;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::error::OmniResult;
-use rhetsim_core::mem::MemTarget;
 use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
 use std::sync::Arc;
 
@@ -91,7 +90,7 @@ pub fn register() {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rhetsim_core::mem::MemAccessSize;
+    use rhetsim_core::mem::{MemAccessSize, MemTarget};
 
     #[test]
     fn test_gpgpu_vram_read_write() {

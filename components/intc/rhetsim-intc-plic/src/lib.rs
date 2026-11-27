@@ -20,6 +20,8 @@ use std::sync::{Arc, RwLock};
 const PLIC_SIZE: u64 = 0x400_0000;
 const MAX_SOURCES: usize = 1024;
 const MAX_CONTEXTS: usize = 15872; // spec max
+                                   // Reserved for priority-register range checks.
+#[allow(dead_code)]
 const PRIORITY_BASE: u64 = 0x0;
 const PENDING_BASE: u64 = 0x1000;
 const ENABLE_BASE: u64 = 0x2000;
@@ -72,7 +74,7 @@ impl Plic {
             return None;
         }
         let threshold = state.threshold[context];
-        let words = (self.num_sources + 31) / 32;
+        let words = self.num_sources.div_ceil(32);
         let mut best_irq: Option<u32> = None;
         let mut best_prio = 0u32;
 
@@ -161,7 +163,7 @@ impl MemTarget for Plic {
         }
 
         // Pending registers
-        if offset >= PENDING_BASE && offset < ENABLE_BASE {
+        if (PENDING_BASE..ENABLE_BASE).contains(&offset) {
             let word = ((offset - PENDING_BASE) / 4) as usize;
             if word < state.pending.len() {
                 return Ok(state.pending[word] as u64);
@@ -170,7 +172,7 @@ impl MemTarget for Plic {
         }
 
         // Enable registers
-        if offset >= ENABLE_BASE && offset < CONTEXT_BASE {
+        if (ENABLE_BASE..CONTEXT_BASE).contains(&offset) {
             let rel = offset - ENABLE_BASE;
             let ctx = (rel / ENABLE_STRIDE) as usize;
             let word = ((rel % ENABLE_STRIDE) / 4) as usize;
@@ -229,12 +231,12 @@ impl MemTarget for Plic {
         }
 
         // Pending: read-only (set via IrqSink::raise)
-        if offset >= PENDING_BASE && offset < ENABLE_BASE {
+        if (PENDING_BASE..ENABLE_BASE).contains(&offset) {
             return Ok(());
         }
 
         // Enable
-        if offset >= ENABLE_BASE && offset < CONTEXT_BASE {
+        if (ENABLE_BASE..CONTEXT_BASE).contains(&offset) {
             let rel = offset - ENABLE_BASE;
             let ctx = (rel / ENABLE_STRIDE) as usize;
             let word = ((rel % ENABLE_STRIDE) / 4) as usize;

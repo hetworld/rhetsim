@@ -1,24 +1,32 @@
 //! MemTarget / MemSpace / AddressTranslator — 内存子系统接口
 
 use crate::error::OmniResult;
-use crate::security::{MemSecurity, SecurityWorld};
+use crate::security::MemSecurity;
 use std::sync::Arc;
 
 /// 内存访问粒度
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemAccessSize {
+    /// 8 位访问
     U8 = 1,
+    /// 16 位访问
     U16 = 2,
+    /// 32 位访问
     U32 = 4,
+    /// 64 位访问
     U64 = 8,
+    /// 128 位访问
     U128 = 16,
 }
 
 /// 内存访问描述
 #[derive(Debug, Clone, Copy)]
 pub struct MemAccess {
+    /// 访问地址
     pub addr: u64,
+    /// 访问宽度
     pub size: MemAccessSize,
+    /// 是否为写访问
     pub is_write: bool,
     /// 发起者 Unit ID（用于 MemBus visible_to 过滤）
     pub initiator_id: u32,
@@ -27,23 +35,31 @@ pub struct MemAccess {
 /// 访问类型（用于 AddressTranslator）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemAccessKind {
+    /// 读访问
     Read,
+    /// 写访问
     Write,
+    /// 取指访问
     Execute,
 }
 
 /// 内存访问属性
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MemAttrs {
+    /// 可读
     pub readable: bool,
+    /// 可写
     pub writable: bool,
+    /// 可执行
     pub executable: bool,
+    /// 可缓存
     pub cacheable: bool,
     /// 安全属性，默认 NonSecure
     pub security: MemSecurity,
 }
 
 impl MemAttrs {
+    /// 可读写、不可执行、可缓存
     pub fn rw() -> Self {
         Self {
             readable: true,
@@ -54,6 +70,7 @@ impl MemAttrs {
         }
     }
 
+    /// 只读、不可执行、可缓存
     pub fn ro() -> Self {
         Self {
             readable: true,
@@ -64,6 +81,7 @@ impl MemAttrs {
         }
     }
 
+    /// 可读可执行、不可写、可缓存
     pub fn rx() -> Self {
         Self {
             readable: true,
@@ -86,7 +104,9 @@ pub trait MemTarget: Send + Sync {
     /// 地址范围大小
     fn size(&self) -> u64;
 
+    /// 从目标地址空间读取
     fn read(&self, offset: u64, size: MemAccessSize) -> OmniResult<u64>;
+    /// 向目标地址空间写入
     fn write(&self, offset: u64, size: MemAccessSize, val: u64) -> OmniResult<()>;
 
     /// 批量读（DMA / TCG 块操作优化路径）
@@ -142,8 +162,12 @@ pub trait AddressTranslator: Send + Sync {
 struct Mapping {
     target: Arc<dyn MemTarget>,
     host_base: u64,
+    /// 预留：客户机侧映射基址，供后续地址转换使用。
+    #[allow(dead_code)]
     guest_base: u64,
     size: u64,
+    /// 预留：映射属性，供后续权限检查使用。
+    #[allow(dead_code)]
     attrs: MemAttrs,
 }
 
@@ -156,6 +180,7 @@ pub struct MemSpace {
 }
 
 impl MemSpace {
+    /// 创建空的地址空间
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -164,6 +189,7 @@ impl MemSpace {
         }
     }
 
+    /// 注册一个目标映射
     pub fn map(
         &mut self,
         target: Arc<dyn MemTarget>,
@@ -182,16 +208,19 @@ impl MemSpace {
         Ok(())
     }
 
+    /// 移除指定宿主基址的映射
     pub fn unmap(&mut self, host_base: u64) -> OmniResult<()> {
         self.mappings.retain(|m| m.host_base != host_base);
         Ok(())
     }
 
+    /// 从地址空间读取
     pub fn read(&self, addr: u64, size: MemAccessSize, _access: &MemAccess) -> OmniResult<u64> {
         let m = self.find(addr)?;
         m.target.read(addr - m.host_base, size)
     }
 
+    /// 向地址空间写入
     pub fn write(
         &self,
         addr: u64,
@@ -203,6 +232,7 @@ impl MemSpace {
         m.target.write(addr - m.host_base, size, val)
     }
 
+    /// 设置地址转换器
     pub fn set_translator(&mut self, t: Box<dyn AddressTranslator>) {
         self.translator = Some(t);
     }
@@ -214,6 +244,7 @@ impl MemSpace {
             .ok_or(crate::error::OmniError::AddressNotMapped(addr))
     }
 
+    /// 地址空间 ID
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -223,20 +254,32 @@ impl MemSpace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivilegeLevel {
     // ARM
+    /// ARM EL0
     EL0,
+    /// ARM EL1
     EL1,
+    /// ARM EL2
     EL2,
+    /// ARM EL3
     EL3,
     // x86
+    /// x86 Ring 0
     Ring0,
+    /// x86 Ring 1
     Ring1,
+    /// x86 Ring 2
     Ring2,
+    /// x86 Ring 3
     Ring3,
     /// VMX non-root（Guest）
     RingMinus1,
     // RISC-V
+    /// RISC-V U-mode
     U,
+    /// RISC-V S-mode
     S,
+    /// RISC-V H-mode
     H,
+    /// RISC-V M-mode
     M,
 }

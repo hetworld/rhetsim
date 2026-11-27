@@ -23,15 +23,22 @@ const BAR_COUNT: usize = 6;
 
 const CFG_VENDOR_ID: usize = 0x00;
 const CFG_DEVICE_ID: usize = 0x02;
+// Standard Type 0 config fields; some offsets are reserved for future
+// capability/interrupt support and are intentionally kept here.
+#[allow(dead_code)]
 const CFG_COMMAND: usize = 0x04;
 const CFG_STATUS: usize = 0x06;
 const CFG_REVISION: usize = 0x08;
 const CFG_CLASS_CODE: usize = 0x09;
 const CFG_HEADER_TYPE: usize = 0x0E;
 const CFG_BAR0: usize = 0x10;
+#[allow(dead_code)]
 const CFG_SUBSYS_VENDOR: usize = 0x2C;
+#[allow(dead_code)]
 const CFG_SUBSYS_ID: usize = 0x2E;
+#[allow(dead_code)]
 const CFG_INT_LINE: usize = 0x3C;
+#[allow(dead_code)]
 const CFG_INT_PIN: usize = 0x3D;
 
 pub struct PcieConfigSpace {

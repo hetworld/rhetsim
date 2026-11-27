@@ -405,7 +405,7 @@ fn decode_bitmask_imm(sf: bool, n: u32, immr: u32, imms: u32) -> Option<u64> {
         if combined == 0 {
             return None;
         }
-        (63 - combined.leading_zeros()) as u32
+        63 - combined.leading_zeros()
     };
     if len == 0 {
         return None;
@@ -506,7 +506,7 @@ pub fn decode(insn: u32) -> Instruction {
         return Instruction::Wfi;
     }
     // SVC: 11010100_000 imm16 000 01
-    if insn >> 21 == 0b11010100_000 && (insn & 0x1F) == 1 {
+    if insn >> 21 == 0b110_1010_0000 && (insn & 0x1F) == 1 {
         let imm16 = ((insn >> 5) & 0xFFFF) as u16;
         return Instruction::Svc { imm: imm16 };
     }
@@ -555,7 +555,7 @@ pub fn decode(insn: u32) -> Instruction {
             let op = (insn >> 30) & 1;
             let s = (insn >> 29) & 1;
             let sh = (insn >> 22) & 1;
-            let imm12 = ((insn >> 10) & 0xFFF) as u32;
+            let imm12 = (insn >> 10) & 0xFFF;
             let rn_val = rn(insn);
             let rd_val = rd(insn);
             return match (op, s) {
@@ -688,7 +688,7 @@ pub fn decode(insn: u32) -> Instruction {
         let is_sf = sf(insn);
         let type_field = (insn >> 23) & 0x7;
         let l = (insn >> 22) & 1;
-        let imm7 = ((insn >> 15) & 0x7F) as u32;
+        let imm7 = (insn >> 15) & 0x7F;
         let scale: i64 = if is_sf { 8 } else { 4 };
         let offset = sign_extend(imm7, 7) * scale;
         let rt2_val = rt2(insn);
