@@ -1365,6 +1365,9 @@ impl RiscvCpu {
                 funct12,
             } => self.execute_bitmanip_imm(opcode, funct3, rd, rs1, funct12),
             Instruction::Cbo { op, rs1 } => self.execute_cbo(op, rs1),
+            Instruction::TheadSync => {
+                self.pc += self.insn_size;
+            }
             Instruction::OpImm {
                 funct3,
                 rd,
@@ -2476,6 +2479,13 @@ mod tests {
         assert_eq!(cpu.reg(7), 1);
         assert_eq!(cpu.reg(8), 1 << 7);
         assert_eq!(cpu.reg(9), 1);
+    }
+
+    #[test]
+    fn thead_sync_is_a_noop() {
+        let mut cpu = cpu_with(&[0x0180_000B, 0x0000_0073]);
+        cpu.exec(10).unwrap();
+        assert!(cpu.is_halted());
     }
 
     #[test]
