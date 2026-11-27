@@ -1542,4 +1542,91 @@ mod tests {
         assert_eq!(cpu.reg(11), 1);  // M-mode handler executed
         assert_eq!(cpu.csr().mcause, 9);  // ecall from S-mode
     }
+
+    // ── JIT / interpreter parity ───────────────────────────────
+
+    fn run_jit_parity_program(insns: &[u32], jit_enabled: bool) -> RiscvCpu {
+        let mut cpu = RiscvCpu::new("parity", 8192, 0);
+        cpu.set_jit_enabled(jit_enabled);
+        for (i, insn) in insns.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
+        }
+        cpu.set_pc(0);
+        cpu.exec(100_000).unwrap();
+        cpu
+    }
+
+    fn assert_jit_parity(jit_cpu: &RiscvCpu, interp_cpu: &RiscvCpu) {
+        for i in 0..32 {
+            assert_eq!(jit_cpu.reg(i), interp_cpu.reg(i), "x{i} differs");
+        }
+        assert_eq!(jit_cpu.pc(), interp_cpu.pc(), "pc differs");
+        assert_eq!(jit_cpu.is_halted(), interp_cpu.is_halted(), "halted differs");
+        assert_eq!(jit_cpu.csr().mscratch, interp_cpu.csr().mscratch, "mscratch differs");
+        assert_eq!(jit_cpu.csr().mie, interp_cpu.csr().mie, "mie differs");
+    }
+
+    #[test]
+    fn jit_interpreter_parity_loop_mem() {
+        let insns = [
+            0x1000_0113, // addi x2, x0, 0x100
+            0x02A0_0193, // addi x3, x0, 42
+            0x0031_2023, // sw   x3, 0(x2)
+            0x0001_2203, // lw   x4, 0(x2)
+            0x3E80_0093, // addi x1, x0, 1000
+            0xFFF0_8093, // addi x1, x1, -1
+            0xFE00_9EE3, // bne  x1, x0, -4
+            0x0012_0293, // addi x5, x4, 1
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+
+        assert_eq!(jit_cpu.reg(1), 0);
+        assert_eq!(jit_cpu.reg(2), 0x100);
+        assert_eq!(jit_cpu.reg(3), 42);
+        assert_eq!(jit_cpu.reg(4), 42);
+        assert_eq!(jit_cpu.reg(5), 43);
+        assert!(jit_cpu.is_halted());
+
+        let (_, compiles, _) = jit_cpu.jit.as_ref().expect("JIT engine").stats();
+        assert!(compiles > 0, "JIT compiled no blocks; parity test did not exercise JIT");
+
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
+
+    #[test]
+    fn jit_interpreter_parity_jal() {
+        let insns = [
+            0x0080_00EF, // jal  x1, +8
+            0x0010_0113, // addi x2, x0, 1 (skipped)
+            0x0020_0193, // addi x3, x0, 2
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+
+        assert_eq!(jit_cpu.reg(1), 4);
+        assert_eq!(jit_cpu.reg(2), 0);
+        assert_eq!(jit_cpu.reg(3), 2);
+
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
+
+    #[test]
+    fn jit_interpreter_parity_csr() {
+        let csrrw = (0x340u32 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
+        let insns = [
+            0x0640_0113, // addi x2, x0, 100
+            csrrw,       // csrrw x1, mscratch, x2
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+
+        assert_eq!(jit_cpu.reg(1), 0);
+        assert_eq!(jit_cpu.csr().mscratch, 100);
+
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
 }
