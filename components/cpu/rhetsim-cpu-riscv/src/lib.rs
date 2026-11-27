@@ -3,6 +3,7 @@
 pub mod cpu;
 pub mod csr;
 pub mod decode;
+pub mod fp;
 pub mod jit;
 pub mod mmu;
 pub mod pmp;

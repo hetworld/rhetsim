@@ -14,6 +14,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use std::collections::HashMap;
 
 use crate::decode::{decode, decode_compressed, Instruction};
+use crate::fp;
 use crate::profile::RiscvCpuType;
 
 const EXIT_ECALL: u64 = 1;
@@ -92,11 +93,70 @@ extern "C" fn helper_cbo_zero(mem_ctx: *mut u8, base: u64) -> u64 {
 // unless the native-FMA ISA flag is enabled. Route those libcalls back to
 // Rust's fused multiply-add so JIT and interpreter share one implementation.
 extern "C" fn helper_fma_f64(a: f64, b: f64, c: f64) -> f64 {
-    a.mul_add(b, c)
+    fp::fma_f64(a, b, c)
 }
 
 extern "C" fn helper_fma_f32(a: f32, b: f32, c: f32) -> f32 {
-    a.mul_add(b, c)
+    fp::fma_f32(a, b, c)
+}
+
+extern "C" fn helper_fp_begin(state: *mut u8, rm: u64) {
+    let frm = {
+        let state = unsafe { &*(state as *const JitCpuState) };
+        ((state.fcsr >> 5) & 0x7) as u8
+    };
+    fp::begin(rm as u8, frm);
+}
+
+extern "C" fn helper_fp_end(state: *mut u8) {
+    let flags = fp::end();
+    let state = unsafe { &mut *(state as *mut JitCpuState) };
+    state.fcsr |= flags as u64;
+}
+
+extern "C" fn helper_fcvt_to_int(state: *mut u8, value_bits: u64, kind: u64, rm: u64) -> u64 {
+    let frm = {
+        let state = unsafe { &*(state as *const JitCpuState) };
+        ((state.fcsr >> 5) & 0x7) as u8
+    };
+    let (result, flags) = fp::fcvt_to_int(f64::from_bits(value_bits), kind as u8, rm as u8, frm);
+    let state = unsafe { &mut *(state as *mut JitCpuState) };
+    state.fcsr |= flags as u64;
+    result
+}
+
+extern "C" fn helper_fcvt_from_int(
+    state: *mut u8,
+    value: u64,
+    kind: u64,
+    is_double: u64,
+    rm: u64,
+) -> u64 {
+    let frm = {
+        let state = unsafe { &*(state as *const JitCpuState) };
+        ((state.fcsr >> 5) & 0x7) as u8
+    };
+    let (bits, flags) = fp::fcvt_from_int(value, kind as u8, is_double != 0, rm as u8, frm);
+    let state = unsafe { &mut *(state as *mut JitCpuState) };
+    state.fcsr |= flags as u64;
+    bits
+}
+
+extern "C" fn helper_fcvt_fmt(
+    state: *mut u8,
+    bits: u64,
+    from_double: u64,
+    to_double: u64,
+    rm: u64,
+) -> u64 {
+    let frm = {
+        let state = unsafe { &*(state as *const JitCpuState) };
+        ((state.fcsr >> 5) & 0x7) as u8
+    };
+    let (out, flags) = fp::fcvt_fmt(bits, from_double != 0, to_double != 0, rm as u8, frm);
+    let state = unsafe { &mut *(state as *mut JitCpuState) };
+    state.fcsr |= flags as u64;
+    out
 }
 
 fn clmul_bits(a: u64, b: u64) -> (u64, u64) {
@@ -194,6 +254,11 @@ pub struct JitEngine {
     cbo_zero_id: FuncId,
     /// clmul, clmulh, clmulr
     clmul_ids: [FuncId; 3],
+    fp_begin_id: FuncId,
+    fp_end_id: FuncId,
+    fcvt_to_int_id: FuncId,
+    fcvt_from_int_id: FuncId,
+    fcvt_fmt_id: FuncId,
     fb_ctx: FunctionBuilderContext,
     tb_counter: u64,
     compiles: u64,
@@ -247,6 +312,11 @@ impl JitEngine {
         builder.symbol("helper_clmulr", helper_clmulr as *const u8);
         builder.symbol("fma", helper_fma_f64 as *const u8);
         builder.symbol("fmaf", helper_fma_f32 as *const u8);
+        builder.symbol("helper_fp_begin", helper_fp_begin as *const u8);
+        builder.symbol("helper_fp_end", helper_fp_end as *const u8);
+        builder.symbol("helper_fcvt_to_int", helper_fcvt_to_int as *const u8);
+        builder.symbol("helper_fcvt_from_int", helper_fcvt_from_int as *const u8);
+        builder.symbol("helper_fcvt_fmt", helper_fcvt_fmt as *const u8);
 
         let mut module = JITModule::new(builder);
 
@@ -293,6 +363,52 @@ impl JitEngine {
                 .unwrap()
         });
 
+        let fp_begin_id = {
+            let mut sig = module.make_signature();
+            sig.params.push(AbiParam::new(I64));
+            sig.params.push(AbiParam::new(I64));
+            module
+                .declare_function("helper_fp_begin", Linkage::Import, &sig)
+                .unwrap()
+        };
+        let fp_end_id = {
+            let mut sig = module.make_signature();
+            sig.params.push(AbiParam::new(I64));
+            module
+                .declare_function("helper_fp_end", Linkage::Import, &sig)
+                .unwrap()
+        };
+        let fcvt_to_int_id = {
+            let mut sig = module.make_signature();
+            for _ in 0..4 {
+                sig.params.push(AbiParam::new(I64));
+            }
+            sig.returns.push(AbiParam::new(I64));
+            module
+                .declare_function("helper_fcvt_to_int", Linkage::Import, &sig)
+                .unwrap()
+        };
+        let fcvt_from_int_id = {
+            let mut sig = module.make_signature();
+            for _ in 0..5 {
+                sig.params.push(AbiParam::new(I64));
+            }
+            sig.returns.push(AbiParam::new(I64));
+            module
+                .declare_function("helper_fcvt_from_int", Linkage::Import, &sig)
+                .unwrap()
+        };
+        let fcvt_fmt_id = {
+            let mut sig = module.make_signature();
+            for _ in 0..5 {
+                sig.params.push(AbiParam::new(I64));
+            }
+            sig.returns.push(AbiParam::new(I64));
+            module
+                .declare_function("helper_fcvt_fmt", Linkage::Import, &sig)
+                .unwrap()
+        };
+
         JitEngine {
             module,
             tb_cache: HashMap::new(),
@@ -300,6 +416,11 @@ impl JitEngine {
             store_id,
             cbo_zero_id,
             clmul_ids,
+            fp_begin_id,
+            fp_end_id,
+            fcvt_to_int_id,
+            fcvt_from_int_id,
+            fcvt_fmt_id,
             fb_ctx: FunctionBuilderContext::new(),
             tb_counter: 0,
             compiles: 0,
@@ -456,6 +577,19 @@ impl JitEngine {
         let clmul_refs = self
             .clmul_ids
             .map(|id| self.module.declare_func_in_func(id, &mut func));
+        let fp_begin_ref = self
+            .module
+            .declare_func_in_func(self.fp_begin_id, &mut func);
+        let fp_end_ref = self.module.declare_func_in_func(self.fp_end_id, &mut func);
+        let fcvt_to_int_ref = self
+            .module
+            .declare_func_in_func(self.fcvt_to_int_id, &mut func);
+        let fcvt_from_int_ref = self
+            .module
+            .declare_func_in_func(self.fcvt_from_int_id, &mut func);
+        let fcvt_fmt_ref = self
+            .module
+            .declare_func_in_func(self.fcvt_fmt_id, &mut func);
         let frontend_config = self.module.target_config();
 
         {
@@ -486,6 +620,11 @@ impl JitEngine {
                 store_ref,
                 cbo_zero_ref,
                 clmul_refs,
+                fp_begin_ref,
+                fp_end_ref,
+                fcvt_to_int_ref,
+                fcvt_from_int_ref,
+                fcvt_fmt_ref,
             };
 
             for (idx, &(ref insn, insn_pc, insn_size, raw)) in insns.iter().enumerate() {
@@ -1096,6 +1235,7 @@ impl JitEngine {
                     Instruction::FpFma {
                         opcode,
                         funct7,
+                        rm,
                         rd,
                         rs1,
                         rs2,
@@ -1105,6 +1245,7 @@ impl JitEngine {
                         &emit,
                         *opcode,
                         *funct7,
+                        *rm,
                         *rd,
                         *rs1,
                         *rs2,
@@ -1337,6 +1478,11 @@ struct EmitCtx {
     store_ref: FuncRef,
     cbo_zero_ref: FuncRef,
     clmul_refs: [FuncRef; 3],
+    fp_begin_ref: FuncRef,
+    fp_end_ref: FuncRef,
+    fcvt_to_int_ref: FuncRef,
+    fcvt_from_int_ref: FuncRef,
+    fcvt_fmt_ref: FuncRef,
 }
 
 fn store_rd(builder: &mut FunctionBuilder, state_ptr: Value, rd: u8, val: Value) {
@@ -1385,8 +1531,18 @@ fn mark_fp_dirty(builder: &mut FunctionBuilder, ctx: &EmitCtx) {
         .store(memflags(), one, ctx.state_ptr, STATE_FP_DIRTY);
 }
 
+fn boxed_single_bits(builder: &mut FunctionBuilder, bits: Value) -> Value {
+    let mask = builder.ins().iconst(I64, 0xFFFF_FFFF);
+    let upper = builder.ins().ushr_imm_u(bits, 32);
+    let boxed = builder.ins().icmp(IntCC::Equal, upper, mask);
+    let low = builder.ins().band(bits, mask);
+    let canonical = builder.ins().iconst(I64, crate::fp::CANONICAL_F32 as i64);
+    builder.ins().select(boxed, low, canonical)
+}
+
 fn f32_of(builder: &mut FunctionBuilder, bits: Value) -> Value {
-    let low = builder.ins().ireduce(I32, bits);
+    let eff = boxed_single_bits(builder, bits);
+    let low = builder.ins().ireduce(I32, eff);
     builder.ins().bitcast(F32, memflags(), low)
 }
 
@@ -1740,6 +1896,104 @@ fn if_true_else(builder: &mut FunctionBuilder, cond: Value, yes: u64, no: u64) -
     builder.ins().select(cond, yes_v, no_v)
 }
 
+fn emit_fp_begin(builder: &mut FunctionBuilder, ctx: &EmitCtx, rm: u8) {
+    let rm_v = builder.ins().iconst(I64, rm as i64);
+    let _ = builder.ins().call(ctx.fp_begin_ref, &[ctx.state_ptr, rm_v]);
+}
+
+fn emit_fp_end(builder: &mut FunctionBuilder, ctx: &EmitCtx) {
+    let _ = builder.ins().call(ctx.fp_end_ref, &[ctx.state_ptr]);
+}
+
+fn canonicalize_f32(builder: &mut FunctionBuilder, value: Value) -> Value {
+    let nan = builder.ins().fcmp(FloatCC::Unordered, value, value);
+    let canonical = const_f32(builder, crate::fp::CANONICAL_F32);
+    builder.ins().select(nan, canonical, value)
+}
+
+fn canonicalize_f64(builder: &mut FunctionBuilder, value: Value) -> Value {
+    let nan = builder.ins().fcmp(FloatCC::Unordered, value, value);
+    let canonical = const_f64(builder, crate::fp::CANONICAL_F64);
+    builder.ins().select(nan, canonical, value)
+}
+
+fn emit_is_nan(builder: &mut FunctionBuilder, bits: Value, is_double: bool) -> Value {
+    let (exp_mask, frac_mask) = if is_double {
+        (0x7FF0_0000_0000_0000u64, 0x000F_FFFF_FFFF_FFFFu64)
+    } else {
+        (0x7F80_0000u64, 0x007F_FFFFu64)
+    };
+    let exp_mask_v = builder.ins().iconst(I64, exp_mask as i64);
+    let frac_mask_v = builder.ins().iconst(I64, frac_mask as i64);
+    let exp = builder.ins().band(bits, exp_mask_v);
+    let frac = builder.ins().band(bits, frac_mask_v);
+    let zero = builder.ins().iconst(I64, 0);
+    let exp_all = builder.ins().icmp(IntCC::Equal, exp, exp_mask_v);
+    let frac_set = builder.ins().icmp(IntCC::NotEqual, frac, zero);
+    builder.ins().band(exp_all, frac_set)
+}
+
+fn emit_is_snan(builder: &mut FunctionBuilder, bits: Value, is_double: bool) -> Value {
+    let quiet_bit = if is_double { 1u64 << 51 } else { 1u64 << 22 };
+    let nan = emit_is_nan(builder, bits, is_double);
+    let quiet_mask = builder.ins().iconst(I64, quiet_bit as i64);
+    let quiet = builder.ins().band(bits, quiet_mask);
+    let zero = builder.ins().iconst(I64, 0);
+    let not_quiet = builder.ins().icmp(IntCC::Equal, quiet, zero);
+    builder.ins().band(nan, not_quiet)
+}
+
+fn emit_fcvt_to_int(
+    builder: &mut FunctionBuilder,
+    ctx: &EmitCtx,
+    value_bits: Value,
+    kind: u8,
+    rm: u8,
+) -> Value {
+    let kind_v = builder.ins().iconst(I64, kind as i64);
+    let rm_v = builder.ins().iconst(I64, rm as i64);
+    let call = builder.ins().call(
+        ctx.fcvt_to_int_ref,
+        &[ctx.state_ptr, value_bits, kind_v, rm_v],
+    );
+    builder.inst_results(call)[0]
+}
+
+fn emit_fcvt_from_int(
+    builder: &mut FunctionBuilder,
+    ctx: &EmitCtx,
+    value: Value,
+    kind: u8,
+    is_double: bool,
+    rm: u8,
+) -> Value {
+    let kind_v = builder.ins().iconst(I64, kind as i64);
+    let double_v = builder.ins().iconst(I64, is_double as i64);
+    let rm_v = builder.ins().iconst(I64, rm as i64);
+    let call = builder.ins().call(
+        ctx.fcvt_from_int_ref,
+        &[ctx.state_ptr, value, kind_v, double_v, rm_v],
+    );
+    builder.inst_results(call)[0]
+}
+
+fn emit_fcvt_fmt(
+    builder: &mut FunctionBuilder,
+    ctx: &EmitCtx,
+    bits: Value,
+    from_double: bool,
+    to_double: bool,
+    rm: u8,
+) -> Value {
+    let from_v = builder.ins().iconst(I64, from_double as i64);
+    let to_v = builder.ins().iconst(I64, to_double as i64);
+    let rm_v = builder.ins().iconst(I64, rm as i64);
+    let call = builder
+        .ins()
+        .call(ctx.fcvt_fmt_ref, &[ctx.state_ptr, bits, from_v, to_v, rm_v]);
+    builder.inst_results(call)[0]
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_fp_op(
     builder: &mut FunctionBuilder,
@@ -1765,12 +2019,18 @@ fn emit_fp_op(
             let v = if is_double {
                 let a = f64_of(builder, a_bits);
                 let b = f64_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
                 let r = builder.ins().fadd(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f64(builder, r);
                 bits_of_f64(builder, r)
             } else {
                 let a = f32_of(builder, a_bits);
                 let b = f32_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
                 let r = builder.ins().fadd(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f32(builder, r);
                 bits_of_f32(builder, r)
             };
             fp_result = Some(v);
@@ -1779,12 +2039,18 @@ fn emit_fp_op(
             let v = if is_double {
                 let a = f64_of(builder, a_bits);
                 let b = f64_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
                 let r = builder.ins().fsub(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f64(builder, r);
                 bits_of_f64(builder, r)
             } else {
                 let a = f32_of(builder, a_bits);
                 let b = f32_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
                 let r = builder.ins().fsub(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f32(builder, r);
                 bits_of_f32(builder, r)
             };
             fp_result = Some(v);
@@ -1793,64 +2059,67 @@ fn emit_fp_op(
             let v = if is_double {
                 let a = f64_of(builder, a_bits);
                 let b = f64_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
                 let r = builder.ins().fmul(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f64(builder, r);
                 bits_of_f64(builder, r)
             } else {
                 let a = f32_of(builder, a_bits);
                 let b = f32_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
                 let r = builder.ins().fmul(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f32(builder, r);
                 bits_of_f32(builder, r)
             };
             fp_result = Some(v);
         }
         0x0C | 0x0D => {
-            let (a, b) = if is_double {
-                (f64_of(builder, a_bits), f64_of(builder, b_bits))
+            let v = if is_double {
+                let a = f64_of(builder, a_bits);
+                let b = f64_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
+                let r = builder.ins().fdiv(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f64(builder, r);
+                bits_of_f64(builder, r)
             } else {
-                (f32_of(builder, a_bits), f32_of(builder, b_bits))
+                let a = f32_of(builder, a_bits);
+                let b = f32_of(builder, b_bits);
+                emit_fp_begin(builder, ctx, funct3);
+                let r = builder.ins().fdiv(a, b);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f32(builder, r);
+                bits_of_f32(builder, r)
             };
-            let zero = if is_double {
-                const_f64(builder, 0)
-            } else {
-                const_f32(builder, 0)
-            };
-            let b_zero = builder.ins().fcmp(FloatCC::Equal, b, zero);
-            let a_zero = builder.ins().fcmp(FloatCC::Equal, a, zero);
-            let invalid = builder.ins().iconst(I64, 1 << 4);
-            let div_zero = builder.ins().iconst(I64, 1 << 3);
-            let flag = builder.ins().select(a_zero, invalid, div_zero);
-            or_fcsr_if(builder, ctx, b_zero, flag);
-            let v = builder.ins().fdiv(a, b);
-            fp_result = Some(if is_double {
-                bits_of_f64(builder, v)
-            } else {
-                bits_of_f32(builder, v)
-            });
+            fp_result = Some(v);
         }
         0x2C | 0x2D => {
-            let (a, zero) = if is_double {
-                (f64_of(builder, a_bits), const_f64(builder, 0))
+            let v = if is_double {
+                let a = f64_of(builder, a_bits);
+                emit_fp_begin(builder, ctx, funct3);
+                let r = builder.ins().sqrt(a);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f64(builder, r);
+                bits_of_f64(builder, r)
             } else {
-                (f32_of(builder, a_bits), const_f32(builder, 0))
+                let a = f32_of(builder, a_bits);
+                emit_fp_begin(builder, ctx, funct3);
+                let r = builder.ins().sqrt(a);
+                emit_fp_end(builder, ctx);
+                let r = canonicalize_f32(builder, r);
+                bits_of_f32(builder, r)
             };
-            let negative = builder.ins().fcmp(FloatCC::LessThan, a, zero);
-            let invalid = builder.ins().iconst(I64, 1 << 4);
-            or_fcsr_if(builder, ctx, negative, invalid);
-            let v = builder.ins().sqrt(a);
-            fp_result = Some(if is_double {
-                bits_of_f64(builder, v)
-            } else {
-                bits_of_f32(builder, v)
-            });
+            fp_result = Some(v);
         }
         0x10 | 0x11 => {
             let (a, b, sign_mask) = if is_double {
                 (a_bits, b_bits, 1u64 << 63)
             } else {
-                let mask = builder.ins().iconst(I64, 0xFFFF_FFFF);
                 (
-                    builder.ins().band(a_bits, mask),
-                    builder.ins().band(b_bits, mask),
+                    boxed_single_bits(builder, a_bits),
+                    boxed_single_bits(builder, b_bits),
                     1u64 << 31,
                 )
             };
@@ -1877,6 +2146,19 @@ fn emit_fp_op(
         }
         0x14 | 0x15 => {
             let take_max = funct3 != 0;
+            let (eff_a, eff_b) = if is_double {
+                (a_bits, b_bits)
+            } else {
+                (
+                    boxed_single_bits(builder, a_bits),
+                    boxed_single_bits(builder, b_bits),
+                )
+            };
+            let snan_a = emit_is_snan(builder, eff_a, is_double);
+            let snan_b = emit_is_snan(builder, eff_b, is_double);
+            let s_nan = builder.ins().bor(snan_a, snan_b);
+            let nv = builder.ins().iconst(I64, crate::fp::FFLAG_NV as i64);
+            or_fcsr_if(builder, ctx, s_nan, nv);
             let v = if is_double {
                 let a = f64_of(builder, a_bits);
                 let b = f64_of(builder, b_bits);
@@ -1891,16 +2173,31 @@ fn emit_fp_op(
             fp_result = Some(v);
         }
         0x20 => {
-            let a = f64_of(builder, a_bits);
-            let v = builder.ins().fdemote(F32, a);
-            fp_result = Some(bits_of_f32(builder, v));
+            fp_result = Some(emit_fcvt_fmt(builder, ctx, a_bits, true, false, funct3));
         }
         0x21 => {
-            let a = f32_of(builder, a_bits);
-            let v = builder.ins().fpromote(F64, a);
-            fp_result = Some(bits_of_f64(builder, v));
+            fp_result = Some(emit_fcvt_fmt(builder, ctx, a_bits, false, true, funct3));
         }
         0x50 | 0x51 => {
+            let (eff_a, eff_b) = if is_double {
+                (a_bits, b_bits)
+            } else {
+                (
+                    boxed_single_bits(builder, a_bits),
+                    boxed_single_bits(builder, b_bits),
+                )
+            };
+            let invalid = if funct3 == 2 {
+                let snan_a = emit_is_snan(builder, eff_a, is_double);
+                let snan_b = emit_is_snan(builder, eff_b, is_double);
+                builder.ins().bor(snan_a, snan_b)
+            } else {
+                let nan_a = emit_is_nan(builder, eff_a, is_double);
+                let nan_b = emit_is_nan(builder, eff_b, is_double);
+                builder.ins().bor(nan_a, nan_b)
+            };
+            let nv = builder.ins().iconst(I64, crate::fp::FFLAG_NV as i64);
+            or_fcsr_if(builder, ctx, invalid, nv);
             let cc = match funct3 {
                 2 => FloatCC::Equal,
                 1 => FloatCC::LessThan,
@@ -1918,59 +2215,25 @@ fn emit_fp_op(
             int_result = Some(builder.ins().uextend(I64, cmp));
         }
         0x60 | 0x61 => {
-            let value = if is_double {
-                f64_of(builder, a_bits)
+            let value_bits = if is_double {
+                let a = f64_of(builder, a_bits);
+                bits_of_f64(builder, a)
             } else {
                 let a = f32_of(builder, a_bits);
-                builder.ins().fpromote(F64, a)
+                let promoted = builder.ins().fpromote(F64, a);
+                bits_of_f64(builder, promoted)
             };
-            let nan = builder.ins().fcmp(FloatCC::Unordered, value, value);
-            let invalid = builder.ins().iconst(I64, 1 << 4);
-            or_fcsr_if(builder, ctx, nan, invalid);
-            let out = match rs2 {
-                0 => {
-                    let v = builder.ins().fcvt_to_sint_sat(I32, value);
-                    builder.ins().sextend(I64, v)
-                }
-                1 => {
-                    let v = builder.ins().fcvt_to_uint_sat(I32, value);
-                    builder.ins().uextend(I64, v)
-                }
-                2 => builder.ins().fcvt_to_sint_sat(I64, value),
-                _ => builder.ins().fcvt_to_uint_sat(I64, value),
-            };
-            int_result = Some(out);
+            int_result = Some(emit_fcvt_to_int(builder, ctx, value_bits, rs2, funct3));
         }
         0x68 | 0x69 => {
             let x = load_reg(builder, ctx.state_ptr, rs1);
-            let (value64, unsigned) = match rs2 {
-                0 => {
-                    let v = builder.ins().ireduce(I32, x);
-                    (builder.ins().sextend(I64, v), false)
-                }
-                1 => {
-                    let v = builder.ins().ireduce(I32, x);
-                    (builder.ins().uextend(I64, v), true)
-                }
-                2 => (x, false),
-                _ => (x, true),
-            };
-            let value = if unsigned {
-                builder.ins().fcvt_from_uint(F64, value64)
-            } else {
-                builder.ins().fcvt_from_sint(F64, value64)
-            };
-            let bits = if is_double {
-                bits_of_f64(builder, value)
-            } else {
-                let v = builder.ins().fdemote(F32, value);
-                bits_of_f32(builder, v)
-            };
+            let bits = emit_fcvt_from_int(builder, ctx, x, rs2, is_double, funct3);
             fp_result = Some(bits);
         }
         0x70 => {
             if funct3 == 1 {
-                int_result = Some(emit_fp_class(builder, a_bits, false));
+                let bits = boxed_single_bits(builder, a_bits);
+                int_result = Some(emit_fp_class(builder, bits, false));
             } else {
                 let v = builder.ins().ireduce(I32, a_bits);
                 int_result = Some(builder.ins().sextend(I64, v));
@@ -2015,6 +2278,7 @@ fn emit_fp_fma(
     ctx: &EmitCtx,
     opcode: u8,
     funct7: u8,
+    rm: u8,
     rd: u8,
     rs1: u8,
     rs2: u8,
@@ -2033,12 +2297,15 @@ fn emit_fp_fma(
         let c = f64_of(builder, c_bits);
         let neg_a = builder.ins().fneg(a);
         let neg_c = builder.ins().fneg(c);
+        emit_fp_begin(builder, ctx, rm);
         let v = match opcode {
             0x43 => builder.ins().fma(a, b, c),
             0x47 => builder.ins().fma(a, b, neg_c),
             0x4B => builder.ins().fma(neg_a, b, c),
             _ => builder.ins().fma(neg_a, b, neg_c),
         };
+        emit_fp_end(builder, ctx);
+        let v = canonicalize_f64(builder, v);
         bits_of_f64(builder, v)
     } else {
         let a = f32_of(builder, a_bits);
@@ -2046,12 +2313,15 @@ fn emit_fp_fma(
         let c = f32_of(builder, c_bits);
         let neg_a = builder.ins().fneg(a);
         let neg_c = builder.ins().fneg(c);
+        emit_fp_begin(builder, ctx, rm);
         let v = match opcode {
             0x43 => builder.ins().fma(a, b, c),
             0x47 => builder.ins().fma(a, b, neg_c),
             0x4B => builder.ins().fma(neg_a, b, c),
             _ => builder.ins().fma(neg_a, b, neg_c),
         };
+        emit_fp_end(builder, ctx);
+        let v = canonicalize_f32(builder, v);
         bits_of_f32(builder, v)
     };
     store_fp_bits(builder, ctx, rd, bits);

@@ -62,6 +62,7 @@ pub enum Instruction {
     FpFma {
         opcode: u8,
         funct7: u8,
+        rm: u8,
         rd: u8,
         rs1: u8,
         rs2: u8,
@@ -281,6 +282,7 @@ pub fn decode(insn: u32) -> Instruction {
         0x43 | 0x47 | 0x4B | 0x4F => Instruction::FpFma {
             opcode: (insn & 0x7F) as u8,
             funct7: funct7(insn),
+            rm: funct3(insn),
             rd: rd(insn),
             rs1: rs1(insn),
             rs2: rs2(insn),

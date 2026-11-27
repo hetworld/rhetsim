@@ -2,6 +2,7 @@
 
 use crate::csr::{self, CsrFile};
 use crate::decode::{decode, decode_compressed, Instruction};
+use crate::fp;
 use crate::jit::{FastTlbEntry, HelperContext, JitCpuState, JitEngine, FAST_TLB_SIZE};
 use crate::mmu;
 use crate::pmp;
@@ -692,6 +693,9 @@ impl RiscvCpu {
         self.csr.fcsr = state.fcsr as u32;
         if state.fp_dirty != 0 {
             self.csr.mstatus |= csr::MSTATUS_FS_DIRTY;
+            // Translation blocks leave round-to-nearest set per operation; a
+            // stray host flag (from min/max/compare) must not leak.
+            fp::reset_host();
         }
         self.regs = state.regs;
         self.regs[0] = 0;
@@ -900,10 +904,12 @@ impl RiscvCpu {
 
     // ── Floating-point helpers ────────────────────────────────
 
+    #[cfg(test)]
     fn fp32(&self, r: u8) -> f32 {
         f32::from_bits(self.fregs[r as usize] as u32)
     }
 
+    #[cfg(test)]
     fn fp64(&self, r: u8) -> f64 {
         f64::from_bits(self.fregs[r as usize])
     }
@@ -922,11 +928,6 @@ impl RiscvCpu {
 
     fn mark_fp_dirty(&mut self) {
         self.csr.mstatus |= csr::MSTATUS_FS_DIRTY;
-    }
-
-    fn set_fflag(&mut self, flag: u32) {
-        self.csr.fcsr |= flag;
-        self.mark_fp_dirty();
     }
 
     fn execute_fp_load(&mut self, width: u8, rd: u8, rs1: u8, offset: i64) {
@@ -966,26 +967,61 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
-    fn fp_to_int(&mut self, rd: u8, value: f64, kind: u8) {
-        if value.is_nan() {
-            self.set_fflag(1 << 4); // invalid
-        }
-        let out = match kind {
-            0 => value as i32 as i64 as u64,
-            1 => value as u32 as u64,
-            2 => value as i64 as u64,
-            _ => value as u64,
-        };
-        self.set_rd(rd, out);
+    fn frm(&self) -> u8 {
+        ((self.csr.fcsr >> 5) & 0x7) as u8
     }
 
-    fn int_to_fp(&mut self, rs1: u8, kind: u8) -> f64 {
-        let value = self.regs[rs1 as usize];
-        match kind {
-            0 => value as i32 as f64,
-            1 => value as u32 as f64,
-            2 => value as i64 as f64,
-            _ => value as f64,
+    fn add_fflags(&mut self, flags: u32) {
+        if flags != 0 {
+            self.csr.fcsr |= flags;
+        }
+    }
+
+    fn fp_binary(&mut self, is_double: bool, rm: u8, rd: u8, rs1: u8, rs2: u8, op: u8) {
+        let frm = self.frm();
+        fp::begin(rm, frm);
+        if is_double {
+            let a = f64::from_bits(self.fregs[rs1 as usize]);
+            let b = f64::from_bits(self.fregs[rs2 as usize]);
+            let value = match op {
+                0 => a + b,
+                1 => a - b,
+                2 => a * b,
+                _ => a / b,
+            };
+            let flags = fp::end();
+            self.add_fflags(flags);
+            self.fregs[rd as usize] = fp::canonical_f64(value).to_bits();
+        } else {
+            let a = fp::single_value(self.fregs[rs1 as usize]);
+            let b = fp::single_value(self.fregs[rs2 as usize]);
+            let value = match op {
+                0 => a + b,
+                1 => a - b,
+                2 => a * b,
+                _ => a / b,
+            };
+            let flags = fp::end();
+            self.add_fflags(flags);
+            self.fregs[rd as usize] = fp::nan_box(fp::canonical_f32(value).to_bits());
+        }
+    }
+
+    fn fp_sqrt(&mut self, is_double: bool, rm: u8, rd: u8, rs1: u8) {
+        let frm = self.frm();
+        fp::begin(rm, frm);
+        if is_double {
+            let a = f64::from_bits(self.fregs[rs1 as usize]);
+            let value = a.sqrt();
+            let flags = fp::end();
+            self.add_fflags(flags);
+            self.fregs[rd as usize] = fp::canonical_f64(value).to_bits();
+        } else {
+            let a = fp::single_value(self.fregs[rs1 as usize]);
+            let value = a.sqrt();
+            let flags = fp::end();
+            self.add_fflags(flags);
+            self.fregs[rd as usize] = fp::nan_box(fp::canonical_f32(value).to_bits());
         }
     }
 
@@ -1064,58 +1100,11 @@ impl RiscvCpu {
     fn execute_fp_op(&mut self, funct7: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
         let is_double = funct7 & 1 != 0;
         match funct7 {
-            0x00 => {
-                let v = self.fp32(rs1) + self.fp32(rs2);
-                self.set_fp32(rd, v);
-            }
-            0x01 => {
-                let v = self.fp64(rs1) + self.fp64(rs2);
-                self.set_fp64(rd, v);
-            }
-            0x04 => {
-                let v = self.fp32(rs1) - self.fp32(rs2);
-                self.set_fp32(rd, v);
-            }
-            0x05 => {
-                let v = self.fp64(rs1) - self.fp64(rs2);
-                self.set_fp64(rd, v);
-            }
-            0x08 => {
-                let v = self.fp32(rs1) * self.fp32(rs2);
-                self.set_fp32(rd, v);
-            }
-            0x09 => {
-                let v = self.fp64(rs1) * self.fp64(rs2);
-                self.set_fp64(rd, v);
-            }
-            0x0C => {
-                let (a, b) = (self.fp32(rs1), self.fp32(rs2));
-                if b == 0.0 {
-                    self.set_fflag(if a == 0.0 { 1 << 4 } else { 1 << 3 });
-                }
-                self.set_fp32(rd, a / b);
-            }
-            0x0D => {
-                let (a, b) = (self.fp64(rs1), self.fp64(rs2));
-                if b == 0.0 {
-                    self.set_fflag(if a == 0.0 { 1 << 4 } else { 1 << 3 });
-                }
-                self.set_fp64(rd, a / b);
-            }
-            0x2C => {
-                let a = self.fp32(rs1);
-                if a < 0.0 {
-                    self.set_fflag(1 << 4);
-                }
-                self.set_fp32(rd, a.sqrt());
-            }
-            0x2D => {
-                let a = self.fp64(rs1);
-                if a < 0.0 {
-                    self.set_fflag(1 << 4);
-                }
-                self.set_fp64(rd, a.sqrt());
-            }
+            0x00 | 0x01 => self.fp_binary(is_double, funct3, rd, rs1, rs2, 0),
+            0x04 | 0x05 => self.fp_binary(is_double, funct3, rd, rs1, rs2, 1),
+            0x08 | 0x09 => self.fp_binary(is_double, funct3, rd, rs1, rs2, 2),
+            0x0C | 0x0D => self.fp_binary(is_double, funct3, rd, rs1, rs2, 3),
+            0x2C | 0x2D => self.fp_sqrt(is_double, funct3, rd, rs1),
             0x10 | 0x11 => {
                 let (a, b, sign_mask) = if is_double {
                     (
@@ -1125,8 +1114,8 @@ impl RiscvCpu {
                     )
                 } else {
                     (
-                        self.fregs[rs1 as usize] & 0xFFFF_FFFF,
-                        self.fregs[rs2 as usize] & 0xFFFF_FFFF,
+                        fp::single_bits(self.fregs[rs1 as usize]) as u64,
+                        fp::single_bits(self.fregs[rs2 as usize]) as u64,
                         1u64 << 31,
                     )
                 };
@@ -1145,58 +1134,100 @@ impl RiscvCpu {
             0x14 | 0x15 => {
                 let take_max = funct3 != 0;
                 if is_double {
-                    let (a, b) = (self.fp64(rs1), self.fp64(rs2));
+                    if fp::is_snan_f64(self.fregs[rs1 as usize])
+                        || fp::is_snan_f64(self.fregs[rs2 as usize])
+                    {
+                        self.add_fflags(fp::FFLAG_NV);
+                    }
+                    let a = f64::from_bits(self.fregs[rs1 as usize]);
+                    let b = f64::from_bits(self.fregs[rs2 as usize]);
                     self.set_fp64(rd, Self::fp_minmax(a, b, take_max));
                 } else {
-                    let (a, b) = (self.fp32(rs1), self.fp32(rs2));
+                    let a_bits = fp::single_bits(self.fregs[rs1 as usize]);
+                    let b_bits = fp::single_bits(self.fregs[rs2 as usize]);
+                    if fp::is_snan_f32(a_bits) || fp::is_snan_f32(b_bits) {
+                        self.add_fflags(fp::FFLAG_NV);
+                    }
+                    let a = f32::from_bits(a_bits);
+                    let b = f32::from_bits(b_bits);
                     self.set_fp32(rd, Self::fp_minmax(a as f64, b as f64, take_max) as f32);
                 }
             }
             0x20 => {
-                let v = self.fp64(rs1) as f32;
-                self.set_fp32(rd, v);
+                let (bits, flags) =
+                    fp::fcvt_fmt(self.fregs[rs1 as usize], true, false, funct3, self.frm());
+                self.add_fflags(flags);
+                self.fregs[rd as usize] = bits;
             }
             0x21 => {
-                let v = self.fp32(rs1) as f64;
-                self.set_fp64(rd, v);
+                let (bits, flags) =
+                    fp::fcvt_fmt(self.fregs[rs1 as usize], false, true, funct3, self.frm());
+                self.add_fflags(flags);
+                self.fregs[rd as usize] = bits;
             }
             0x50 | 0x51 => {
-                let result = if is_double {
-                    let (a, b) = (self.fp64(rs1), self.fp64(rs2));
-                    match funct3 {
-                        2 => a == b,
-                        1 => a < b,
-                        _ => a <= b,
-                    }
+                let (a_nan, b_nan, a_snan, b_snan, result) = if is_double {
+                    let a_bits = self.fregs[rs1 as usize];
+                    let b_bits = self.fregs[rs2 as usize];
+                    let a = f64::from_bits(a_bits);
+                    let b = f64::from_bits(b_bits);
+                    (
+                        a.is_nan(),
+                        b.is_nan(),
+                        fp::is_snan_f64(a_bits),
+                        fp::is_snan_f64(b_bits),
+                        match funct3 {
+                            2 => a == b,
+                            1 => a < b,
+                            _ => a <= b,
+                        },
+                    )
                 } else {
-                    let (a, b) = (self.fp32(rs1), self.fp32(rs2));
-                    match funct3 {
-                        2 => a == b,
-                        1 => a < b,
-                        _ => a <= b,
-                    }
+                    let a_bits = fp::single_bits(self.fregs[rs1 as usize]);
+                    let b_bits = fp::single_bits(self.fregs[rs2 as usize]);
+                    let a = f32::from_bits(a_bits);
+                    let b = f32::from_bits(b_bits);
+                    (
+                        a.is_nan(),
+                        b.is_nan(),
+                        fp::is_snan_f32(a_bits),
+                        fp::is_snan_f32(b_bits),
+                        match funct3 {
+                            2 => a == b,
+                            1 => a < b,
+                            _ => a <= b,
+                        },
+                    )
                 };
+                let invalid = if funct3 == 2 {
+                    a_snan || b_snan
+                } else {
+                    a_nan || b_nan
+                };
+                if invalid {
+                    self.add_fflags(fp::FFLAG_NV);
+                }
                 self.set_rd(rd, result as u64);
             }
             0x60 | 0x61 => {
                 let value = if is_double {
-                    self.fp64(rs1)
+                    f64::from_bits(self.fregs[rs1 as usize])
                 } else {
-                    self.fp32(rs1) as f64
+                    fp::single_value(self.fregs[rs1 as usize]) as f64
                 };
-                self.fp_to_int(rd, value, rs2);
+                let (result, flags) = fp::fcvt_to_int(value, rs2, funct3, self.frm());
+                self.add_fflags(flags);
+                self.set_rd(rd, result);
             }
             0x68 | 0x69 => {
-                let value = self.int_to_fp(rs1, rs2);
-                if is_double {
-                    self.set_fp64(rd, value);
-                } else {
-                    self.set_fp32(rd, value as f32);
-                }
+                let (bits, flags) =
+                    fp::fcvt_from_int(self.regs[rs1 as usize], rs2, is_double, funct3, self.frm());
+                self.add_fflags(flags);
+                self.fregs[rd as usize] = bits;
             }
             0x70 => {
                 if funct3 == 1 {
-                    let bits = self.fregs[rs1 as usize] & 0xFFFF_FFFF;
+                    let bits = fp::single_bits(self.fregs[rs1 as usize]) as u64;
                     self.set_rd(rd, Self::fp_class(bits, false));
                 } else {
                     let val = self.fregs[rs1 as usize] as u32 as i32 as i64 as u64;
@@ -1221,26 +1252,46 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
-    fn execute_fp_fma(&mut self, opcode: u8, funct7: u8, rd: u8, rs1: u8, rs2: u8, rs3: u8) {
+    #[allow(clippy::too_many_arguments)]
+    fn execute_fp_fma(
+        &mut self,
+        opcode: u8,
+        funct7: u8,
+        rm: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+        rs3: u8,
+    ) {
         let is_double = funct7 & 1 != 0;
+        let frm = self.frm();
+        fp::begin(rm, frm);
         if is_double {
-            let (a, b, c) = (self.fp64(rs1), self.fp64(rs2), self.fp64(rs3));
+            let a = f64::from_bits(self.fregs[rs1 as usize]);
+            let b = f64::from_bits(self.fregs[rs2 as usize]);
+            let c = f64::from_bits(self.fregs[rs3 as usize]);
             let value = match opcode {
-                0x43 => a.mul_add(b, c),
-                0x47 => a.mul_add(b, -c),
-                0x4B => (-a).mul_add(b, c),
-                _ => (-a).mul_add(b, -c),
+                0x43 => fp::fma_f64(a, b, c),
+                0x47 => fp::fma_f64(a, b, -c),
+                0x4B => fp::fma_f64(-a, b, c),
+                _ => fp::fma_f64(-a, b, -c),
             };
-            self.set_fp64(rd, value);
+            let flags = fp::end();
+            self.add_fflags(flags);
+            self.fregs[rd as usize] = fp::canonical_f64(value).to_bits();
         } else {
-            let (a, b, c) = (self.fp32(rs1), self.fp32(rs2), self.fp32(rs3));
+            let a = fp::single_value(self.fregs[rs1 as usize]);
+            let b = fp::single_value(self.fregs[rs2 as usize]);
+            let c = fp::single_value(self.fregs[rs3 as usize]);
             let value = match opcode {
-                0x43 => a.mul_add(b, c),
-                0x47 => a.mul_add(b, -c),
-                0x4B => (-a).mul_add(b, c),
-                _ => (-a).mul_add(b, -c),
+                0x43 => fp::fma_f32(a, b, c),
+                0x47 => fp::fma_f32(a, b, -c),
+                0x4B => fp::fma_f32(-a, b, c),
+                _ => fp::fma_f32(-a, b, -c),
             };
-            self.set_fp32(rd, value);
+            let flags = fp::end();
+            self.add_fflags(flags);
+            self.fregs[rd as usize] = fp::nan_box(fp::canonical_f32(value).to_bits());
         }
         self.mark_fp_dirty();
         self.pc += self.insn_size;
@@ -1893,13 +1944,14 @@ impl RiscvCpu {
             Instruction::FpFma {
                 opcode,
                 funct7,
+                rm,
                 rd,
                 rs1,
                 rs2,
                 rs3,
             } => {
                 if self.require_fp() {
-                    self.execute_fp_fma(opcode, funct7, rd, rs1, rs2, rs3);
+                    self.execute_fp_fma(opcode, funct7, rm, rd, rs1, rs2, rs3);
                 }
             }
             Instruction::Bitmanip {
@@ -3521,13 +3573,13 @@ mod tests {
         assert_eq!(jit_cpu.reg(11), 1 << 1);
         assert_eq!(jit_cpu.reg(12), 0xFFFF_FFFF_C120_0000);
         assert_eq!(jit_cpu.fregs[13], 0xFFFF_FFFF_FFFF_FFF6);
-        assert_eq!(jit_cpu.reg(14), 0);
+        assert_eq!(jit_cpu.reg(14), i32::MAX as u64);
         assert_eq!(jit_cpu.reg(15), 1 << 9); // quiet NaN
         assert_eq!(jit_cpu.reg(16), i32::MAX as u64);
-        assert_eq!(jit_cpu.reg(17), 3_000_000_000);
+        assert_eq!(jit_cpu.reg(17), 0xFFFF_FFFF_B2D0_5E00);
         assert_eq!(jit_cpu.reg(18), i64::MAX as u64);
         assert_eq!(jit_cpu.reg(19), u64::MAX);
-        assert_eq!(jit_cpu.reg(24), u32::MAX as u64);
+        assert_eq!(jit_cpu.reg(24), u64::MAX);
         assert_ne!(jit_cpu.csr().fcsr & (1 << 4), 0, "NV flag missing");
     }
 

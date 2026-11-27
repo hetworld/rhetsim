@@ -15,25 +15,10 @@ const MEM_SIZE: usize = 16 * 1024 * 1024;
 const MAX_STEPS: u64 = 2_000_000;
 const SLICE: u64 = 20_000;
 
-/// FP tests that depend on IEEE flag accumulation, canonical-NaN output or
-/// `fcsr` rounding modes, which the interpreter and JIT do not model yet.
-/// They are reported as expected gaps; remove entries as the cases are fixed.
-const KNOWN_FP_GAPS: &[&str] = &[
-    "rv64uf-p-fadd",
-    "rv64uf-p-fcmp",
-    "rv64uf-p-fcvt_w",
-    "rv64uf-p-fdiv",
-    "rv64uf-p-fmadd",
-    "rv64uf-p-fmin",
-    "rv64ud-p-fadd",
-    "rv64ud-p-fcmp",
-    "rv64ud-p-fcvt",
-    "rv64ud-p-fcvt_w",
-    "rv64ud-p-fdiv",
-    "rv64ud-p-fmadd",
-    "rv64ud-p-fmin",
-    "rv64ud-p-move",
-];
+/// Escape hatch for tests with a known, documented compliance gap. The list is
+/// currently empty: all selected riscv-tests pass in both engines. A listed
+/// test that starts passing fails the run so the list cannot go stale.
+const KNOWN_FP_GAPS: &[&str] = &[];
 
 struct Image {
     entry: u64,
@@ -80,6 +65,9 @@ fn parse_image(path: &Path) -> Image {
 struct Outcome {
     tohost: u64,
     pc: u64,
+    a0: u64,
+    a1: u64,
+    a3: u64,
     fregs: [u64; 32],
     fcsr: u32,
     mstatus: u64,
@@ -127,6 +115,9 @@ fn run(image: &Image, jit_enabled: bool) -> Outcome {
     Outcome {
         tohost,
         pc: cpu.pc(),
+        a0: cpu.reg(10),
+        a1: cpu.reg(11),
+        a3: cpu.reg(13),
         fregs,
         fcsr: cpu.csr().fcsr,
         mstatus: cpu.csr().mstatus,
@@ -266,15 +257,15 @@ fn riscv_tests_match_the_interpreter() {
 
         if interp.tohost != 1 {
             failures.push(format!(
-                "{name}: interpreter failed (tohost={:#x}, pc={:#x}, mcause={:#x})",
-                interp.tohost, interp.pc, interp.mcause
+                "{name}: interpreter failed (tohost={:#x}, pc={:#x}, mcause={:#x}, a0={:#x}, a1={:#x}, a3={:#x}, fcsr={:#x})",
+                interp.tohost, interp.pc, interp.mcause, interp.a0, interp.a1, interp.a3, interp.fcsr
             ));
             continue;
         }
         if jit.tohost != 1 {
             failures.push(format!(
-                "{name}: JIT failed (tohost={:#x}, pc={:#x}, mcause={:#x})",
-                jit.tohost, jit.pc, jit.mcause
+                "{name}: JIT failed (tohost={:#x}, pc={:#x}, mcause={:#x}, a0={:#x}, a1={:#x}, a3={:#x}, fcsr={:#x})",
+                jit.tohost, jit.pc, jit.mcause, jit.a0, jit.a1, jit.a3, jit.fcsr
             ));
             continue;
         }
@@ -283,12 +274,16 @@ fn riscv_tests_match_the_interpreter() {
         }
     }
 
-    eprintln!(
-        "ran {} riscv-tests p-tests ({} known FP gaps: {})",
-        entries.len(),
-        gaps.len(),
-        gaps.join(" ")
-    );
+    if gaps.is_empty() {
+        eprintln!("ran {} riscv-tests p-tests", entries.len());
+    } else {
+        eprintln!(
+            "ran {} riscv-tests p-tests ({} known gaps: {})",
+            entries.len(),
+            gaps.len(),
+            gaps.join(" ")
+        );
+    }
     if !failures.is_empty() {
         panic!(
             "{} of {} riscv-tests failed:\n{}",
