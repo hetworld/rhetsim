@@ -37,6 +37,53 @@ pub enum Instruction {
         rs2: u8,
         offset: i64,
     },
+    // Floating-point load/store
+    FpLoad {
+        width: u8,
+        rd: u8,
+        rs1: u8,
+        offset: i64,
+    },
+    FpStore {
+        width: u8,
+        rs1: u8,
+        rs2: u8,
+        offset: i64,
+    },
+    // Floating-point arithmetic/compare/convert
+    FpOp {
+        funct7: u8,
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+    },
+    // Fused multiply-add family
+    FpFma {
+        opcode: u8,
+        funct7: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+        rs3: u8,
+    },
+    // Zba/Zbb register-register operations
+    Bitmanip {
+        opcode: u8,
+        funct7: u8,
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+    },
+    // Zba/Zbb immediate operations (funct12 encodes the operation/shamt)
+    BitmanipImm {
+        opcode: u8,
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        funct12: u16,
+    },
     OpImm {
         funct3: u8,
         rd: u8,
@@ -178,33 +225,100 @@ pub fn decode(insn: u32) -> Instruction {
             rs1: rs1(insn),
             offset: i_imm(insn),
         },
+        0x07 => match funct3(insn) {
+            2 => Instruction::FpLoad {
+                width: 4,
+                rd: rd(insn),
+                rs1: rs1(insn),
+                offset: i_imm(insn),
+            },
+            3 => Instruction::FpLoad {
+                width: 8,
+                rd: rd(insn),
+                rs1: rs1(insn),
+                offset: i_imm(insn),
+            },
+            _ => Instruction::Unknown(insn),
+        },
         0x23 => Instruction::Store {
             funct3: funct3(insn),
             rs1: rs1(insn),
             rs2: rs2(insn),
             offset: s_imm(insn),
         },
-        0x13 => Instruction::OpImm {
+        0x27 => match funct3(insn) {
+            2 => Instruction::FpStore {
+                width: 4,
+                rs1: rs1(insn),
+                rs2: rs2(insn),
+                offset: s_imm(insn),
+            },
+            3 => Instruction::FpStore {
+                width: 8,
+                rs1: rs1(insn),
+                rs2: rs2(insn),
+                offset: s_imm(insn),
+            },
+            _ => Instruction::Unknown(insn),
+        },
+        0x53 => Instruction::FpOp {
+            funct7: funct7(insn),
             funct3: funct3(insn),
             rd: rd(insn),
             rs1: rs1(insn),
-            imm: i_imm(insn),
-            funct7: funct7(insn),
+            rs2: rs2(insn),
         },
+        0x43 | 0x47 | 0x4B | 0x4F => Instruction::FpFma {
+            opcode: (insn & 0x7F) as u8,
+            funct7: funct7(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            rs2: rs2(insn),
+            rs3: ((insn >> 27) & 0x1F) as u8,
+        },
+        0x13 => {
+            let f3 = funct3(insn);
+            let f7 = funct7(insn);
+            let funct12 = ((insn >> 20) & 0xFFF) as u16;
+            let bitmanip =
+                (f3 == 1 && f7 == 0x30) || (f3 == 5 && (f7 == 0x30 || f7 == 0x35 || f7 == 0x14));
+            if bitmanip {
+                Instruction::BitmanipImm {
+                    opcode: 0x13,
+                    funct3: f3,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    funct12,
+                }
+            } else {
+                Instruction::OpImm {
+                    funct3: f3,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    imm: i_imm(insn),
+                    funct7: f7,
+                }
+            }
+        }
         0x33 => {
             let f7 = funct7(insn);
-            if f7 == 0x01 {
-                // M extension (RV64M)
-                Instruction::Op {
-                    funct3: funct3(insn),
+            let f3 = funct3(insn);
+            let bitmanip = matches!(
+                (f7, f3),
+                (0x10, 2 | 4 | 6) | (0x20, 4 | 6 | 7) | (0x05, 4..=7) | (0x30, 1 | 5)
+            );
+            if bitmanip {
+                Instruction::Bitmanip {
+                    opcode: 0x33,
                     funct7: f7,
+                    funct3: f3,
                     rd: rd(insn),
                     rs1: rs1(insn),
                     rs2: rs2(insn),
                 }
             } else {
                 Instruction::Op {
-                    funct3: funct3(insn),
+                    funct3: f3,
                     funct7: f7,
                     rd: rd(insn),
                     rs1: rs1(insn),
@@ -212,20 +326,51 @@ pub fn decode(insn: u32) -> Instruction {
                 }
             }
         }
-        0x1B => Instruction::OpImm32 {
-            funct3: funct3(insn),
-            rd: rd(insn),
-            rs1: rs1(insn),
-            imm: i_imm(insn),
-            funct7: funct7(insn),
-        },
-        0x3B => Instruction::Op32 {
-            funct3: funct3(insn),
-            funct7: funct7(insn),
-            rd: rd(insn),
-            rs1: rs1(insn),
-            rs2: rs2(insn),
-        },
+        0x1B => {
+            let f3 = funct3(insn);
+            let f7 = funct7(insn);
+            let funct12 = ((insn >> 20) & 0xFFF) as u16;
+            if (f3 == 1 && (f7 == 0x04 || f7 == 0x05 || f7 == 0x30)) || (f3 == 5 && f7 == 0x30) {
+                Instruction::BitmanipImm {
+                    opcode: 0x1B,
+                    funct3: f3,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    funct12,
+                }
+            } else {
+                Instruction::OpImm32 {
+                    funct3: f3,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    imm: i_imm(insn),
+                    funct7: f7,
+                }
+            }
+        }
+        0x3B => {
+            let f3 = funct3(insn);
+            let f7 = funct7(insn);
+            let bitmanip = matches!((f7, f3), (0x04, 0 | 4) | (0x10, 2 | 4 | 6) | (0x30, 1 | 5));
+            if bitmanip {
+                Instruction::Bitmanip {
+                    opcode: 0x3B,
+                    funct7: f7,
+                    funct3: f3,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    rs2: rs2(insn),
+                }
+            } else {
+                Instruction::Op32 {
+                    funct3: f3,
+                    funct7: f7,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    rs2: rs2(insn),
+                }
+            }
+        }
         0x73 => {
             let f3 = funct3(insn);
             if f3 == 0 {

@@ -56,6 +56,7 @@ pub struct RiscvCpu {
     id: UnitId,
     cpu_type: RiscvCpuType,
     regs: [u64; 32],
+    fregs: [u64; 32],
     pc: u64,
     halted: bool,
     mem_base: u64,
@@ -93,6 +94,7 @@ impl RiscvCpu {
             id: UnitId::new(id),
             cpu_type,
             regs: [0; 32],
+            fregs: [0; 32],
             pc: mem_base,
             halted: false,
             mem_base,
@@ -134,6 +136,7 @@ impl RiscvCpu {
             id: UnitId::new(id),
             cpu_type,
             regs: [0; 32],
+            fregs: [0; 32],
             pc: mem_base,
             halted: false,
             mem_base,
@@ -759,6 +762,420 @@ impl RiscvCpu {
         }
     }
 
+    // ── Floating-point helpers ────────────────────────────────
+
+    fn fp32(&self, r: u8) -> f32 {
+        f32::from_bits(self.fregs[r as usize] as u32)
+    }
+
+    fn fp64(&self, r: u8) -> f64 {
+        f64::from_bits(self.fregs[r as usize])
+    }
+
+    fn set_fp32(&mut self, r: u8, value: f32) {
+        self.fregs[r as usize] = 0xFFFF_FFFF_0000_0000 | value.to_bits() as u64;
+    }
+
+    fn set_fp32_bits(&mut self, r: u8, bits: u32) {
+        self.fregs[r as usize] = 0xFFFF_FFFF_0000_0000 | bits as u64;
+    }
+
+    fn set_fp64(&mut self, r: u8, value: f64) {
+        self.fregs[r as usize] = value.to_bits();
+    }
+
+    fn mark_fp_dirty(&mut self) {
+        self.csr.mstatus |= csr::MSTATUS_FS_DIRTY;
+    }
+
+    fn set_fflag(&mut self, flag: u32) {
+        self.csr.fcsr |= flag;
+        self.mark_fp_dirty();
+    }
+
+    fn execute_fp_load(&mut self, width: u8, rd: u8, rs1: u8, offset: i64) {
+        let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
+        let pa = match self.translate(va, mmu::AccessType::Load) {
+            Ok(pa) => pa,
+            Err(fault) => {
+                self.take_trap(fault.cause, fault.tval);
+                return;
+            }
+        };
+        if width == 4 {
+            self.set_fp32_bits(rd, self.phys_read(pa, 4) as u32);
+        } else {
+            self.fregs[rd as usize] = self.phys_read(pa, 8);
+        }
+        self.mark_fp_dirty();
+        self.pc += self.insn_size;
+    }
+
+    fn execute_fp_store(&mut self, width: u8, rs1: u8, rs2: u8, offset: i64) {
+        let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
+        let pa = match self.translate(va, mmu::AccessType::Store) {
+            Ok(pa) => pa,
+            Err(fault) => {
+                self.take_trap(fault.cause, fault.tval);
+                return;
+            }
+        };
+        let value = if width == 4 {
+            self.fregs[rs2 as usize] & 0xFFFF_FFFF
+        } else {
+            self.fregs[rs2 as usize]
+        };
+        self.phys_write(pa, width as usize, value);
+        self.mark_fp_dirty();
+        self.pc += self.insn_size;
+    }
+
+    fn fp_to_int(&mut self, rd: u8, value: f64, kind: u8) {
+        if value.is_nan() {
+            self.set_fflag(1 << 4); // invalid
+        }
+        let out = match kind {
+            0 => value as i32 as i64 as u64,
+            1 => value as u32 as u64,
+            2 => value as i64 as u64,
+            _ => value as u64,
+        };
+        self.set_rd(rd, out);
+    }
+
+    fn int_to_fp(&mut self, rs1: u8, kind: u8) -> f64 {
+        let value = self.regs[rs1 as usize];
+        match kind {
+            0 => value as i32 as f64,
+            1 => value as u32 as f64,
+            2 => value as i64 as f64,
+            _ => value as f64,
+        }
+    }
+
+    fn fp_class(bits: u64, double: bool) -> u64 {
+        let (sign, exp, frac, qnan) = if double {
+            (
+                bits >> 63,
+                (bits >> 52) & 0x7FF,
+                bits & 0x000F_FFFF_FFFF_FFFF,
+                1u64 << 51,
+            )
+        } else {
+            (
+                (bits >> 31) & 1,
+                (bits >> 23) & 0xFF,
+                bits & 0x007F_FFFF,
+                1u64 << 22,
+            )
+        };
+        let negative = sign != 0;
+        if exp == if double { 0x7FF } else { 0xFF } {
+            return if frac == 0 {
+                if negative {
+                    1 << 0
+                } else {
+                    1 << 7
+                }
+            } else if frac & qnan != 0 {
+                1 << 9
+            } else {
+                1 << 8
+            };
+        }
+        if exp == 0 {
+            if frac == 0 {
+                if negative {
+                    1 << 3
+                } else {
+                    1 << 4
+                }
+            } else if negative {
+                1 << 2
+            } else {
+                1 << 5
+            }
+        } else if negative {
+            1 << 1
+        } else {
+            1 << 6
+        }
+    }
+
+    fn execute_fp_op(&mut self, funct7: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
+        let is_double = funct7 & 1 != 0;
+        match funct7 {
+            0x00 => {
+                let v = self.fp32(rs1) + self.fp32(rs2);
+                self.set_fp32(rd, v);
+            }
+            0x01 => {
+                let v = self.fp64(rs1) + self.fp64(rs2);
+                self.set_fp64(rd, v);
+            }
+            0x04 => {
+                let v = self.fp32(rs1) - self.fp32(rs2);
+                self.set_fp32(rd, v);
+            }
+            0x05 => {
+                let v = self.fp64(rs1) - self.fp64(rs2);
+                self.set_fp64(rd, v);
+            }
+            0x08 => {
+                let v = self.fp32(rs1) * self.fp32(rs2);
+                self.set_fp32(rd, v);
+            }
+            0x09 => {
+                let v = self.fp64(rs1) * self.fp64(rs2);
+                self.set_fp64(rd, v);
+            }
+            0x0C => {
+                let (a, b) = (self.fp32(rs1), self.fp32(rs2));
+                if b == 0.0 {
+                    self.set_fflag(if a == 0.0 { 1 << 4 } else { 1 << 3 });
+                }
+                self.set_fp32(rd, a / b);
+            }
+            0x0D => {
+                let (a, b) = (self.fp64(rs1), self.fp64(rs2));
+                if b == 0.0 {
+                    self.set_fflag(if a == 0.0 { 1 << 4 } else { 1 << 3 });
+                }
+                self.set_fp64(rd, a / b);
+            }
+            0x2C => {
+                let a = self.fp32(rs1);
+                if a < 0.0 {
+                    self.set_fflag(1 << 4);
+                }
+                self.set_fp32(rd, a.sqrt());
+            }
+            0x2D => {
+                let a = self.fp64(rs1);
+                if a < 0.0 {
+                    self.set_fflag(1 << 4);
+                }
+                self.set_fp64(rd, a.sqrt());
+            }
+            0x10 | 0x11 => {
+                let (a, b, sign_mask) = if is_double {
+                    (
+                        self.fregs[rs1 as usize],
+                        self.fregs[rs2 as usize],
+                        1u64 << 63,
+                    )
+                } else {
+                    (
+                        self.fregs[rs1 as usize] & 0xFFFF_FFFF,
+                        self.fregs[rs2 as usize] & 0xFFFF_FFFF,
+                        1u64 << 31,
+                    )
+                };
+                let sign = match funct3 {
+                    0 => b & sign_mask,
+                    1 => (!b) & sign_mask,
+                    _ => (a ^ b) & sign_mask,
+                };
+                let out = (a & !sign_mask) | sign;
+                if is_double {
+                    self.fregs[rd as usize] = out;
+                } else {
+                    self.set_fp32_bits(rd, out as u32);
+                }
+            }
+            0x14 | 0x15 => {
+                let take_max = funct3 != 0;
+                if is_double {
+                    let (a, b) = (self.fp64(rs1), self.fp64(rs2));
+                    self.set_fp64(rd, if take_max { a.max(b) } else { a.min(b) });
+                } else {
+                    let (a, b) = (self.fp32(rs1), self.fp32(rs2));
+                    self.set_fp32(rd, if take_max { a.max(b) } else { a.min(b) });
+                }
+            }
+            0x20 => {
+                let v = self.fp64(rs1) as f32;
+                self.set_fp32(rd, v);
+            }
+            0x21 => {
+                let v = self.fp32(rs1) as f64;
+                self.set_fp64(rd, v);
+            }
+            0x50 | 0x51 => {
+                let result = if is_double {
+                    let (a, b) = (self.fp64(rs1), self.fp64(rs2));
+                    match funct3 {
+                        2 => a == b,
+                        1 => a < b,
+                        _ => a <= b,
+                    }
+                } else {
+                    let (a, b) = (self.fp32(rs1), self.fp32(rs2));
+                    match funct3 {
+                        2 => a == b,
+                        1 => a < b,
+                        _ => a <= b,
+                    }
+                };
+                self.set_rd(rd, result as u64);
+            }
+            0x60 | 0x61 => {
+                let value = if is_double {
+                    self.fp64(rs1)
+                } else {
+                    self.fp32(rs1) as f64
+                };
+                self.fp_to_int(rd, value, rs2);
+            }
+            0x68 | 0x69 => {
+                let value = self.int_to_fp(rs1, rs2);
+                if is_double {
+                    self.set_fp64(rd, value);
+                } else {
+                    self.set_fp32(rd, value as f32);
+                }
+            }
+            0x70 => {
+                if funct3 == 1 {
+                    let bits = self.fregs[rs1 as usize] & 0xFFFF_FFFF;
+                    self.set_rd(rd, Self::fp_class(bits, false));
+                } else {
+                    let val = self.fregs[rs1 as usize] as u32 as i32 as i64 as u64;
+                    self.set_rd(rd, val);
+                }
+            }
+            0x71 => {
+                if funct3 == 1 {
+                    self.set_rd(rd, Self::fp_class(self.fregs[rs1 as usize], true));
+                } else {
+                    self.set_rd(rd, self.fregs[rs1 as usize]);
+                }
+            }
+            0x78 => self.set_fp32_bits(rd, self.regs[rs1 as usize] as u32),
+            0x79 => self.fregs[rd as usize] = self.regs[rs1 as usize],
+            _ => {
+                self.take_trap(2, 0);
+                return;
+            }
+        }
+        self.mark_fp_dirty();
+        self.pc += self.insn_size;
+    }
+
+    fn execute_fp_fma(&mut self, opcode: u8, funct7: u8, rd: u8, rs1: u8, rs2: u8, rs3: u8) {
+        let is_double = funct7 & 1 != 0;
+        if is_double {
+            let (a, b, c) = (self.fp64(rs1), self.fp64(rs2), self.fp64(rs3));
+            let value = match opcode {
+                0x43 => a.mul_add(b, c),
+                0x47 => a.mul_add(b, -c),
+                0x4B => (-a).mul_add(b, c),
+                _ => (-a).mul_add(b, -c),
+            };
+            self.set_fp64(rd, value);
+        } else {
+            let (a, b, c) = (self.fp32(rs1), self.fp32(rs2), self.fp32(rs3));
+            let value = match opcode {
+                0x43 => a.mul_add(b, c),
+                0x47 => a.mul_add(b, -c),
+                0x4B => (-a).mul_add(b, c),
+                _ => (-a).mul_add(b, -c),
+            };
+            self.set_fp32(rd, value);
+        }
+        self.mark_fp_dirty();
+        self.pc += self.insn_size;
+    }
+
+    fn execute_bitmanip(&mut self, opcode: u8, funct7: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
+        let a = self.regs[rs1 as usize];
+        let b = self.regs[rs2 as usize];
+        let value = match (opcode, funct7, funct3) {
+            (0x33, 0x10, 2) => a.wrapping_shl(1).wrapping_add(b),
+            (0x33, 0x10, 4) => a.wrapping_shl(2).wrapping_add(b),
+            (0x33, 0x10, 6) => a.wrapping_shl(3).wrapping_add(b),
+            (0x33, 0x20, 4) => !(a ^ b),
+            (0x33, 0x20, 6) => a | !b,
+            (0x33, 0x20, 7) => a & !b,
+            (0x33, 0x05, 4) => (a as i64).min(b as i64) as u64,
+            (0x33, 0x05, 5) => a.min(b),
+            (0x33, 0x05, 6) => (a as i64).max(b as i64) as u64,
+            (0x33, 0x05, 7) => a.max(b),
+            (0x33, 0x30, 1) => a.rotate_left((b & 63) as u32),
+            (0x33, 0x30, 5) => a.rotate_right((b & 63) as u32),
+            (0x3B, 0x04, 0) => (a as u32 as u64).wrapping_add(b),
+            (0x3B, 0x04, 4) => a & 0xFFFF,
+            (0x3B, 0x10, 2) => (a as u32 as u64).wrapping_shl(1).wrapping_add(b),
+            (0x3B, 0x10, 4) => (a as u32 as u64).wrapping_shl(2).wrapping_add(b),
+            (0x3B, 0x10, 6) => (a as u32 as u64).wrapping_shl(3).wrapping_add(b),
+            (0x3B, 0x30, 1) => (a as u32).rotate_left((b & 31) as u32) as i32 as i64 as u64,
+            (0x3B, 0x30, 5) => (a as u32).rotate_right((b & 31) as u32) as i32 as i64 as u64,
+            _ => {
+                self.take_trap(2, 0);
+                return;
+            }
+        };
+        self.set_rd(rd, value);
+        self.pc += self.insn_size;
+    }
+
+    fn execute_bitmanip_imm(&mut self, opcode: u8, funct3: u8, rd: u8, rs1: u8, funct12: u16) {
+        let a = self.regs[rs1 as usize];
+        let value = if opcode == 0x13 && funct3 == 5 {
+            match funct12 {
+                0x6B8 => a.swap_bytes(),
+                0x287 => {
+                    let mut out = 0u64;
+                    for (i, byte) in a.to_le_bytes().iter().enumerate() {
+                        if *byte != 0 {
+                            out |= 0xFFu64 << (i * 8);
+                        }
+                    }
+                    out
+                }
+                f if (0x600..0x640).contains(&f) => a.rotate_right((f & 0x3F) as u32),
+                _ => {
+                    self.take_trap(2, 0);
+                    return;
+                }
+            }
+        } else if opcode == 0x1B && funct3 == 1 {
+            match funct12 {
+                0x600 => (a as u32).leading_zeros() as u64,
+                0x601 => (a as u32).trailing_zeros() as u64,
+                0x602 => (a as u32).count_ones() as u64,
+                f if f >> 5 == 0x04 || f >> 5 == 0x05 => (a as u32 as u64) << (f & 0x3F),
+                _ => {
+                    self.take_trap(2, 0);
+                    return;
+                }
+            }
+        } else if opcode == 0x1B && funct3 == 5 {
+            if !(0x600..0x640).contains(&funct12) {
+                self.take_trap(2, 0);
+                return;
+            }
+            (a as u32).rotate_right((funct12 & 0x1F) as u32) as i32 as i64 as u64
+        } else if opcode == 0x13 && funct3 == 1 {
+            match funct12 {
+                0x600 => a.leading_zeros() as u64,
+                0x601 => a.trailing_zeros() as u64,
+                0x602 => a.count_ones() as u64,
+                0x604 => a as i8 as i64 as u64,
+                0x605 => a as i16 as i64 as u64,
+                _ => {
+                    self.take_trap(2, 0);
+                    return;
+                }
+            }
+        } else {
+            self.take_trap(2, 0);
+            return;
+        };
+        self.set_rd(rd, value);
+        self.pc += self.insn_size;
+    }
+
     fn execute(&mut self, insn: Instruction) {
         match insn {
             Instruction::Lui { rd, imm } => {
@@ -852,6 +1269,48 @@ impl RiscvCpu {
                 }
                 self.pc += self.insn_size;
             }
+            Instruction::FpLoad {
+                width,
+                rd,
+                rs1,
+                offset,
+            } => self.execute_fp_load(width, rd, rs1, offset),
+            Instruction::FpStore {
+                width,
+                rs1,
+                rs2,
+                offset,
+            } => self.execute_fp_store(width, rs1, rs2, offset),
+            Instruction::FpOp {
+                funct7,
+                funct3,
+                rd,
+                rs1,
+                rs2,
+            } => self.execute_fp_op(funct7, funct3, rd, rs1, rs2),
+            Instruction::FpFma {
+                opcode,
+                funct7,
+                rd,
+                rs1,
+                rs2,
+                rs3,
+            } => self.execute_fp_fma(opcode, funct7, rd, rs1, rs2, rs3),
+            Instruction::Bitmanip {
+                opcode,
+                funct7,
+                funct3,
+                rd,
+                rs1,
+                rs2,
+            } => self.execute_bitmanip(opcode, funct7, funct3, rd, rs1, rs2),
+            Instruction::BitmanipImm {
+                opcode,
+                funct3,
+                rd,
+                rs1,
+                funct12,
+            } => self.execute_bitmanip_imm(opcode, funct3, rd, rs1, funct12),
             Instruction::OpImm {
                 funct3,
                 rd,
@@ -1327,6 +1786,7 @@ impl ExecutionBackend for RiscvCpu {
                 self.step_one_interp();
             }
             let ran = self.insn_count - before;
+            self.csr.advance_counters(ran);
             if used_jit {
                 tracing::trace!(
                     target: trace_cat::JIT,
@@ -1349,7 +1809,7 @@ impl ExecutionBackend for RiscvCpu {
 
     fn save_state(&self) -> OmniResult<Vec<u8>> {
         let csr_data = self.csr.save();
-        let mut state = Vec::with_capacity(32 * 8 + 8 + 1 + 1 + csr_data.len());
+        let mut state = Vec::with_capacity(32 * 8 + 8 + 1 + 1 + csr_data.len() + 32 * 8);
         for r in &self.regs {
             state.extend_from_slice(&r.to_le_bytes());
         }
@@ -1357,6 +1817,9 @@ impl ExecutionBackend for RiscvCpu {
         state.push(self.halted as u8);
         state.push(self.priv_mode);
         state.extend_from_slice(&csr_data);
+        for r in &self.fregs {
+            state.extend_from_slice(&r.to_le_bytes());
+        }
         Ok(state)
     }
 
@@ -1385,6 +1848,16 @@ impl ExecutionBackend for RiscvCpu {
             // Legacy format
             self.csr.load(&data[min_size + 1..]);
         }
+
+        let fp_offset = csr_offset + CsrFile::state_size();
+        if data.len() >= fp_offset + 32 * 8 {
+            for (i, reg) in self.fregs.iter_mut().enumerate() {
+                let off = fp_offset + i * 8;
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&data[off..off + 8]);
+                *reg = u64::from_le_bytes(buf);
+            }
+        }
         Ok(())
     }
 
@@ -1406,6 +1879,22 @@ mod tests {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
         cpu
+    }
+
+    fn fp_op(funct7: u32, funct3: u32, rd: u32, rs1: u32, rs2: u32) -> u32 {
+        (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x53
+    }
+
+    fn fp_fma(opcode: u32, funct7: u32, rd: u32, rs1: u32, rs2: u32, rs3: u32) -> u32 {
+        (rs3 << 27) | (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (rd << 7) | opcode
+    }
+
+    fn bm_op(opcode: u32, funct7: u32, funct3: u32, rd: u32, rs1: u32, rs2: u32) -> u32 {
+        (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+    }
+
+    fn bm_imm(opcode: u32, funct3: u32, rd: u32, rs1: u32, funct12: u32) -> u32 {
+        (funct12 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
     }
 
     #[test]
@@ -1828,6 +2317,86 @@ mod tests {
         assert_eq!(jit_cpu.csr().mscratch, 100);
 
         assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
+
+    #[test]
+    fn fp_double_arithmetic() {
+        let mut cpu = cpu_with(&[
+            fp_op(0x01, 0, 3, 1, 2), // FADD.D f3, f1, f2
+            fp_op(0x09, 0, 4, 3, 2), // FMUL.D f4, f3, f2
+            0x0000_0073,             // ECALL
+        ]);
+        cpu.set_fp64(1, 1.5);
+        cpu.set_fp64(2, 2.25);
+        cpu.exec(10).unwrap();
+
+        assert_eq!(cpu.fp64(3), 3.75);
+        assert_eq!(cpu.fp64(4), 8.4375);
+        assert_ne!(cpu.csr().mstatus & csr::MSTATUS_FS_MASK, 0);
+    }
+
+    #[test]
+    fn fp_convert_and_classify() {
+        let mut cpu = cpu_with(&[
+            0x02A0_0093,             // ADDI x1, x0, 42
+            fp_op(0x69, 0, 2, 1, 0), // FCVT.D.W f2, x1
+            fp_op(0x71, 1, 3, 2, 0), // FCLASS.D x3, f2
+            0x0000_0073,             // ECALL
+        ]);
+        cpu.exec(10).unwrap();
+
+        assert_eq!(cpu.fp64(2), 42.0);
+        assert_eq!(cpu.reg(3), 1 << 6); // positive normal
+    }
+
+    #[test]
+    fn fp_fused_multiply_add() {
+        let mut cpu = cpu_with(&[
+            fp_fma(0x43, 0x01, 3, 1, 2, 4), // FMADD.D f3, f1, f2, f4
+            0x0000_0073,
+        ]);
+        cpu.set_fp64(1, 2.0);
+        cpu.set_fp64(2, 3.0);
+        cpu.set_fp64(4, 4.0);
+        cpu.exec(10).unwrap();
+
+        assert_eq!(cpu.fp64(3), 10.0);
+    }
+
+    #[test]
+    fn bitmanip_zba_zbb() {
+        let mut cpu = cpu_with(&[
+            0x00A0_0093,                   // ADDI x1, x0, 10
+            0x0140_0113,                   // ADDI x2, x0, 20
+            bm_op(0x33, 0x10, 2, 3, 1, 2), // SH1ADD x3, x1, x2
+            bm_op(0x33, 0x20, 7, 4, 1, 2), // ANDN x4, x1, x2
+            bm_op(0x33, 0x05, 4, 5, 1, 2), // MIN x5, x1, x2
+            bm_imm(0x13, 1, 6, 1, 0x600),  // CLZ x6, x1
+            bm_imm(0x13, 5, 7, 1, 0x601),  // RORI x7, x1, 1
+            0x0000_0073,                   // ECALL
+        ]);
+        cpu.exec(20).unwrap();
+
+        assert_eq!(cpu.reg(3), 40);
+        assert_eq!(cpu.reg(4), 10);
+        assert_eq!(cpu.reg(5), 10);
+        assert_eq!(cpu.reg(6), 60);
+        assert_eq!(cpu.reg(7), 5);
+    }
+
+    #[test]
+    fn bitmanip_word_ops() {
+        let mut cpu = cpu_with(&[
+            bm_op(0x3B, 0x04, 0, 3, 1, 2), // ADD.UW x3, x1, x2
+            bm_imm(0x1B, 1, 4, 1, 0x600),  // CLZW x4, x1
+            0x0000_0073,
+        ]);
+        cpu.set_reg(1, 0xFFFF_FFFF_0000_0001);
+        cpu.set_reg(2, 2);
+        cpu.exec(10).unwrap();
+
+        assert_eq!(cpu.reg(3), 3);
+        assert_eq!(cpu.reg(4), 31);
     }
 
     #[test]

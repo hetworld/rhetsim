@@ -213,7 +213,13 @@ const SIFIVE_U74_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::ZBA)
         .union(IsaExtensions::ZBB)
         .union(IsaExtensions::SSCOFPMF),
-    implemented: COMMON_IMPLEMENTED.union(IsaExtensions::C),
+    implemented: COMMON_IMPLEMENTED
+        .union(IsaExtensions::C)
+        .union(IsaExtensions::F)
+        .union(IsaExtensions::D)
+        .union(IsaExtensions::ZBA)
+        .union(IsaExtensions::ZBB)
+        .union(IsaExtensions::SSCOFPMF),
     dts_isa: "rv64gc_zba_zbb_sscofpmf",
     dts_compatible: &["sifive,u74"],
     mvendorid: 0x489,
@@ -253,7 +259,12 @@ const THEAD_C908_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::XTHEAD),
     implemented: COMMON_IMPLEMENTED
         .union(IsaExtensions::C)
-        .union(IsaExtensions::SSTC),
+        .union(IsaExtensions::F)
+        .union(IsaExtensions::D)
+        .union(IsaExtensions::ZBA)
+        .union(IsaExtensions::ZBB)
+        .union(IsaExtensions::SSTC)
+        .union(IsaExtensions::SSCOFPMF),
     dts_isa: "rv64gcb",
     dts_compatible: &["thead,c908"],
     mvendorid: 0x5b7,
@@ -358,16 +369,22 @@ mod tests {
 
     #[test]
     fn public_profiles_report_missing_features() {
-        let u74 = RiscvCpuType::SiFiveU74.profile().missing();
-        assert!(u74.contains(IsaExtensions::F));
-        assert!(u74.contains(IsaExtensions::D));
-        assert!(u74.contains(IsaExtensions::ZBA));
-        assert!(u74.contains(IsaExtensions::ZBB));
+        assert!(RiscvCpuType::SiFiveU74.ensure_implemented().is_ok());
+        assert!(RiscvCpuType::SiFiveU74
+            .profile()
+            .implemented
+            .contains(IsaExtensions::F));
+        assert!(RiscvCpuType::SiFiveU74
+            .profile()
+            .implemented
+            .contains(IsaExtensions::D));
 
         let c908 = RiscvCpuType::THeadC908.profile().missing();
-        assert!(c908.contains(IsaExtensions::F));
-        assert!(c908.contains(IsaExtensions::D));
+        assert!(c908.contains(IsaExtensions::ZBC));
         assert!(c908.contains(IsaExtensions::XTHEAD));
+        assert!(c908.contains(IsaExtensions::SVINVAL));
+        assert!(!c908.contains(IsaExtensions::F));
+        assert!(!c908.contains(IsaExtensions::D));
         // Vector is optional on C908 and is not part of the base profile.
         assert!(!RiscvCpuType::THeadC908
             .profile()

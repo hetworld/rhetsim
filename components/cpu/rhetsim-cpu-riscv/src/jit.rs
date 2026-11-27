@@ -263,6 +263,19 @@ impl JitEngine {
                 (decode(raw as u32), 4u64)
             };
 
+            // Floating-point instructions execute in the interpreter for now.
+            if matches!(
+                insn,
+                Instruction::FpLoad { .. }
+                    | Instruction::FpStore { .. }
+                    | Instruction::FpOp { .. }
+                    | Instruction::FpFma { .. }
+                    | Instruction::Bitmanip { .. }
+                    | Instruction::BitmanipImm { .. }
+            ) {
+                return None;
+            }
+
             let is_block_end = matches!(
                 insn,
                 Instruction::Jal { .. }
@@ -885,6 +898,12 @@ impl JitEngine {
                         builder.switch_to_block(nb);
                         builder.seal_block(nb);
                     }
+                    Instruction::FpLoad { .. }
+                    | Instruction::FpStore { .. }
+                    | Instruction::FpOp { .. }
+                    | Instruction::FpFma { .. }
+                    | Instruction::Bitmanip { .. }
+                    | Instruction::BitmanipImm { .. } => return None,
                     Instruction::Fence => { /* no-op */ }
                     Instruction::Unknown(_) => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_TRAP, idx + 1, 0);
