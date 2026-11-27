@@ -38,6 +38,7 @@ impl IsaExtensions {
     pub const SSCOFPMF: Self = Self(1 << 24);
     pub const SMEPMP: Self = Self(1 << 25);
     pub const XTHEAD: Self = Self(1 << 26);
+    pub const XTHEAD_SYNC: Self = Self(1 << 27);
 
     /// Set union, usable in constant profile definitions.
     pub const fn union(self, other: Self) -> Self {
@@ -121,6 +122,7 @@ impl IsaExtensions {
             (1 << 24, "sscofpmf"),
             (1 << 25, "smepmp"),
             (1 << 26, "xthead"),
+            (1 << 27, "xthead-sync"),
         ];
         NAMES
             .iter()
@@ -256,7 +258,8 @@ const THEAD_C908_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::SVPBMT)
         .union(IsaExtensions::SSCOFPMF)
         .union(IsaExtensions::SMEPMP)
-        .union(IsaExtensions::XTHEAD),
+        .union(IsaExtensions::XTHEAD)
+        .union(IsaExtensions::XTHEAD_SYNC),
     implemented: COMMON_IMPLEMENTED
         .union(IsaExtensions::C)
         .union(IsaExtensions::F)
@@ -274,7 +277,8 @@ const THEAD_C908_PROFILE: CpuProfile = CpuProfile {
         .union(IsaExtensions::SVNAPOT)
         .union(IsaExtensions::SVPBMT)
         .union(IsaExtensions::SSTC)
-        .union(IsaExtensions::SSCOFPMF),
+        .union(IsaExtensions::SSCOFPMF)
+        .union(IsaExtensions::XTHEAD_SYNC),
     dts_isa: "rv64gcb",
     dts_compatible: &["thead,c908"],
     mvendorid: 0x5b7,
@@ -392,6 +396,7 @@ mod tests {
         let c908 = RiscvCpuType::THeadC908.profile().missing();
         assert!(c908.contains(IsaExtensions::XTHEAD));
         assert!(c908.contains(IsaExtensions::SMEPMP));
+        assert!(!c908.contains(IsaExtensions::XTHEAD_SYNC));
         assert!(!c908.contains(IsaExtensions::F));
         assert!(!c908.contains(IsaExtensions::D));
         assert!(!c908.contains(IsaExtensions::ZBC));

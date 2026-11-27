@@ -135,6 +135,8 @@ pub enum Instruction {
         op: u8,
         rs1: u8,
     },
+    /// T-Head XTheadSync barrier (no architectural state).
+    TheadSync,
     // Atomics (A extension)
     Amo {
         funct5: u8,
@@ -417,6 +419,14 @@ pub fn decode(insn: u32) -> Instruction {
                 }
             }
         }
+        0x0B => match insn {
+            0x0180_000B | 0x0190_000B | 0x01A0_000B | 0x01B0_000B => Instruction::TheadSync,
+            _ if insn & 0xFE00_7FFF == 0x0400_000B => Instruction::SfenceVma {
+                rs1: rs1(insn),
+                rs2: rs2(insn),
+            },
+            _ => Instruction::Unknown(insn),
+        },
         0x0F => match funct3(insn) {
             1 => Instruction::FenceI,
             2 => Instruction::Cbo {
