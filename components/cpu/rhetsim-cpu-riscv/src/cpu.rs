@@ -4,6 +4,7 @@ use crate::csr::{self, CsrFile};
 use crate::decode::{decode, decode_compressed, Instruction};
 use crate::jit::{FastTlbEntry, HelperContext, JitCpuState, JitEngine, FAST_TLB_SIZE};
 use crate::mmu;
+use crate::profile::RiscvCpuType;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::diag::trace as trace_cat;
@@ -53,6 +54,7 @@ fn priv_name(mode: u8) -> &'static str {
 
 pub struct RiscvCpu {
     id: UnitId,
+    cpu_type: RiscvCpuType,
     regs: [u64; 32],
     pc: u64,
     halted: bool,
@@ -83,8 +85,13 @@ unsafe impl Sync for RiscvCpu {}
 
 impl RiscvCpu {
     pub fn new(id: &str, mem_size: usize, mem_base: u64) -> Self {
+        Self::new_with_type(id, mem_size, mem_base, RiscvCpuType::default())
+    }
+
+    pub fn new_with_type(id: &str, mem_size: usize, mem_base: u64, cpu_type: RiscvCpuType) -> Self {
         Self {
             id: UnitId::new(id),
+            cpu_type,
             regs: [0; 32],
             pc: mem_base,
             halted: false,
@@ -95,11 +102,11 @@ impl RiscvCpu {
                 uart_output: Vec::new(),
                 uart_addr: 0,
             },
-            csr: CsrFile::new(0),
+            csr: CsrFile::new_with_type(0, cpu_type),
             reservation: None,
             priv_mode: csr::PRV_M,
             insn_size: 4,
-            jit: Some(JitEngine::new()),
+            jit: Some(JitEngine::new_for(cpu_type)),
             tlb: mmu::Tlb::new(),
             read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
@@ -114,19 +121,29 @@ impl RiscvCpu {
     }
 
     pub fn with_bus(id: &str, bus: Arc<MemBus>, mem_base: u64) -> Self {
+        Self::with_bus_type(id, bus, mem_base, RiscvCpuType::default())
+    }
+
+    pub fn with_bus_type(
+        id: &str,
+        bus: Arc<MemBus>,
+        mem_base: u64,
+        cpu_type: RiscvCpuType,
+    ) -> Self {
         Self {
             id: UnitId::new(id),
+            cpu_type,
             regs: [0; 32],
             pc: mem_base,
             halted: false,
             mem_base,
             insn_count: 0,
             backend: MemBackend::Bus { bus },
-            csr: CsrFile::new(0),
+            csr: CsrFile::new_with_type(0, cpu_type),
             reservation: None,
             priv_mode: csr::PRV_M,
             insn_size: 4,
-            jit: Some(JitEngine::new()),
+            jit: Some(JitEngine::new_for(cpu_type)),
             tlb: mmu::Tlb::new(),
             read_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
             write_fast_tlb: Box::new([FastTlbEntry::invalid(); FAST_TLB_SIZE]),
@@ -138,6 +155,10 @@ impl RiscvCpu {
             satp_writes: 0,
             irq_lines: std::array::from_fn(|_| None),
         }
+    }
+
+    pub fn cpu_type(&self) -> RiscvCpuType {
+        self.cpu_type
     }
 
     pub fn load_binary(&mut self, data: &[u8], offset: u64) {
@@ -174,7 +195,7 @@ impl RiscvCpu {
     pub fn set_jit_enabled(&mut self, enabled: bool) {
         if enabled {
             if self.jit.is_none() {
-                self.jit = Some(JitEngine::new());
+                self.jit = Some(JitEngine::new_for(self.cpu_type));
             }
         } else {
             self.jit = None;
@@ -682,6 +703,10 @@ impl RiscvCpu {
         }
 
         let (raw_insn, insn) = if half & 0x3 != 0x3 {
+            if !self.cpu_type.has_compressed() {
+                self.take_trap(2, 0);
+                return;
+            }
             self.insn_size = 2;
             (half as u32, decode_compressed(half))
         } else {
@@ -1803,5 +1828,17 @@ mod tests {
         assert_eq!(jit_cpu.csr().mscratch, 100);
 
         assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
+
+    #[test]
+    fn compressed_instruction_traps_without_c_extension() {
+        let mut cpu = RiscvCpu::new_with_type("test", 4096, 0, RiscvCpuType::RhetSimRv64Ima);
+        cpu.load_binary(&0x0001u16.to_le_bytes(), 0); // C.NOP
+        cpu.set_pc(0);
+        cpu.set_jit_enabled(false);
+        cpu.exec(1).unwrap();
+
+        assert_eq!(cpu.csr().mcause, 2); // illegal instruction
+        assert_eq!(cpu.csr().misa & (1 << 2), 0); // C is not advertised
     }
 }

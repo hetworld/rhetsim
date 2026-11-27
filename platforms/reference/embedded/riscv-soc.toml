@@ -4,7 +4,7 @@ name = "riscv-soc"
 id   = "rv64-core0"
 kind = "rhetsim-cpu-riscv"
 [units.config]
-isa = "rv64gcv"
+cpu_type = "rhetsim-rv64imac"
 
 [[units]]
 id   = "clint0"
