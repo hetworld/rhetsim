@@ -1087,6 +1087,95 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
+    fn execute_bitmanip(&mut self, opcode: u8, funct7: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
+        let a = self.regs[rs1 as usize];
+        let b = self.regs[rs2 as usize];
+        let value = match (opcode, funct7, funct3) {
+            (0x33, 0x10, 2) => a.wrapping_shl(1).wrapping_add(b),
+            (0x33, 0x10, 4) => a.wrapping_shl(2).wrapping_add(b),
+            (0x33, 0x10, 6) => a.wrapping_shl(3).wrapping_add(b),
+            (0x33, 0x20, 4) => !(a ^ b),
+            (0x33, 0x20, 6) => a | !b,
+            (0x33, 0x20, 7) => a & !b,
+            (0x33, 0x05, 4) => (a as i64).min(b as i64) as u64,
+            (0x33, 0x05, 5) => a.min(b),
+            (0x33, 0x05, 6) => (a as i64).max(b as i64) as u64,
+            (0x33, 0x05, 7) => a.max(b),
+            (0x33, 0x30, 1) => a.rotate_left((b & 63) as u32),
+            (0x33, 0x30, 5) => a.rotate_right((b & 63) as u32),
+            (0x3B, 0x04, 0) => (a as u32 as u64).wrapping_add(b),
+            (0x3B, 0x04, 4) => a & 0xFFFF,
+            (0x3B, 0x10, 2) => (a as u32 as u64).wrapping_shl(1).wrapping_add(b),
+            (0x3B, 0x10, 4) => (a as u32 as u64).wrapping_shl(2).wrapping_add(b),
+            (0x3B, 0x10, 6) => (a as u32 as u64).wrapping_shl(3).wrapping_add(b),
+            (0x3B, 0x30, 1) => (a as u32).rotate_left((b & 31) as u32) as i32 as i64 as u64,
+            (0x3B, 0x30, 5) => (a as u32).rotate_right((b & 31) as u32) as i32 as i64 as u64,
+            _ => {
+                self.take_trap(2, 0);
+                return;
+            }
+        };
+        self.set_rd(rd, value);
+        self.pc += self.insn_size;
+    }
+
+    fn execute_bitmanip_imm(&mut self, opcode: u8, funct3: u8, rd: u8, rs1: u8, funct12: u16) {
+        let a = self.regs[rs1 as usize];
+        let value = if opcode == 0x13 && funct3 == 5 {
+            match funct12 {
+                0x6B8 => a.swap_bytes(),
+                0x287 => {
+                    let mut out = 0u64;
+                    for (i, byte) in a.to_le_bytes().iter().enumerate() {
+                        if *byte != 0 {
+                            out |= 0xFFu64 << (i * 8);
+                        }
+                    }
+                    out
+                }
+                f if (0x600..0x640).contains(&f) => a.rotate_right((f & 0x3F) as u32),
+                _ => {
+                    self.take_trap(2, 0);
+                    return;
+                }
+            }
+        } else if opcode == 0x1B && funct3 == 1 {
+            match funct12 {
+                0x600 => (a as u32).leading_zeros() as u64,
+                0x601 => (a as u32).trailing_zeros() as u64,
+                0x602 => (a as u32).count_ones() as u64,
+                f if f >> 5 == 0x04 || f >> 5 == 0x05 => (a as u32 as u64) << (f & 0x3F),
+                _ => {
+                    self.take_trap(2, 0);
+                    return;
+                }
+            }
+        } else if opcode == 0x1B && funct3 == 5 {
+            if !(0x600..0x640).contains(&funct12) {
+                self.take_trap(2, 0);
+                return;
+            }
+            (a as u32).rotate_right((funct12 & 0x1F) as u32) as i32 as i64 as u64
+        } else if opcode == 0x13 && funct3 == 1 {
+            match funct12 {
+                0x600 => a.leading_zeros() as u64,
+                0x601 => a.trailing_zeros() as u64,
+                0x602 => a.count_ones() as u64,
+                0x604 => a as i8 as i64 as u64,
+                0x605 => a as i16 as i64 as u64,
+                _ => {
+                    self.take_trap(2, 0);
+                    return;
+                }
+            }
+        } else {
+            self.take_trap(2, 0);
+            return;
+        };
+        self.set_rd(rd, value);
+        self.pc += self.insn_size;
+    }
+
     fn execute(&mut self, insn: Instruction) {
         match insn {
             Instruction::Lui { rd, imm } => {
@@ -1207,6 +1296,21 @@ impl RiscvCpu {
                 rs2,
                 rs3,
             } => self.execute_fp_fma(opcode, funct7, rd, rs1, rs2, rs3),
+            Instruction::Bitmanip {
+                opcode,
+                funct7,
+                funct3,
+                rd,
+                rs1,
+                rs2,
+            } => self.execute_bitmanip(opcode, funct7, funct3, rd, rs1, rs2),
+            Instruction::BitmanipImm {
+                opcode,
+                funct3,
+                rd,
+                rs1,
+                funct12,
+            } => self.execute_bitmanip_imm(opcode, funct3, rd, rs1, funct12),
             Instruction::OpImm {
                 funct3,
                 rd,
@@ -1784,6 +1888,14 @@ mod tests {
         (rs3 << 27) | (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (rd << 7) | opcode
     }
 
+    fn bm_op(opcode: u32, funct7: u32, funct3: u32, rd: u32, rs1: u32, rs2: u32) -> u32 {
+        (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+    }
+
+    fn bm_imm(opcode: u32, funct3: u32, rd: u32, rs1: u32, funct12: u32) -> u32 {
+        (funct12 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+    }
+
     #[test]
     fn test_addi() {
         let mut cpu = cpu_with(&[
@@ -2248,6 +2360,42 @@ mod tests {
         cpu.exec(10).unwrap();
 
         assert_eq!(cpu.fp64(3), 10.0);
+    }
+
+    #[test]
+    fn bitmanip_zba_zbb() {
+        let mut cpu = cpu_with(&[
+            0x00A0_0093,                   // ADDI x1, x0, 10
+            0x0140_0113,                   // ADDI x2, x0, 20
+            bm_op(0x33, 0x10, 2, 3, 1, 2), // SH1ADD x3, x1, x2
+            bm_op(0x33, 0x20, 7, 4, 1, 2), // ANDN x4, x1, x2
+            bm_op(0x33, 0x05, 4, 5, 1, 2), // MIN x5, x1, x2
+            bm_imm(0x13, 1, 6, 1, 0x600),  // CLZ x6, x1
+            bm_imm(0x13, 5, 7, 1, 0x601),  // RORI x7, x1, 1
+            0x0000_0073,                   // ECALL
+        ]);
+        cpu.exec(20).unwrap();
+
+        assert_eq!(cpu.reg(3), 40);
+        assert_eq!(cpu.reg(4), 10);
+        assert_eq!(cpu.reg(5), 10);
+        assert_eq!(cpu.reg(6), 60);
+        assert_eq!(cpu.reg(7), 5);
+    }
+
+    #[test]
+    fn bitmanip_word_ops() {
+        let mut cpu = cpu_with(&[
+            bm_op(0x3B, 0x04, 0, 3, 1, 2), // ADD.UW x3, x1, x2
+            bm_imm(0x1B, 1, 4, 1, 0x600),  // CLZW x4, x1
+            0x0000_0073,
+        ]);
+        cpu.set_reg(1, 0xFFFF_FFFF_0000_0001);
+        cpu.set_reg(2, 2);
+        cpu.exec(10).unwrap();
+
+        assert_eq!(cpu.reg(3), 3);
+        assert_eq!(cpu.reg(4), 31);
     }
 
     #[test]
