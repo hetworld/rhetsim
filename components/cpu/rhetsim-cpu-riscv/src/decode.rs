@@ -131,6 +131,10 @@ pub enum Instruction {
         rs1: u8,
         rs2: u8,
     },
+    Cbo {
+        op: u8,
+        rs1: u8,
+    },
     // Atomics (A extension)
     Amo {
         funct5: u8,
@@ -388,6 +392,8 @@ pub fn decode(insn: u32) -> Instruction {
                     0x102 => Instruction::Sret,
                     0x302 => Instruction::Mret,
                     0x105 => Instruction::Wfi,
+                    // Svinval fine-grained fences.
+                    0x180 | 0x1A0 => Instruction::SfenceVma { rs1: 0, rs2: 0 },
                     _ => {
                         if (insn >> 25) == 0x09 {
                             Instruction::SfenceVma {
@@ -411,13 +417,14 @@ pub fn decode(insn: u32) -> Instruction {
                 }
             }
         }
-        0x0F => {
-            if funct3(insn) == 1 {
-                Instruction::FenceI
-            } else {
-                Instruction::Fence
-            }
-        }
+        0x0F => match funct3(insn) {
+            1 => Instruction::FenceI,
+            2 => Instruction::Cbo {
+                op: ((insn >> 20) & 0xF) as u8,
+                rs1: rs1(insn),
+            },
+            _ => Instruction::Fence,
+        },
         0x2F => {
             // A extension (atomics)
             let f5 = (insn >> 27) & 0x1F;

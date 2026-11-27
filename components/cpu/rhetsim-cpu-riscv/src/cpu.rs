@@ -1087,6 +1087,31 @@ impl RiscvCpu {
         self.pc += self.insn_size;
     }
 
+    fn execute_cbo(&mut self, op: u8, rs1: u8) {
+        match op {
+            0..=2 => {}
+            4 => {
+                let base = self.regs[rs1 as usize] & !0x3F;
+                for offset in (0..64).step_by(8) {
+                    let va = base + offset;
+                    let pa = match self.translate(va, mmu::AccessType::Store) {
+                        Ok(pa) => pa,
+                        Err(fault) => {
+                            self.take_trap(fault.cause, fault.tval);
+                            return;
+                        }
+                    };
+                    self.phys_write(pa, 8, 0);
+                }
+            }
+            _ => {
+                self.take_trap(2, 0);
+                return;
+            }
+        }
+        self.pc += self.insn_size;
+    }
+
     fn execute_bitmanip(&mut self, opcode: u8, funct7: u8, funct3: u8, rd: u8, rs1: u8, rs2: u8) {
         let a = self.regs[rs1 as usize];
         let b = self.regs[rs2 as usize];
@@ -1339,6 +1364,7 @@ impl RiscvCpu {
                 rs1,
                 funct12,
             } => self.execute_bitmanip_imm(opcode, funct3, rd, rs1, funct12),
+            Instruction::Cbo { op, rs1 } => self.execute_cbo(op, rs1),
             Instruction::OpImm {
                 funct3,
                 rd,
