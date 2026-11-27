@@ -1,8 +1,8 @@
 //! Mock CPU component — a minimal Unit + ExecutionBackend for testing.
 
-use rhetsim_core::error::{OmniError, OmniResult};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
 use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::error::{OmniError, OmniResult};
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
 
 pub struct MockCpu {
     id: UnitId,
@@ -29,9 +29,15 @@ impl MockCpu {
 }
 
 impl Unit for MockCpu {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "mock-cpu" }
-    fn caps(&self) -> UnitCaps { UnitCaps::EXECUTABLE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "mock-cpu"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::EXECUTABLE
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
         self.cycles = 0;
@@ -75,7 +81,9 @@ impl ExecutionBackend for MockCpu {
         Ok(())
     }
 
-    fn backend_name(&self) -> &'static str { "mock" }
+    fn backend_name(&self) -> &'static str {
+        "mock"
+    }
 }
 
 pub fn register() {}

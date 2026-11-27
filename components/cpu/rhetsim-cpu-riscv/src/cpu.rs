@@ -1,17 +1,17 @@
 //! RiscvCpu — RV64IMAC interpreter with M/S privilege modes and Sv39 MMU
 
-use std::sync::Arc;
-use rhetsim_core::error::{OmniError, OmniResult};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
+use crate::csr::{self, CsrFile};
+use crate::decode::{decode, decode_compressed, Instruction};
+use crate::jit::{FastTlbEntry, HelperContext, JitCpuState, JitEngine, FAST_TLB_SIZE};
+use crate::mmu;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::diag::trace as trace_cat;
+use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::irq::IrqLineSource;
 use rhetsim_core::mem::MemAccessSize;
-use crate::csr::{self, CsrFile};
-use crate::decode::{decode, decode_compressed, Instruction};
-use crate::jit::{JitEngine, JitCpuState, HelperContext, FastTlbEntry, FAST_TLB_SIZE};
-use crate::mmu;
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::sync::Arc;
 
 enum MemBackend {
     Flat {
@@ -158,11 +158,15 @@ impl RiscvCpu {
         }
     }
 
-    pub fn set_pc(&mut self, pc: u64) { self.pc = pc; }
+    pub fn set_pc(&mut self, pc: u64) {
+        self.pc = pc;
+    }
 
     /// Set the hart ID reported by the `mhartid` CSR. Must be called before
     /// the CPU starts (OpenSBI and Linux use it to identify the hart).
-    pub fn set_hartid(&mut self, hartid: u64) { self.csr.mhartid = hartid; }
+    pub fn set_hartid(&mut self, hartid: u64) {
+        self.csr.mhartid = hartid;
+    }
 
     /// Enable or disable the JIT. Trace consumers that need instruction
     /// granularity (`exec` / `cpu`) disable it so every instruction retires
@@ -177,7 +181,9 @@ impl RiscvCpu {
         }
     }
 
-    pub fn jit_enabled(&self) -> bool { self.jit.is_some() }
+    pub fn jit_enabled(&self) -> bool {
+        self.jit.is_some()
+    }
 
     pub fn set_uart_addr(&mut self, addr: u64) {
         if let MemBackend::Flat { uart_addr, .. } = &mut self.backend {
@@ -192,15 +198,35 @@ impl RiscvCpu {
         }
     }
 
-    pub fn pc(&self) -> u64 { self.pc }
-    pub fn reg(&self, idx: usize) -> u64 { self.regs[idx] }
-    pub fn set_reg(&mut self, idx: usize, val: u64) { if idx != 0 && idx < 32 { self.regs[idx] = val; } }
-    pub fn is_halted(&self) -> bool { self.halted }
-    pub fn insn_count(&self) -> u64 { self.insn_count }
-    pub fn csr(&self) -> &CsrFile { &self.csr }
-    pub fn csr_mut(&mut self) -> &mut CsrFile { &mut self.csr }
-    pub fn priv_mode(&self) -> u8 { self.priv_mode }
-    pub fn set_priv_mode(&mut self, mode: u8) { self.priv_mode = mode; }
+    pub fn pc(&self) -> u64 {
+        self.pc
+    }
+    pub fn reg(&self, idx: usize) -> u64 {
+        self.regs[idx]
+    }
+    pub fn set_reg(&mut self, idx: usize, val: u64) {
+        if idx != 0 && idx < 32 {
+            self.regs[idx] = val;
+        }
+    }
+    pub fn is_halted(&self) -> bool {
+        self.halted
+    }
+    pub fn insn_count(&self) -> u64 {
+        self.insn_count
+    }
+    pub fn csr(&self) -> &CsrFile {
+        &self.csr
+    }
+    pub fn csr_mut(&mut self) -> &mut CsrFile {
+        &mut self.csr
+    }
+    pub fn priv_mode(&self) -> u8 {
+        self.priv_mode
+    }
+    pub fn set_priv_mode(&mut self, mode: u8) {
+        self.priv_mode = mode;
+    }
 
     pub fn set_dram_direct(&mut self, ptr: *mut u8, base: u64, size: u64) {
         self.dram_host_ptr = Some((ptr, base, size));
@@ -213,13 +239,17 @@ impl RiscvCpu {
 
     fn sync_irq_lines(&mut self) {
         let msoft = self.irq_lines[RiscvIrqLine::MSoft as usize]
-            .as_ref().map(|l| l.is_asserted());
+            .as_ref()
+            .map(|l| l.is_asserted());
         let mtimer = self.irq_lines[RiscvIrqLine::MTimer as usize]
-            .as_ref().map(|l| l.is_asserted());
+            .as_ref()
+            .map(|l| l.is_asserted());
         let mext = self.irq_lines[RiscvIrqLine::MExt as usize]
-            .as_ref().map(|l| l.is_asserted());
+            .as_ref()
+            .map(|l| l.is_asserted());
         let sext = self.irq_lines[RiscvIrqLine::SExt as usize]
-            .as_ref().map(|l| l.is_asserted());
+            .as_ref()
+            .map(|l| l.is_asserted());
 
         Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_MSIP, msoft);
         Self::apply_mip_bit(&mut self.csr.mip, csr::MIP_MTIP, mtimer);
@@ -244,15 +274,21 @@ impl RiscvCpu {
     }
 
     fn flush_fast_tlb(&mut self) {
-        for e in self.read_fast_tlb.iter_mut() { e.tag = u64::MAX; }
-        for e in self.write_fast_tlb.iter_mut() { e.tag = u64::MAX; }
+        for e in self.read_fast_tlb.iter_mut() {
+            e.tag = u64::MAX;
+        }
+        for e in self.write_fast_tlb.iter_mut() {
+            e.tag = u64::MAX;
+        }
     }
 
     // ── Physical memory access (no MMU translation) ───────────
 
     fn phys_read(&self, addr: u64, size: usize) -> u64 {
         match &self.backend {
-            MemBackend::Flat { memory, uart_addr, .. } => {
+            MemBackend::Flat {
+                memory, uart_addr, ..
+            } => {
                 if *uart_addr != 0 && addr == *uart_addr + 5 {
                     return 0x60;
                 }
@@ -284,7 +320,11 @@ impl RiscvCpu {
 
     fn phys_write(&mut self, addr: u64, size: usize, val: u64) {
         match &mut self.backend {
-            MemBackend::Flat { memory, uart_output, uart_addr } => {
+            MemBackend::Flat {
+                memory,
+                uart_output,
+                uart_addr,
+            } => {
                 if *uart_addr != 0 && addr == *uart_addr {
                     uart_output.push(val as u8);
                     return;
@@ -343,7 +383,11 @@ impl RiscvCpu {
         let delegated = self.priv_mode <= csr::PRV_S && self.csr.is_delegated(cause);
 
         let is_interrupt = cause & (1u64 << 63) != 0;
-        let kind = if is_interrupt { "interrupt" } else { "exception" };
+        let kind = if is_interrupt {
+            "interrupt"
+        } else {
+            "exception"
+        };
         let to = if delegated { "S" } else { "M" };
         tracing::trace!(
             target: trace_cat::INT,
@@ -403,7 +447,8 @@ impl RiscvCpu {
 
     fn fill_fast_tlb(
         tlb: &mut [FastTlbEntry; FAST_TLB_SIZE],
-        va: u64, pa: u64,
+        va: u64,
+        pa: u64,
         dram: Option<(*mut u8, u64, u64)>,
     ) {
         if let Some((host_ptr, base, dram_size)) = dram {
@@ -414,7 +459,10 @@ impl RiscvCpu {
                     .wrapping_sub(base)
                     .wrapping_add(pa & !0xFFF)
                     .wrapping_sub(va & !0xFFF);
-                tlb[idx] = FastTlbEntry { tag: va_page, addend };
+                tlb[idx] = FastTlbEntry {
+                    tag: va_page,
+                    addend,
+                };
             }
         }
     }
@@ -426,7 +474,9 @@ impl RiscvCpu {
             Ok(pa) => pa,
             Err(f) => {
                 cpu.jit_fault = Some((f.cause, f.tval));
-                unsafe { *fault_out = 1; }
+                unsafe {
+                    *fault_out = 1;
+                }
                 return 0;
             }
         };
@@ -441,7 +491,9 @@ impl RiscvCpu {
             Ok(pa) => pa,
             Err(f) => {
                 cpu.jit_fault = Some((f.cause, f.tval));
-                unsafe { *fault_out = 1; }
+                unsafe {
+                    *fault_out = 1;
+                }
                 return 1;
             }
         };
@@ -458,7 +510,11 @@ impl RiscvCpu {
 
         if self.dram_host_ptr.is_none() {
             if let MemBackend::Flat { memory, .. } = &self.backend {
-                self.dram_host_ptr = Some((memory.as_ptr() as *mut u8, self.mem_base, memory.len() as u64));
+                self.dram_host_ptr = Some((
+                    memory.as_ptr() as *mut u8,
+                    self.mem_base,
+                    memory.len() as u64,
+                ));
             }
         }
 
@@ -505,7 +561,9 @@ impl RiscvCpu {
 
         let jit = unsafe { &mut *jit };
         let ok = jit.execute(&mut state, &mut helper_ctx, priv_mode, satp, &fetch_fn);
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
 
         self.regs = state.regs;
         self.regs[0] = 0;
@@ -520,7 +578,10 @@ impl RiscvCpu {
                 // ECALL
                 self.pc = state.exit_pc;
                 let cause = match self.priv_mode {
-                    0 => 8, 1 => 9, 3 => 11, _ => 8,
+                    0 => 8,
+                    1 => 9,
+                    3 => 11,
+                    _ => 8,
                 };
                 self.take_trap(cause, 0);
             }
@@ -692,7 +753,12 @@ impl RiscvCpu {
                 self.set_rd(rd, self.pc + self.insn_size);
                 self.pc = target;
             }
-            Instruction::Branch { funct3, rs1, rs2, offset } => {
+            Instruction::Branch {
+                funct3,
+                rs1,
+                rs2,
+                offset,
+            } => {
                 let a = self.regs[rs1 as usize];
                 let b = self.regs[rs2 as usize];
                 let taken = match funct3 {
@@ -710,11 +776,19 @@ impl RiscvCpu {
                     self.pc += self.insn_size;
                 }
             }
-            Instruction::Load { funct3, rd, rs1, offset } => {
+            Instruction::Load {
+                funct3,
+                rd,
+                rs1,
+                offset,
+            } => {
                 let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
                 let pa = match self.translate(va, mmu::AccessType::Load) {
                     Ok(pa) => pa,
-                    Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
+                    Err(fault) => {
+                        self.take_trap(fault.cause, fault.tval);
+                        return;
+                    }
                 };
                 let val = match funct3 {
                     0 => self.phys_read(pa, 1) as i8 as i64 as u64,
@@ -729,11 +803,19 @@ impl RiscvCpu {
                 self.set_rd(rd, val);
                 self.pc += self.insn_size;
             }
-            Instruction::Store { funct3, rs1, rs2, offset } => {
+            Instruction::Store {
+                funct3,
+                rs1,
+                rs2,
+                offset,
+            } => {
                 let va = self.regs[rs1 as usize].wrapping_add(offset as u64);
                 let pa = match self.translate(va, mmu::AccessType::Store) {
                     Ok(pa) => pa,
-                    Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
+                    Err(fault) => {
+                        self.take_trap(fault.cause, fault.tval);
+                        return;
+                    }
                 };
                 let val = self.regs[rs2 as usize];
                 match funct3 {
@@ -745,13 +827,19 @@ impl RiscvCpu {
                 }
                 self.pc += self.insn_size;
             }
-            Instruction::OpImm { funct3, rd, rs1, imm, funct7 } => {
+            Instruction::OpImm {
+                funct3,
+                rd,
+                rs1,
+                imm,
+                funct7,
+            } => {
                 let src = self.regs[rs1 as usize];
                 let shamt = (imm as u64) & 0x3F;
                 let val = match funct3 {
                     0 => src.wrapping_add(imm as u64),
                     1 => src << shamt,
-                    2 => ((src as i64) < (imm as i64)) as u64,
+                    2 => ((src as i64) < imm) as u64,
                     3 => (src < (imm as u64)) as u64,
                     4 => src ^ (imm as u64),
                     5 => {
@@ -768,7 +856,13 @@ impl RiscvCpu {
                 self.set_rd(rd, val);
                 self.pc += self.insn_size;
             }
-            Instruction::Op { funct3, funct7, rd, rs1, rs2 } => {
+            Instruction::Op {
+                funct3,
+                funct7,
+                rd,
+                rs1,
+                rs2,
+            } => {
                 let a = self.regs[rs1 as usize];
                 let b = self.regs[rs2 as usize];
                 let val = if funct7 == 0x01 {
@@ -791,7 +885,13 @@ impl RiscvCpu {
                 self.set_rd(rd, val);
                 self.pc += self.insn_size;
             }
-            Instruction::OpImm32 { funct3, rd, rs1, imm, funct7 } => {
+            Instruction::OpImm32 {
+                funct3,
+                rd,
+                rs1,
+                imm,
+                funct7,
+            } => {
                 let src = self.regs[rs1 as usize] as u32;
                 let shamt = (imm as u32) & 0x1F;
                 let val = match funct3 {
@@ -809,7 +909,13 @@ impl RiscvCpu {
                 self.set_rd(rd, val as i32 as i64 as u64);
                 self.pc += self.insn_size;
             }
-            Instruction::Op32 { funct3, funct7, rd, rs1, rs2 } => {
+            Instruction::Op32 {
+                funct3,
+                funct7,
+                rd,
+                rs1,
+                rs2,
+            } => {
                 let a = self.regs[rs1 as usize] as u32;
                 let b = self.regs[rs2 as usize] as u32;
                 let val = if funct7 == 0x01 {
@@ -827,7 +933,12 @@ impl RiscvCpu {
                 self.set_rd(rd, val as i32 as i64 as u64);
                 self.pc += self.insn_size;
             }
-            Instruction::Csr { funct3, rd, rs1, csr } => {
+            Instruction::Csr {
+                funct3,
+                rd,
+                rs1,
+                csr,
+            } => {
                 let csr_priv = ((csr >> 8) & 0x3) as u8;
                 if csr_priv > self.priv_mode {
                     self.take_trap(2, 0);
@@ -849,11 +960,15 @@ impl RiscvCpu {
                     }
                     2 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 { self.csr.write(csr, old | src); }
+                        if rs1 != 0 {
+                            self.csr.write(csr, old | src);
+                        }
                     }
                     3 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 { self.csr.write(csr, old & !src); }
+                        if rs1 != 0 {
+                            self.csr.write(csr, old & !src);
+                        }
                     }
                     5 => {
                         self.set_rd(rd, old);
@@ -861,11 +976,15 @@ impl RiscvCpu {
                     }
                     6 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 { self.csr.write(csr, old | rs1 as u64); }
+                        if rs1 != 0 {
+                            self.csr.write(csr, old | rs1 as u64);
+                        }
                     }
                     7 => {
                         self.set_rd(rd, old);
-                        if rs1 != 0 { self.csr.write(csr, old & !(rs1 as u64)); }
+                        if rs1 != 0 {
+                            self.csr.write(csr, old & !(rs1 as u64));
+                        }
                     }
                     _ => {}
                 }
@@ -896,12 +1015,27 @@ impl RiscvCpu {
                 self.flush_fast_tlb();
                 self.pc += self.insn_size;
             }
-            Instruction::Amo { funct5, aq: _, rl: _, funct3, rd, rs1, rs2 } => {
+            Instruction::Amo {
+                funct5,
+                aq: _,
+                rl: _,
+                funct3,
+                rd,
+                rs1,
+                rs2,
+            } => {
                 let va = self.regs[rs1 as usize];
-                let access = if funct5 == 0x02 { mmu::AccessType::Load } else { mmu::AccessType::Store };
+                let access = if funct5 == 0x02 {
+                    mmu::AccessType::Load
+                } else {
+                    mmu::AccessType::Store
+                };
                 let pa = match self.translate(va, access) {
                     Ok(pa) => pa,
-                    Err(fault) => { self.take_trap(fault.cause, fault.tval); return; }
+                    Err(fault) => {
+                        self.take_trap(fault.cause, fault.tval);
+                        return;
+                    }
                 };
                 self.exec_amo(funct5, funct3, rd, rs2, pa);
                 self.pc += self.insn_size;
@@ -940,19 +1074,33 @@ impl RiscvCpu {
             4 => {
                 let sa = a as i64;
                 let sb = b as i64;
-                if sb == 0 { u64::MAX }
-                else if sa == i64::MIN && sb == -1 { sa as u64 }
-                else { sa.wrapping_div(sb) as u64 }
+                if sb == 0 {
+                    u64::MAX
+                } else if sa == i64::MIN && sb == -1 {
+                    sa as u64
+                } else {
+                    sa.wrapping_div(sb) as u64
+                }
             }
-            5 => { if b == 0 { u64::MAX } else { a / b } }
+            5 => a.checked_div(b).unwrap_or(u64::MAX),
             6 => {
                 let sa = a as i64;
                 let sb = b as i64;
-                if sb == 0 { a }
-                else if sa == i64::MIN && sb == -1 { 0 }
-                else { sa.wrapping_rem(sb) as u64 }
+                if sb == 0 {
+                    a
+                } else if sa == i64::MIN && sb == -1 {
+                    0
+                } else {
+                    sa.wrapping_rem(sb) as u64
+                }
             }
-            7 => { if b == 0 { a } else { a % b } }
+            7 => {
+                if b == 0 {
+                    a
+                } else {
+                    a % b
+                }
+            }
             _ => 0,
         }
     }
@@ -963,19 +1111,33 @@ impl RiscvCpu {
             4 => {
                 let sa = a as i32;
                 let sb = b as i32;
-                if sb == 0 { u32::MAX }
-                else if sa == i32::MIN && sb == -1 { sa as u32 }
-                else { sa.wrapping_div(sb) as u32 }
+                if sb == 0 {
+                    u32::MAX
+                } else if sa == i32::MIN && sb == -1 {
+                    sa as u32
+                } else {
+                    sa.wrapping_div(sb) as u32
+                }
             }
-            5 => { if b == 0 { u32::MAX } else { a / b } }
+            5 => a.checked_div(b).unwrap_or(u32::MAX),
             6 => {
                 let sa = a as i32;
                 let sb = b as i32;
-                if sb == 0 { a }
-                else if sa == i32::MIN && sb == -1 { 0 }
-                else { sa.wrapping_rem(sb) as u32 }
+                if sb == 0 {
+                    a
+                } else if sa == i32::MIN && sb == -1 {
+                    0
+                } else {
+                    sa.wrapping_rem(sb) as u32
+                }
             }
-            7 => { if b == 0 { a } else { a % b } }
+            7 => {
+                if b == 0 {
+                    a
+                } else {
+                    a % b
+                }
+            }
             _ => 0,
         }
     }
@@ -985,7 +1147,8 @@ impl RiscvCpu {
         let is_word = funct3 == 2;
 
         match funct5 {
-            0x02 => { // LR
+            0x02 => {
+                // LR
                 let val = if is_word {
                     self.phys_read(pa, 4) as i32 as i64 as u64
                 } else {
@@ -994,10 +1157,14 @@ impl RiscvCpu {
                 self.set_rd(rd, val);
                 self.reservation = Some(pa);
             }
-            0x03 => { // SC
+            0x03 => {
+                // SC
                 if self.reservation == Some(pa) {
-                    if is_word { self.phys_write(pa, 4, src2); }
-                    else { self.phys_write(pa, 8, src2); }
+                    if is_word {
+                        self.phys_write(pa, 4, src2);
+                    } else {
+                        self.phys_write(pa, 8, src2);
+                    }
                     self.set_rd(rd, 0);
                 } else {
                     self.set_rd(rd, 1);
@@ -1038,8 +1205,11 @@ impl RiscvCpu {
                     };
                     (old, nv)
                 };
-                if is_word { self.phys_write(pa, 4, new_val); }
-                else { self.phys_write(pa, 8, new_val); }
+                if is_word {
+                    self.phys_write(pa, 4, new_val);
+                } else {
+                    self.phys_write(pa, 8, new_val);
+                }
                 self.set_rd(rd, old);
             }
         }
@@ -1056,16 +1226,28 @@ impl Drop for RiscvCpu {
         eprintln!(
             "jit-stats hart={} execs={} compiles={} invalidations={} \
              slow_loads={} slow_stores={} sfence={} satp={}",
-            self.csr.mhartid, executions, compiles, invalidations,
-            self.slow_loads, self.slow_stores, self.sfence_count, self.satp_writes
+            self.csr.mhartid,
+            executions,
+            compiles,
+            invalidations,
+            self.slow_loads,
+            self.slow_stores,
+            self.sfence_count,
+            self.satp_writes
         );
     }
 }
 
 impl Unit for RiscvCpu {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "riscv-rv64-core" }
-    fn caps(&self) -> UnitCaps { UnitCaps::EXECUTABLE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "riscv-rv64-core"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::EXECUTABLE
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
         self.regs = [0; 32];
@@ -1106,7 +1288,9 @@ impl ExecutionBackend for RiscvCpu {
         while executed < budget_ns && !self.halted {
             if executed >= next_irq_check {
                 self.check_interrupt();
-                if self.halted { break; }
+                if self.halted {
+                    break;
+                }
                 next_irq_check = executed + 1024;
             }
 
@@ -1156,11 +1340,11 @@ impl ExecutionBackend for RiscvCpu {
         if data.len() < min_size {
             return Err(OmniError::SnapshotError("riscv state too short".into()));
         }
-        for i in 0..32 {
+        for (i, reg) in self.regs.iter_mut().enumerate() {
             let off = i * 8;
             let mut buf = [0u8; 8];
             buf.copy_from_slice(&data[off..off + 8]);
-            self.regs[i] = u64::from_le_bytes(buf);
+            *reg = u64::from_le_bytes(buf);
         }
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&data[256..264]);
@@ -1179,11 +1363,16 @@ impl ExecutionBackend for RiscvCpu {
         Ok(())
     }
 
-    fn backend_name(&self) -> &'static str { "rv64imac-interp" }
+    fn backend_name(&self) -> &'static str {
+        "rv64imac-interp"
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    // Instruction encodings are written with explicit zero fields for clarity.
+    #![allow(clippy::identity_op)]
+
     use super::*;
 
     fn cpu_with(insns: &[u32]) -> RiscvCpu {
@@ -1250,29 +1439,21 @@ mod tests {
 
     #[test]
     fn test_branch_taken() {
-        let mut cpu = cpu_with(&[
-            0x00A00093, 0x00A00113, 0x00208463, 0x06400093,
-            0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x00A00093, 0x00A00113, 0x00208463, 0x06400093, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(1), 10);
     }
 
     #[test]
     fn test_branch_not_taken() {
-        let mut cpu = cpu_with(&[
-            0x00A00093, 0x01400113, 0x00208463, 0x06400093,
-            0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x00A00093, 0x01400113, 0x00208463, 0x06400093, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(1), 100);
     }
 
     #[test]
     fn test_jal() {
-        let mut cpu = cpu_with(&[
-            0x008000EF, 0x06400093, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x008000EF, 0x06400093, 0x00000073]);
         let base = cpu.pc();
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(1), base + 4);
@@ -1283,9 +1464,7 @@ mod tests {
         let uart_addr = 0x1000_0000u64;
         let mut cpu = RiscvCpu::new("test", 4096, 0x8000_0000);
         cpu.set_uart_addr(uart_addr);
-        let insns: Vec<u32> = vec![
-            0x10000137, 0x04800093, 0x00110023, 0x00000073,
-        ];
+        let insns: Vec<u32> = vec![0x10000137, 0x04800093, 0x00110023, 0x00000073];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
@@ -1295,9 +1474,7 @@ mod tests {
 
     #[test]
     fn test_save_load_state() {
-        let mut cpu = cpu_with(&[
-            0x02A00093, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x02A00093, 0x00000073]);
         cpu.exec(10).unwrap();
         let state = cpu.save_state().unwrap();
         let mut cpu2 = RiscvCpu::new("test2", 4096, 0x8000_0000);
@@ -1308,9 +1485,7 @@ mod tests {
 
     #[test]
     fn test_loop_countdown() {
-        let mut cpu = cpu_with(&[
-            0x00500093, 0xFFF08093, 0xFE009EE3, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x00500093, 0xFFF08093, 0xFE009EE3, 0x00000073]);
         cpu.exec(100).unwrap();
         assert_eq!(cpu.reg(1), 0);
         assert!(cpu.is_halted());
@@ -1318,9 +1493,7 @@ mod tests {
 
     #[test]
     fn test_x0_always_zero() {
-        let mut cpu = cpu_with(&[
-            0x02A00013, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x02A00013, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(0), 0);
     }
@@ -1331,15 +1504,17 @@ mod tests {
 
         let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", 64 * 1024, 0));
         let mut bus = MemBus::new("sys-bus");
-        bus.map(dram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-                0, MemAttrs::rw(), None).unwrap();
+        bus.map(
+            dram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+            0,
+            MemAttrs::rw(),
+            None,
+        )
+        .unwrap();
         let bus = Arc::new(bus);
 
         let mut cpu = RiscvCpu::with_bus("rv-core0", bus.clone(), 0);
-        let insns: Vec<u32> = vec![
-            0x06300093, 0x10000113, 0x00112023, 0x00012183,
-            0x00000073,
-        ];
+        let insns: Vec<u32> = vec![0x06300093, 0x10000113, 0x00112023, 0x00012183, 0x00000073];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
@@ -1355,9 +1530,7 @@ mod tests {
     #[test]
     fn test_csrrw() {
         let csrrw = (0x340 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
-        let mut cpu = cpu_with(&[
-            0x06400113, csrrw, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x06400113, csrrw, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(1), 0);
         assert_eq!(cpu.csr().mscratch, 100);
@@ -1366,9 +1539,7 @@ mod tests {
     #[test]
     fn test_csrrs_mie() {
         let csrrs = (0x304 << 20) | (1 << 15) | (2 << 12) | (2 << 7) | 0x73;
-        let mut cpu = cpu_with(&[
-            0x08000093, csrrs, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x08000093, csrrs, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.csr().mie, 128);
     }
@@ -1376,9 +1547,7 @@ mod tests {
     #[test]
     fn test_mul() {
         let mul = (0x01 << 25) | (2 << 20) | (1 << 15) | (0 << 12) | (3 << 7) | 0x33;
-        let mut cpu = cpu_with(&[
-            0x00700093, 0x00600113, mul, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x00700093, 0x00600113, mul, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(3), 42);
     }
@@ -1386,9 +1555,7 @@ mod tests {
     #[test]
     fn test_div() {
         let div = (0x01 << 25) | (2 << 20) | (1 << 15) | (4 << 12) | (3 << 7) | 0x33;
-        let mut cpu = cpu_with(&[
-            0x02A00093, 0x00700113, div, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x02A00093, 0x00700113, div, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(3), 6);
     }
@@ -1396,9 +1563,7 @@ mod tests {
     #[test]
     fn test_div_by_zero() {
         let div = (0x01 << 25) | (2 << 20) | (1 << 15) | (4 << 12) | (3 << 7) | 0x33;
-        let mut cpu = cpu_with(&[
-            0x02A00093, 0x00000113, div, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x02A00093, 0x00000113, div, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(3), u64::MAX);
     }
@@ -1406,9 +1571,7 @@ mod tests {
     #[test]
     fn test_rem() {
         let rem = (0x01 << 25) | (2 << 20) | (1 << 15) | (6 << 12) | (3 << 7) | 0x33;
-        let mut cpu = cpu_with(&[
-            0x02B00093, 0x00700113, rem, 0x00000073,
-        ]);
+        let mut cpu = cpu_with(&[0x02B00093, 0x00700113, rem, 0x00000073]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(3), 1);
     }
@@ -1416,13 +1579,12 @@ mod tests {
     #[test]
     fn test_lr_sc_w() {
         let mut cpu = RiscvCpu::new("test", 8192, 0);
-        let sw     = (0 << 25) | (1 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x23;
-        let lr_w   = (0x02 << 27) | (0 << 20) | (2 << 15) | (2 << 12) | (3 << 7) | 0x2F;
-        let sc_w   = (0x03 << 27) | (4 << 20) | (2 << 15) | (2 << 12) | (5 << 7) | 0x2F;
-        let lw_x6  = (0 << 20) | (2 << 15) | (2 << 12) | (6 << 7) | 0x03;
+        let sw = (0 << 25) | (1 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x23;
+        let lr_w = (0x02 << 27) | (0 << 20) | (2 << 15) | (2 << 12) | (3 << 7) | 0x2F;
+        let sc_w = (0x03 << 27) | (4 << 20) | (2 << 15) | (2 << 12) | (5 << 7) | 0x2F;
+        let lw_x6 = (0 << 20) | (2 << 15) | (2 << 12) | (6 << 7) | 0x03;
         let insns: Vec<u32> = vec![
-            0x02A00093, 0x10000113, sw, lr_w, 0x06300213, sc_w, lw_x6,
-            0x00000073,
+            0x02A00093, 0x10000113, sw, lr_w, 0x06300213, sc_w, lw_x6, 0x00000073,
         ];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
@@ -1437,12 +1599,11 @@ mod tests {
     #[test]
     fn test_amoadd_w() {
         let mut cpu = RiscvCpu::new("test", 8192, 0);
-        let sw       = (0 << 25) | (1 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x23;
+        let sw = (0 << 25) | (1 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x23;
         let amoadd_w = (0x00 << 27) | (4 << 20) | (2 << 15) | (2 << 12) | (3 << 7) | 0x2F;
-        let lw_x5    = (0 << 20) | (2 << 15) | (2 << 12) | (5 << 7) | 0x03;
+        let lw_x5 = (0 << 20) | (2 << 15) | (2 << 12) | (5 << 7) | 0x03;
         let insns: Vec<u32> = vec![
-            0x00A00093, 0x10000113, sw, 0x00500213, amoadd_w, lw_x5,
-            0x00000073,
+            0x00A00093, 0x10000113, sw, 0x00500213, amoadd_w, lw_x5, 0x00000073,
         ];
         for (i, insn) in insns.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
@@ -1456,22 +1617,25 @@ mod tests {
     #[test]
     fn test_trap_delivery_and_mret() {
         let mut cpu = RiscvCpu::new("test", 8192, 0);
-        let csrrw_mtvec    = (0x305 << 20) | (1 << 15) | (1 << 12) | (0 << 7) | 0x73;
-        let csrrs_mie      = (0x304 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x73;
-        let csrrs_mstatus  = (0x300 << 20) | (3 << 15) | (2 << 12) | (0 << 7) | 0x73;
+        let csrrw_mtvec = (0x305 << 20) | (1 << 15) | (1 << 12) | (0 << 7) | 0x73;
+        let csrrs_mie = (0x304 << 20) | (2 << 15) | (2 << 12) | (0 << 7) | 0x73;
+        let csrrs_mstatus = (0x300 << 20) | (3 << 15) | (2 << 12) | (0 << 7) | 0x73;
         let main_code: Vec<u32> = vec![
-            0x10000093, csrrw_mtvec, 0x08000113, csrrs_mie,
-            0x00800193, csrrs_mstatus,
-            0x02A00593, 0x00000073,
+            0x10000093,
+            csrrw_mtvec,
+            0x08000113,
+            csrrs_mie,
+            0x00800193,
+            csrrs_mstatus,
+            0x02A00593,
+            0x00000073,
         ];
         for (i, insn) in main_code.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
         }
         let mret = 0x30200073u32;
         let csrrc_mie = (0x304u32 << 20) | (9 << 15) | (3 << 12) | (0 << 7) | 0x73;
-        let handler: Vec<u32> = vec![
-            0x00100513, 0x08000493, csrrc_mie, mret,
-        ];
+        let handler: Vec<u32> = vec![0x00100513, 0x08000493, csrrc_mie, mret];
         for (i, insn) in handler.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (0x100 + i * 4) as u64);
         }
@@ -1502,16 +1666,16 @@ mod tests {
         let mret = 0x30200073u32;
 
         let m_code: Vec<u32> = vec![
-            0x20000093,         // ADDI x1, x0, 0x200 (S-mode entry)
-            csrrw_mepc,         // CSRRW x0, mepc, x1
-            0x00800113,         // ADDI x2, x0, 0x008 (MIE bit)
+            0x20000093, // ADDI x1, x0, 0x200 (S-mode entry)
+            csrrw_mepc, // CSRRW x0, mepc, x1
+            0x00800113, // ADDI x2, x0, 0x008 (MIE bit)
             // MPP = S-mode (1 << 11 = 0x800)
-            0x00001137,         // LUI x2, 0x1
-            0x80010113,         // ADDI x2, x2, -0x800 → x2 = 0x800
-            csrrw_mstatus,      // CSRRW x0, mstatus, x2
-            0x10000193,         // ADDI x3, x0, 0x100 (handler)
-            csrrw_mtvec,        // CSRRW x0, mtvec, x3
-            mret,               // MRET → S-mode at 0x200
+            0x00001137,    // LUI x2, 0x1
+            0x80010113,    // ADDI x2, x2, -0x800 → x2 = 0x800
+            csrrw_mstatus, // CSRRW x0, mstatus, x2
+            0x10000193,    // ADDI x3, x0, 0x100 (handler)
+            csrrw_mtvec,   // CSRRW x0, mtvec, x3
+            mret,          // MRET → S-mode at 0x200
         ];
         for (i, insn) in m_code.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
@@ -1519,8 +1683,8 @@ mod tests {
 
         // S-mode code at 0x200
         let s_code: Vec<u32> = vec![
-            0x00100513,         // ADDI x10, x0, 1
-            0x00000073,         // ECALL → trap to M-mode (cause 9)
+            0x00100513, // ADDI x10, x0, 1
+            0x00000073, // ECALL → trap to M-mode (cause 9)
         ];
         for (i, insn) in s_code.iter().enumerate() {
             cpu.load_binary(&insn.to_le_bytes(), (0x200 + i * 4) as u64);
@@ -1528,7 +1692,7 @@ mod tests {
 
         // M-mode trap handler at 0x100
         let handler: Vec<u32> = vec![
-            0x00100593,         // ADDI x11, x0, 1
+            0x00100593, // ADDI x11, x0, 1
         ];
         // After this instruction, next is 0x104 which is 0 → halt
         for (i, insn) in handler.iter().enumerate() {
@@ -1538,8 +1702,106 @@ mod tests {
         cpu.set_pc(0);
         cpu.exec(50).unwrap();
 
-        assert_eq!(cpu.reg(10), 1);  // S-mode executed
-        assert_eq!(cpu.reg(11), 1);  // M-mode handler executed
-        assert_eq!(cpu.csr().mcause, 9);  // ecall from S-mode
+        assert_eq!(cpu.reg(10), 1); // S-mode executed
+        assert_eq!(cpu.reg(11), 1); // M-mode handler executed
+        assert_eq!(cpu.csr().mcause, 9); // ecall from S-mode
+    }
+
+    // ── JIT / interpreter parity ───────────────────────────────
+
+    fn run_jit_parity_program(insns: &[u32], jit_enabled: bool) -> RiscvCpu {
+        let mut cpu = RiscvCpu::new("parity", 8192, 0);
+        cpu.set_jit_enabled(jit_enabled);
+        for (i, insn) in insns.iter().enumerate() {
+            cpu.load_binary(&insn.to_le_bytes(), (i * 4) as u64);
+        }
+        cpu.set_pc(0);
+        cpu.exec(100_000).unwrap();
+        cpu
+    }
+
+    fn assert_jit_parity(jit_cpu: &RiscvCpu, interp_cpu: &RiscvCpu) {
+        for i in 0..32 {
+            assert_eq!(jit_cpu.reg(i), interp_cpu.reg(i), "x{i} differs");
+        }
+        assert_eq!(jit_cpu.pc(), interp_cpu.pc(), "pc differs");
+        assert_eq!(
+            jit_cpu.is_halted(),
+            interp_cpu.is_halted(),
+            "halted differs"
+        );
+        assert_eq!(
+            jit_cpu.csr().mscratch,
+            interp_cpu.csr().mscratch,
+            "mscratch differs"
+        );
+        assert_eq!(jit_cpu.csr().mie, interp_cpu.csr().mie, "mie differs");
+    }
+
+    #[test]
+    fn jit_interpreter_parity_loop_mem() {
+        let insns = [
+            0x1000_0113, // addi x2, x0, 0x100
+            0x02A0_0193, // addi x3, x0, 42
+            0x0031_2023, // sw   x3, 0(x2)
+            0x0001_2203, // lw   x4, 0(x2)
+            0x3E80_0093, // addi x1, x0, 1000
+            0xFFF0_8093, // addi x1, x1, -1
+            0xFE00_9EE3, // bne  x1, x0, -4
+            0x0012_0293, // addi x5, x4, 1
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+
+        assert_eq!(jit_cpu.reg(1), 0);
+        assert_eq!(jit_cpu.reg(2), 0x100);
+        assert_eq!(jit_cpu.reg(3), 42);
+        assert_eq!(jit_cpu.reg(4), 42);
+        assert_eq!(jit_cpu.reg(5), 43);
+        assert!(jit_cpu.is_halted());
+
+        let (_, compiles, _) = jit_cpu.jit.as_ref().expect("JIT engine").stats();
+        assert!(
+            compiles > 0,
+            "JIT compiled no blocks; parity test did not exercise JIT"
+        );
+
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
+
+    #[test]
+    fn jit_interpreter_parity_jal() {
+        let insns = [
+            0x0080_00EF, // jal  x1, +8
+            0x0010_0113, // addi x2, x0, 1 (skipped)
+            0x0020_0193, // addi x3, x0, 2
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+
+        assert_eq!(jit_cpu.reg(1), 4);
+        assert_eq!(jit_cpu.reg(2), 0);
+        assert_eq!(jit_cpu.reg(3), 2);
+
+        assert_jit_parity(&jit_cpu, &interp_cpu);
+    }
+
+    #[test]
+    fn jit_interpreter_parity_csr() {
+        let csrrw = (0x340u32 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
+        let insns = [
+            0x0640_0113, // addi x2, x0, 100
+            csrrw,       // csrrw x1, mscratch, x2
+            0x0000_0073, // ecall
+        ];
+        let jit_cpu = run_jit_parity_program(&insns, true);
+        let interp_cpu = run_jit_parity_program(&insns, false);
+
+        assert_eq!(jit_cpu.reg(1), 0);
+        assert_eq!(jit_cpu.csr().mscratch, 100);
+
+        assert_jit_parity(&jit_cpu, &interp_cpu);
     }
 }

@@ -2,36 +2,42 @@
 
 mod logging;
 
-use std::collections::HashMap;
-use std::io::{Read as IoRead, Write as IoWrite};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::diag::{trace as trace_cat, TraceCategory};
 use rhetsim_core::irq::{IrqLine, IrqSink};
 use rhetsim_core::mem::{MemAttrs, MemTarget};
 use rhetsim_core::unit::{Unit, UnitCaps};
-use rhetsim_manifest::manifest::{Manifest, UnitDesc, BusDesc};
-use rhetsim_runtime::scheduler::Scheduler;
 use rhetsim_cpu_riscv::{csr, RiscvIrqLine};
 use rhetsim_intc_clint::ClintLine;
 use rhetsim_intc_plic::PlicContextLine;
+use rhetsim_manifest::manifest::{BusDesc, Manifest, UnitDesc};
+use rhetsim_runtime::scheduler::Scheduler;
+use std::collections::HashMap;
+use std::io::{Read as IoRead, Write as IoWrite};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// QEMU virt maps UART0 to PLIC source 10.
 const UART_PLIC_IRQ: u32 = 10;
 /// Marker printed by the initramfs /init.
 const INIT_OK_MARKER: &[u8] = b"RHETSIM_INIT_OK";
-use tracing::{debug, error, info, trace, warn};
-use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
+use goblin::elf::Elf;
+use tracing::{debug, error, info, trace, warn};
 
 struct LoadedImage {
     entry: Option<u64>,
 }
 
-fn load_image(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], default_addr: u64, dram_base: u64, label: &str) -> LoadedImage {
+fn load_image(
+    cpu: &mut rhetsim_cpu_riscv::RiscvCpu,
+    data: &[u8],
+    default_addr: u64,
+    dram_base: u64,
+    label: &str,
+) -> LoadedImage {
     if data.len() >= 4 && &data[..4] == b"\x7fELF" {
         load_elf(cpu, data, dram_base, label)
     } else {
@@ -43,7 +49,12 @@ fn load_image(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], default_addr: 
     }
 }
 
-fn load_elf(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], dram_base: u64, label: &str) -> LoadedImage {
+fn load_elf(
+    cpu: &mut rhetsim_cpu_riscv::RiscvCpu,
+    data: &[u8],
+    dram_base: u64,
+    label: &str,
+) -> LoadedImage {
     let elf = Elf::parse(data).unwrap_or_else(|e| {
         error!(target: "loader", "Failed to parse {label} ELF: {e}");
         std::process::exit(1);
@@ -79,7 +90,9 @@ fn load_elf(cpu: &mut rhetsim_cpu_riscv::RiscvCpu, data: &[u8], dram_base: u64, 
     }
     info!(target: "loader", "  {label:<10} {:>8} bytes -> 0x{:08X}..0x{:08X} (ELF, entry 0x{:X})",
         total_loaded, lo, hi, elf.entry);
-    LoadedImage { entry: Some(elf.entry) }
+    LoadedImage {
+        entry: Some(elf.entry),
+    }
 }
 
 fn main() {
@@ -109,7 +122,9 @@ fn main() {
         eprintln!("  --log-file <path>    Write simulator logs to file (default: stderr)");
         eprintln!("  --trace <items>      Execution trace categories: exec,cpu,jit,int,plic,clint,uart,loader,all");
         eprintln!("  --trace-file <path>  Write execution trace to file (default: stderr)");
-        eprintln!("  --no-jit             Disable the JIT (interpreter only; useful for debugging)");
+        eprintln!(
+            "  --no-jit             Disable the JIT (interpreter only; useful for debugging)"
+        );
         eprintln!("  --list-units    List available unit kinds and exit");
         std::process::exit(1);
     }
@@ -137,12 +152,22 @@ fn main() {
     info!(target: "platform", "Units:    {}", manifest.units.len());
     info!(target: "platform", "Buses:    {}", manifest.buses.len());
 
-    let has_boot = manifest.boot.firmware.is_some()
-        || parse_str_opt(&args, "--firmware").is_some();
+    let has_boot = manifest.boot.firmware.is_some() || parse_str_opt(&args, "--firmware").is_some();
     if has_boot {
         let interactive = !args.iter().any(|a| a == "--batch");
-        let max_steps = if interactive { u64::MAX } else { parse_opt(&args, "--steps", 100_000_000u64) };
-        boot_riscv_linux(&manifest, manifest_dir, &args, max_steps, interactive, &diag);
+        let max_steps = if interactive {
+            u64::MAX
+        } else {
+            parse_opt(&args, "--steps", 100_000_000u64)
+        };
+        boot_riscv_linux(
+            &manifest,
+            manifest_dir,
+            &args,
+            max_steps,
+            interactive,
+            &diag,
+        );
         return;
     }
 
@@ -211,13 +236,24 @@ fn boot_riscv_linux(
     let mut dtb_data = read_required(&dtb_path, "DTB");
     let initrd_data = initrd_path.as_deref().map(|p| read_required(p, "initrd"));
 
-    let dram_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-mem-dram")
+    let dram_desc = manifest
+        .units
+        .iter()
+        .find(|u| u.kind == "rhetsim-mem-dram")
         .expect("boot requires a rhetsim-mem-dram unit");
-    let clint_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-intc-clint")
+    let clint_desc = manifest
+        .units
+        .iter()
+        .find(|u| u.kind == "rhetsim-intc-clint")
         .expect("boot requires a rhetsim-intc-clint unit");
-    let plic_desc = manifest.units.iter().find(|u| u.kind == "rhetsim-intc-plic")
+    let plic_desc = manifest
+        .units
+        .iter()
+        .find(|u| u.kind == "rhetsim-intc-plic")
         .expect("boot requires a rhetsim-intc-plic unit");
-    let cpu_descs: Vec<&UnitDesc> = manifest.units.iter()
+    let cpu_descs: Vec<&UnitDesc> = manifest
+        .units
+        .iter()
         .filter(|u| u.kind == "rhetsim-cpu-riscv")
         .collect();
     if cpu_descs.is_empty() {
@@ -226,21 +262,27 @@ fn boot_riscv_linux(
     }
     let num_harts = cpu_descs.len();
 
-    let dram_size = cfg_usize(&dram_desc.config, "size",
-        cfg_usize(&dram_desc.config, "size_mb", 64) * 1024 * 1024);
+    let dram_size = cfg_usize(
+        &dram_desc.config,
+        "size",
+        cfg_usize(&dram_desc.config, "size_mb", 64) * 1024 * 1024,
+    );
     let dram_base = cfg_u64(&dram_desc.config, "base", 0x8000_0000);
     let clint_harts = cfg_usize(&clint_desc.config, "num_harts", num_harts).max(num_harts);
     let clint_base = cfg_u64(&clint_desc.config, "base", 0x0200_0000);
     let plic_base = cfg_u64(&plic_desc.config, "base", 0x0c00_0000);
     let plic_sources = cfg_usize(&plic_desc.config, "num_sources", 64);
-    let plic_contexts = cfg_usize(&plic_desc.config, "num_contexts", num_harts * 2)
-        .max(num_harts * 2);
+    let plic_contexts =
+        cfg_usize(&plic_desc.config, "num_contexts", num_harts * 2).max(num_harts * 2);
 
     let fw_addr = boot.firmware_addr.unwrap_or(dram_base);
     let kernel_addr = boot.kernel_addr.unwrap_or(dram_base + 0x0020_0000);
     let dtb_addr = boot.dtb_addr.unwrap_or(dram_base + 0x0200_0000);
-    let initrd_addr = parse_opt(args, "--initrd-addr",
-        boot.initrd_addr.unwrap_or(dram_base + 0x0300_0000));
+    let initrd_addr = parse_opt(
+        args,
+        "--initrd-addr",
+        boot.initrd_addr.unwrap_or(dram_base + 0x0300_0000),
+    );
 
     if let Some(data) = initrd_data.as_ref() {
         let initrd_end = match initrd_addr.checked_add(data.len() as u64) {
@@ -269,34 +311,81 @@ fn boot_riscv_linux(
     info!(target: "boot", "  PLIC    @ 0x{:08X}  ({} sources, {} contexts)", plic_base, plic_sources, plic_contexts);
     info!(target: "boot", "  HARTs   {}", num_harts);
 
-    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(&dram_desc.id, dram_size, dram_base));
-    let clint = Arc::new(rhetsim_intc_clint::Clint::new(&clint_desc.id, clint_harts, clint_base));
+    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(
+        &dram_desc.id,
+        dram_size,
+        dram_base,
+    ));
+    let clint = Arc::new(rhetsim_intc_clint::Clint::new(
+        &clint_desc.id,
+        clint_harts,
+        clint_base,
+    ));
     let plic = Arc::new(rhetsim_intc_plic::Plic::new(
-        &plic_desc.id, plic_sources, plic_contexts, plic_base,
+        &plic_desc.id,
+        plic_sources,
+        plic_contexts,
+        plic_base,
     ));
     let uart = Arc::new(rhetsim_io_uart::Uart::new("uart0"));
 
     let uart_base = find_target_base(manifest, "uart0").unwrap_or(0x1000_0000);
 
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, dram_base, MemAttrs::rw(), None).unwrap();
-    bus.map(clint.clone() as Arc<dyn MemTarget>, clint_base, MemAttrs::rw(), None).unwrap();
-    bus.map(plic.clone() as Arc<dyn MemTarget>, plic_base, MemAttrs::rw(), None).unwrap();
-    bus.map(uart.clone() as Arc<dyn MemTarget>, uart_base, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        dram_base,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        clint.clone() as Arc<dyn MemTarget>,
+        clint_base,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        plic.clone() as Arc<dyn MemTarget>,
+        plic_base,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        uart.clone() as Arc<dyn MemTarget>,
+        uart_base,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     // UART IRQ 10 is a PLIC source; per hart, PLIC context 2*hart is the
     // M-mode output (MEIP) and 2*hart+1 is the S-mode output (SEIP).
-    uart.set_irq_line(IrqLine::new(plic.clone() as Arc<dyn IrqSink>, UART_PLIC_IRQ));
+    uart.set_irq_line(IrqLine::new(
+        plic.clone() as Arc<dyn IrqSink>,
+        UART_PLIC_IRQ,
+    ));
 
     let mut cpus: Vec<rhetsim_cpu_riscv::RiscvCpu> = Vec::with_capacity(num_harts);
     for (hart, desc) in cpu_descs.iter().enumerate() {
         let hart_mem_base = cfg_u64(&desc.config, "mem_base", dram_base);
         let mut cpu = rhetsim_cpu_riscv::RiscvCpu::with_bus(&desc.id, bus.clone(), hart_mem_base);
         cpu.set_hartid(hart as u64);
-        cpu.set_irq_line(RiscvIrqLine::MTimer, Arc::new(ClintLine::new(clint.clone(), hart, true)));
-        cpu.set_irq_line(RiscvIrqLine::MSoft, Arc::new(ClintLine::new(clint.clone(), hart, false)));
-        cpu.set_irq_line(RiscvIrqLine::MExt, Arc::new(PlicContextLine::new(plic.clone(), hart * 2)));
+        cpu.set_irq_line(
+            RiscvIrqLine::MTimer,
+            Arc::new(ClintLine::new(clint.clone(), hart, true)),
+        );
+        cpu.set_irq_line(
+            RiscvIrqLine::MSoft,
+            Arc::new(ClintLine::new(clint.clone(), hart, false)),
+        );
+        cpu.set_irq_line(
+            RiscvIrqLine::MExt,
+            Arc::new(PlicContextLine::new(plic.clone(), hart * 2)),
+        );
         cpu.set_irq_line(
             RiscvIrqLine::SExt,
             Arc::new(PlicContextLine::new(plic.clone(), hart * 2 + 1)),
@@ -337,7 +426,7 @@ fn boot_riscv_linux(
     for (hart, cpu) in cpus.iter_mut().enumerate() {
         cpu.set_dram_direct(dram_ptr, dram_host_base, dram_sz);
         cpu.set_reg(10, hart as u64); // a0 = hartid
-        cpu.set_reg(11, dtb_addr);   // a1 = DTB
+        cpu.set_reg(11, dtb_addr); // a1 = DTB
         cpu.set_pc(entry_pc);
     }
     info!(target: "boot", "  Entry PC  0x{:08X} ({} harts)", entry_pc, num_harts);
@@ -378,7 +467,9 @@ fn boot_riscv_linux(
             let mut buf = [0u8; 64];
             let mut ctrl_a = false;
             loop {
-                if stop_ref.load(Ordering::Relaxed) { break; }
+                if stop_ref.load(Ordering::Relaxed) {
+                    break;
+                }
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -392,7 +483,10 @@ fn boot_riscv_linux(
                                 uart_ref.push_input(&[0x01, b]);
                                 continue;
                             }
-                            if b == 0x01 { ctrl_a = true; continue; }
+                            if b == 0x01 {
+                                ctrl_a = true;
+                                continue;
+                            }
                             uart_ref.push_input(&[b]);
                         }
                     }
@@ -433,14 +527,17 @@ fn boot_riscv_linux(
                 }
                 all_output.extend_from_slice(&out);
             }
-            if all_output.windows(INIT_OK_MARKER.len()).any(|w| w == INIT_OK_MARKER) {
+            if all_output
+                .windows(INIT_OK_MARKER.len())
+                .any(|w| w == INIT_OK_MARKER)
+            {
                 info!(target: "boot", "initramfs /init reached; stopping early");
                 break;
             }
         }
 
         if !interactive {
-            if total_steps % 10_000_000 == 0 {
+            if total_steps.is_multiple_of(10_000_000) {
                 let cpu0 = &cpus[0];
                 debug!(target: "boot", steps = total_steps, harts = num_harts,
                     pc = format_args!("0x{:X}", cpu0.pc()),
@@ -477,7 +574,9 @@ fn boot_riscv_linux(
     }
 
     drop(_raw_guard);
-    if let Some(t) = stdin_thread { let _ = t.join(); }
+    if let Some(t) = stdin_thread {
+        let _ = t.join();
+    }
 
     if interactive {
         info!(target: "boot", "Exited ({} steps, {} harts)", total_steps, num_harts);
@@ -505,7 +604,12 @@ fn boot_riscv_linux(
     }
 }
 
-fn resolve_opt_path(args: &[String], flag: &str, manifest_val: Option<&str>, manifest_dir: &Path) -> Option<String> {
+fn resolve_opt_path(
+    args: &[String],
+    flag: &str,
+    manifest_val: Option<&str>,
+    manifest_dir: &Path,
+) -> Option<String> {
     if let Some(cli_val) = parse_str_opt(args, flag) {
         return Some(cli_val);
     }
@@ -523,7 +627,9 @@ fn fdt_cstr(data: &[u8], start: usize, end: usize) -> Result<String, String> {
         return Err("bad FDT string range".to_string());
     }
     let bytes = &data[start..end];
-    let len = bytes.iter().position(|&b| b == 0)
+    let len = bytes
+        .iter()
+        .position(|&b| b == 0)
         .ok_or_else(|| "unterminated FDT string".to_string())?;
     std::str::from_utf8(&bytes[..len])
         .map(|s| s.to_string())
@@ -544,9 +650,11 @@ fn patch_dtb_initrd(dtb: &mut [u8], start: u64, end: u64) -> Result<(), String> 
     let off_strings = fdt_be32(dtb, 12)? as usize;
     let size_strings = fdt_be32(dtb, 32)? as usize;
     let size_struct = fdt_be32(dtb, 36)? as usize;
-    let end_struct = off_struct.checked_add(size_struct)
+    let end_struct = off_struct
+        .checked_add(size_struct)
         .ok_or_else(|| "bad FDT structure range".to_string())?;
-    let end_strings = off_strings.checked_add(size_strings)
+    let end_strings = off_strings
+        .checked_add(size_strings)
         .ok_or_else(|| "bad FDT strings range".to_string())?;
     if end_struct > dtb.len() || end_strings > dtb.len() {
         return Err("FDT block exceeds file".to_string());
@@ -562,7 +670,8 @@ fn patch_dtb_initrd(dtb: &mut [u8], start: u64, end: u64) -> Result<(), String> 
         let token = fdt_be32(dtb, pos)?;
         pos += 4;
         match token {
-            1 => { // FDT_BEGIN_NODE
+            1 => {
+                // FDT_BEGIN_NODE
                 let name_start = pos;
                 while pos < end_struct && dtb[pos] != 0 {
                     pos += 1;
@@ -578,13 +687,15 @@ fn patch_dtb_initrd(dtb: &mut [u8], start: u64, end: u64) -> Result<(), String> 
                     in_chosen = true;
                 }
             }
-            2 => { // FDT_END_NODE
+            2 => {
+                // FDT_END_NODE
                 if in_chosen && depth == 2 {
                     break;
                 }
                 depth = depth.saturating_sub(1);
             }
-            3 => { // FDT_PROP
+            3 => {
+                // FDT_PROP
                 let len = fdt_be32(dtb, pos)? as usize;
                 pos += 4;
                 let nameoff = fdt_be32(dtb, pos)? as usize;
@@ -594,7 +705,8 @@ fn patch_dtb_initrd(dtb: &mut [u8], start: u64, end: u64) -> Result<(), String> 
                     return Err("FDT property exceeds structure block".to_string());
                 }
                 if in_chosen && depth == 2 {
-                    let name_start = off_strings.checked_add(nameoff)
+                    let name_start = off_strings
+                        .checked_add(nameoff)
                         .ok_or_else(|| "bad FDT property name offset".to_string())?;
                     let name = fdt_cstr(dtb, name_start, end_strings)?;
                     let (is_start, is_end) = match name.as_str() {
@@ -620,19 +732,26 @@ fn patch_dtb_initrd(dtb: &mut [u8], start: u64, end: u64) -> Result<(), String> 
                 }
                 pos += (len + 3) & !3;
             }
-            4 => {} // FDT_NOP
+            4 => {}     // FDT_NOP
             9 => break, // FDT_END
             other => return Err(format!("unknown FDT token 0x{other:x}")),
         }
     }
 
     if !found_start || !found_end {
-        return Err("DTB lacks /chosen linux,initrd-start/end; rebuild it from the updated DTS".to_string());
+        return Err(
+            "DTB lacks /chosen linux,initrd-start/end; rebuild it from the updated DTS".to_string(),
+        );
     }
     Ok(())
 }
 
-fn resolve_path(args: &[String], flag: &str, manifest_val: Option<&str>, manifest_dir: &Path) -> String {
+fn resolve_path(
+    args: &[String],
+    flag: &str,
+    manifest_val: Option<&str>,
+    manifest_dir: &Path,
+) -> String {
     if let Some(cli_val) = parse_str_opt(args, flag) {
         return cli_val;
     }
@@ -668,9 +787,7 @@ fn find_target_base(manifest: &Manifest, unit_id: &str) -> Option<u64> {
 }
 
 fn parse_str_opt(args: &[String], flag: &str) -> Option<String> {
-    args.windows(2)
-        .find(|w| w[0] == flag)
-        .map(|w| w[1].clone())
+    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
 }
 
 // ── Generic scheduler path ────────────────────────────────────
@@ -701,9 +818,7 @@ const KNOWN_KINDS: &[&str] = &[
 
 type UnitArc = Arc<Mutex<Box<dyn Unit>>>;
 
-fn build_platform(
-    manifest: &Manifest,
-) -> Result<Vec<(String, String, UnitArc)>, String> {
+fn build_platform(manifest: &Manifest) -> Result<Vec<(String, String, UnitArc)>, String> {
     // Phase 1: Create memory targets for bus mapping
     let mut mem_targets: HashMap<String, Arc<dyn MemTarget>> = HashMap::new();
     for desc in &manifest.units {
@@ -719,12 +834,9 @@ fn build_platform(
             let mut bus = MemBus::new(id);
             for target_desc in targets {
                 if let Some(target) = mem_targets.get(&target_desc.unit) {
-                    if let Err(e) = bus.map(
-                        Arc::clone(target),
-                        target_desc.base,
-                        MemAttrs::rw(),
-                        None,
-                    ) {
+                    if let Err(e) =
+                        bus.map(Arc::clone(target), target_desc.base, MemAttrs::rw(), None)
+                    {
                         warn!(target: "platform", "Failed to map {} into {}: {}", target_desc.unit, id, e);
                     }
                 }
@@ -759,27 +871,42 @@ fn build_platform(
 }
 
 fn is_memory(kind: &str) -> bool {
-    matches!(kind, "rhetsim-mem-dram" | "rhetsim-mem-sram" | "rhetsim-mem-gddr")
+    matches!(
+        kind,
+        "rhetsim-mem-dram" | "rhetsim-mem-sram" | "rhetsim-mem-gddr"
+    )
 }
 
 fn create_mem_target(desc: &UnitDesc) -> Result<Option<Arc<dyn MemTarget>>, String> {
     match desc.kind.as_str() {
         "rhetsim-mem-dram" => {
-            let size = cfg_usize(&desc.config, "size",
-                cfg_usize(&desc.config, "size_mb", 64) * 1024 * 1024);
+            let size = cfg_usize(
+                &desc.config,
+                "size",
+                cfg_usize(&desc.config, "size_mb", 64) * 1024 * 1024,
+            );
             let base = cfg_u64(&desc.config, "base", 0);
-            Ok(Some(Arc::new(rhetsim_mem_dram::Dram::with_base(&desc.id, size, base))))
+            Ok(Some(Arc::new(rhetsim_mem_dram::Dram::with_base(
+                &desc.id, size, base,
+            ))))
         }
         "rhetsim-mem-sram" => {
             let size = cfg_usize(&desc.config, "size", 4096);
             let base = cfg_u64(&desc.config, "base", 0);
-            Ok(Some(Arc::new(rhetsim_mem_sram::Sram::with_base(&desc.id, size, base))))
+            Ok(Some(Arc::new(rhetsim_mem_sram::Sram::with_base(
+                &desc.id, size, base,
+            ))))
         }
         "rhetsim-mem-gddr" => {
-            let size = cfg_usize(&desc.config, "size",
-                cfg_usize(&desc.config, "size_mb", 64) * 1024 * 1024);
+            let size = cfg_usize(
+                &desc.config,
+                "size",
+                cfg_usize(&desc.config, "size_mb", 64) * 1024 * 1024,
+            );
             let base = cfg_u64(&desc.config, "base", 0);
-            Ok(Some(Arc::new(rhetsim_mem_gddr::Gddr::with_base(&desc.id, size, base))))
+            Ok(Some(Arc::new(rhetsim_mem_gddr::Gddr::with_base(
+                &desc.id, size, base,
+            ))))
         }
         _ => Ok(None),
     }
@@ -796,41 +923,53 @@ fn create_unit(
         "rhetsim-cpu-riscv" => {
             let mem_base = cfg_u64(&desc.config, "mem_base", 0x8000_0000);
             if let Some(bus) = bus {
-                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::with_bus(&desc.id, bus, mem_base))))
+                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::with_bus(
+                    &desc.id, bus, mem_base,
+                ))))
             } else {
                 let mem_size = cfg_usize(&desc.config, "mem_size", 64 * 1024);
-                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::new(&desc.id, mem_size, mem_base))))
+                Ok(Some(Box::new(rhetsim_cpu_riscv::RiscvCpu::new(
+                    &desc.id, mem_size, mem_base,
+                ))))
             }
         }
         "rhetsim-cpu-arm" => {
             let mem_base = cfg_u64(&desc.config, "mem_base", 0);
             if let Some(bus) = bus {
-                Ok(Some(Box::new(rhetsim_cpu_arm::cpu::ArmCpu::with_bus(&desc.id, bus, mem_base))))
+                Ok(Some(Box::new(rhetsim_cpu_arm::cpu::ArmCpu::with_bus(
+                    &desc.id, bus, mem_base,
+                ))))
             } else {
-                Err(format!("ARM CPU '{}' requires a MemBus (no flat-memory mode)", desc.id))
+                Err(format!(
+                    "ARM CPU '{}' requires a MemBus (no flat-memory mode)",
+                    desc.id
+                ))
             }
         }
-        "rhetsim-cpu-mock" => {
-            Ok(Some(Box::new(rhetsim_cpu_mock::MockCpu::new(&desc.id))))
-        }
+        "rhetsim-cpu-mock" => Ok(Some(Box::new(rhetsim_cpu_mock::MockCpu::new(&desc.id)))),
         "rhetsim-accel-gpgpu" => {
             let vram_size = cfg_usize(&desc.config, "vram_size", 64 * 1024);
-            Ok(Some(Box::new(rhetsim_accel_gpgpu::Gpgpu::new(&desc.id, vram_size))))
+            Ok(Some(Box::new(rhetsim_accel_gpgpu::Gpgpu::new(
+                &desc.id, vram_size,
+            ))))
         }
-        "rhetsim-io-uart" => {
-            Ok(Some(Box::new(rhetsim_io_uart::Uart::new(&desc.id))))
-        }
+        "rhetsim-io-uart" => Ok(Some(Box::new(rhetsim_io_uart::Uart::new(&desc.id)))),
         "rhetsim-intc-clint" => {
             let num_harts = cfg_usize(&desc.config, "num_harts", 1);
             let base = cfg_u64(&desc.config, "base", 0x0200_0000);
-            Ok(Some(Box::new(rhetsim_intc_clint::Clint::new(&desc.id, num_harts, base))))
+            Ok(Some(Box::new(rhetsim_intc_clint::Clint::new(
+                &desc.id, num_harts, base,
+            ))))
         }
         "rhetsim-intc-plic" => {
             let num_sources = cfg_usize(&desc.config, "num_sources", 64);
             let num_contexts = cfg_usize(&desc.config, "num_contexts", 2);
             let base = cfg_u64(&desc.config, "base", 0x0C00_0000);
             Ok(Some(Box::new(rhetsim_intc_plic::Plic::new(
-                &desc.id, num_sources, num_contexts, base,
+                &desc.id,
+                num_sources,
+                num_contexts,
+                base,
             ))))
         }
         "rhetsim-intc-gicv3" => {
@@ -868,7 +1007,11 @@ fn cfg_u64(config: &serde_json::Value, key: &str, default: u64) -> u64 {
 }
 
 fn cfg_usize(config: &serde_json::Value, key: &str, default: usize) -> usize {
-    config.get(key).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(default)
+    config
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(default)
 }
 
 // ── Raw terminal mode ─────────────────────────────────────────

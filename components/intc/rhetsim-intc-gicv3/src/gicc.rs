@@ -25,16 +25,30 @@ impl Gicc {
         }
     }
 
-    pub fn cpu_id(&self) -> u8 { self.cpu_id }
+    pub fn cpu_id(&self) -> u8 {
+        self.cpu_id
+    }
 
-    pub fn pmr(&self) -> u8 { self.pmr }
-    pub fn set_pmr(&mut self, val: u8) { self.pmr = val; }
+    pub fn pmr(&self) -> u8 {
+        self.pmr
+    }
+    pub fn set_pmr(&mut self, val: u8) {
+        self.pmr = val;
+    }
 
-    pub fn bpr(&self) -> u8 { self.bpr }
-    pub fn set_bpr(&mut self, val: u8) { self.bpr = val; }
+    pub fn bpr(&self) -> u8 {
+        self.bpr
+    }
+    pub fn set_bpr(&mut self, val: u8) {
+        self.bpr = val;
+    }
 
-    pub fn group1_enabled(&self) -> bool { self.group1_enabled }
-    pub fn set_group1_enabled(&mut self, en: bool) { self.group1_enabled = en; }
+    pub fn group1_enabled(&self) -> bool {
+        self.group1_enabled
+    }
+    pub fn set_group1_enabled(&mut self, en: bool) {
+        self.group1_enabled = en;
+    }
 
     pub fn reset(&mut self) {
         self.pmr = 0;

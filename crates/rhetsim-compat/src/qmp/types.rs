@@ -23,18 +23,18 @@ pub struct QmpError {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QmpErrorBody {
     pub class: String,
-    pub desc:  String,
+    pub desc: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QmpEvent {
-    pub event:     String,
+    pub event: String,
     pub timestamp: QmpTimestamp,
-    pub data:      serde_json::Value,
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QmpTimestamp {
-    pub seconds:      u64,
+    pub seconds: u64,
     pub microseconds: u64,
 }

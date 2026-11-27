@@ -1,7 +1,7 @@
 //! QMP 命令处理器
 
-use rhetsim_core::error::OmniResult;
 use crate::qmp::types::{QmpRequest, QmpResponse};
+use rhetsim_core::error::OmniResult;
 
 pub struct QmpHandler {
     running: bool,
@@ -10,11 +10,18 @@ pub struct QmpHandler {
 
 impl QmpHandler {
     pub fn new() -> Self {
-        Self { running: true, quit_requested: false }
+        Self {
+            running: true,
+            quit_requested: false,
+        }
     }
 
-    pub fn is_running(&self) -> bool { self.running }
-    pub fn is_quit_requested(&self) -> bool { self.quit_requested }
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+    pub fn is_quit_requested(&self) -> bool {
+        self.quit_requested
+    }
 
     pub fn dispatch(&mut self, req: &QmpRequest) -> OmniResult<QmpResponse> {
         match req.execute.as_str() {
@@ -39,31 +46,50 @@ impl QmpHandler {
             }
             "stop" => {
                 self.running = false;
-                Ok(QmpResponse { result: serde_json::json!({}) })
+                Ok(QmpResponse {
+                    result: serde_json::json!({}),
+                })
             }
             "cont" => {
                 self.running = true;
-                Ok(QmpResponse { result: serde_json::json!({}) })
+                Ok(QmpResponse {
+                    result: serde_json::json!({}),
+                })
             }
             "quit" => {
                 self.quit_requested = true;
                 self.running = false;
-                Ok(QmpResponse { result: serde_json::json!({}) })
+                Ok(QmpResponse {
+                    result: serde_json::json!({}),
+                })
             }
-            "system_reset" => Ok(QmpResponse { result: serde_json::json!({}) }),
+            "system_reset" => Ok(QmpResponse {
+                result: serde_json::json!({}),
+            }),
             "system_powerdown" => {
                 self.running = false;
-                Ok(QmpResponse { result: serde_json::json!({}) })
+                Ok(QmpResponse {
+                    result: serde_json::json!({}),
+                })
             }
             "query-commands" => {
                 let cmds = [
-                    "qmp_capabilities", "query-version", "query-status",
-                    "stop", "cont", "quit", "system_reset", "system_powerdown",
+                    "qmp_capabilities",
+                    "query-version",
+                    "query-status",
+                    "stop",
+                    "cont",
+                    "quit",
+                    "system_reset",
+                    "system_powerdown",
                 ];
-                let list: Vec<_> = cmds.iter()
+                let list: Vec<_> = cmds
+                    .iter()
                     .map(|c| serde_json::json!({"name": c}))
                     .collect();
-                Ok(QmpResponse { result: serde_json::json!(list) })
+                Ok(QmpResponse {
+                    result: serde_json::json!(list),
+                })
             }
             _ => Err(rhetsim_core::error::OmniError::NotSupported("qmp command")),
         }
@@ -71,7 +97,9 @@ impl QmpHandler {
 }
 
 impl Default for QmpHandler {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -139,9 +167,7 @@ mod tests {
         let resp = h.dispatch(&req("query-commands")).unwrap();
         let list = resp.result.as_array().unwrap();
         assert!(list.len() >= 8);
-        let names: Vec<&str> = list.iter()
-            .map(|v| v["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = list.iter().map(|v| v["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"stop"));
         assert!(names.contains(&"cont"));
         assert!(names.contains(&"quit"));

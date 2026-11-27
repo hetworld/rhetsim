@@ -1,14 +1,14 @@
 //! Minimal 16550-style UART component.
 
-use std::collections::VecDeque;
-use std::io::Write;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::error::OmniResult;
 use rhetsim_core::irq::IrqLine;
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
-use rhetsim_core::mem::{MemTarget, MemAccessSize};
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::collections::VecDeque;
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 const THR: u64 = 0x00;
 const RBR: u64 = 0x00;
@@ -20,7 +20,7 @@ const LSR: u64 = 0x05;
 const MSR: u64 = 0x06;
 const SCR: u64 = 0x07;
 
-const LSR_DR:   u8 = 1 << 0;
+const LSR_DR: u8 = 1 << 0;
 const LSR_THRE: u8 = 1 << 5;
 const LSR_TEMT: u8 = 1 << 6;
 const LSR_RESET: u8 = LSR_THRE | LSR_TEMT;
@@ -28,16 +28,18 @@ const LSR_RESET: u8 = LSR_THRE | LSR_TEMT;
 const LCR_DLAB: u8 = 0x80;
 
 // IER interrupt-enable bits
-const IER_RDI:  u8 = 1 << 0; // received data available
+const IER_RDI: u8 = 1 << 0; // received data available
 const IER_THRI: u8 = 1 << 1; // transmitter holding register empty
 const IER_RLSI: u8 = 1 << 2; // receiver line status
-const IER_MSI:  u8 = 1 << 3; // modem status
+                             // Reserved for future modem-status interrupt support.
+#[allow(dead_code)]
+const IER_MSI: u8 = 1 << 3; // modem status
 
 // IIR interrupt-identification values
 const IIR_NONE: u8 = 0x01;
 const IIR_THRE: u8 = 0x02;
-const IIR_RDA:  u8 = 0x04;
-const IIR_LSR:  u8 = 0x06;
+const IIR_RDA: u8 = 0x04;
+const IIR_LSR: u8 = 0x06;
 
 // LSR error bits (not modeled, but kept for the interrupt condition)
 const LSR_ERR_MASK: u8 = 0x1E;
@@ -151,11 +153,19 @@ impl Uart {
 }
 
 impl Unit for Uart {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "uart-16550" }
-    fn caps(&self) -> UnitCaps { UnitCaps::ADDRESSABLE | UnitCaps::IRQ_SOURCE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "uart-16550"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::ADDRESSABLE | UnitCaps::IRQ_SOURCE
+    }
 
-    fn as_mem_target(&self) -> Option<&dyn MemTarget> { Some(self) }
+    fn as_mem_target(&self) -> Option<&dyn MemTarget> {
+        Some(self)
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
         self.output.lock().expect("uart output lock").clear();
@@ -173,15 +183,21 @@ impl Unit for Uart {
 }
 
 impl MemTarget for Uart {
-    fn target_id(&self) -> u32 { 0 }
-    fn base(&self) -> u64 { 0 }
-    fn size(&self) -> u64 { 0x100 }
+    fn target_id(&self) -> u32 {
+        0
+    }
+    fn base(&self) -> u64 {
+        0
+    }
+    fn size(&self) -> u64 {
+        0x100
+    }
 
     fn read(&self, offset: u64, _size: MemAccessSize) -> OmniResult<u64> {
         let dlab = self.lcr.load(Ordering::Relaxed) & LCR_DLAB != 0;
         match offset {
-            RBR if dlab  => Ok(self.dll.load(Ordering::Relaxed) as u64),
-            RBR          => {
+            RBR if dlab => Ok(self.dll.load(Ordering::Relaxed) as u64),
+            RBR => {
                 let (byte, had_input) = {
                     let mut fifo = self.input.lock().expect("uart input lock");
                     match fifo.pop_front() {
@@ -195,19 +211,19 @@ impl MemTarget for Uart {
                 self.update_irq();
                 Ok(byte as u64)
             }
-            IER if dlab  => Ok(self.dlm.load(Ordering::Relaxed) as u64),
-            IER          => Ok(self.ier.load(Ordering::Relaxed) as u64),
-            IIR          => Ok(self.iir_value() as u64),
-            LCR          => Ok(self.lcr.load(Ordering::Relaxed) as u64),
-            MCR          => Ok(self.mcr.load(Ordering::Relaxed) as u64),
-            LSR          => {
+            IER if dlab => Ok(self.dlm.load(Ordering::Relaxed) as u64),
+            IER => Ok(self.ier.load(Ordering::Relaxed) as u64),
+            IIR => Ok(self.iir_value() as u64),
+            LCR => Ok(self.lcr.load(Ordering::Relaxed) as u64),
+            MCR => Ok(self.mcr.load(Ordering::Relaxed) as u64),
+            LSR => {
                 let base = self.lsr.load(Ordering::Relaxed);
                 let dr = if self.has_input() { LSR_DR } else { 0 };
                 Ok((base | dr) as u64)
             }
-            MSR          => Ok(0),
-            SCR          => Ok(self.scr.load(Ordering::Relaxed) as u64),
-            _            => Ok(0),
+            MSR => Ok(0),
+            SCR => Ok(self.scr.load(Ordering::Relaxed) as u64),
+            _ => Ok(0),
         }
     }
 
@@ -215,8 +231,10 @@ impl MemTarget for Uart {
         let v = val as u8;
         let dlab = self.lcr.load(Ordering::Relaxed) & LCR_DLAB != 0;
         match offset {
-            THR if dlab  => { self.dll.store(v, Ordering::Relaxed); }
-            THR          => {
+            THR if dlab => {
+                self.dll.store(v, Ordering::Relaxed);
+            }
+            THR => {
                 if self.console.load(Ordering::Relaxed) {
                     let _ = std::io::stdout().write_all(&[v]);
                     let _ = std::io::stdout().flush();
@@ -224,17 +242,25 @@ impl MemTarget for Uart {
                     self.output.lock().expect("uart output lock").push(v);
                 }
             }
-            IER if dlab  => { self.dlm.store(v, Ordering::Relaxed); }
-            IER          => {
+            IER if dlab => {
+                self.dlm.store(v, Ordering::Relaxed);
+            }
+            IER => {
                 self.ier.store(v, Ordering::Relaxed);
                 tracing::trace!(target: trace_cat::UART, ier = format_args!("0x{:02X}", v), "write ier");
                 self.update_irq();
             }
-            IIR          => {} // FCR write, ignore
-            LCR          => { self.lcr.store(v, Ordering::Relaxed); }
-            MCR          => { self.mcr.store(v, Ordering::Relaxed); }
-            SCR          => { self.scr.store(v, Ordering::Relaxed); }
-            _            => {}
+            IIR => {} // FCR write, ignore
+            LCR => {
+                self.lcr.store(v, Ordering::Relaxed);
+            }
+            MCR => {
+                self.mcr.store(v, Ordering::Relaxed);
+            }
+            SCR => {
+                self.scr.store(v, Ordering::Relaxed);
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -245,8 +271,8 @@ pub fn register() {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use rhetsim_core::irq::IrqSink;
+    use std::sync::Arc;
 
     #[test]
     fn uart_write_and_read() {
@@ -278,7 +304,9 @@ mod tests {
 
     impl MockSink {
         fn new() -> Self {
-            Self { asserted: AtomicBool::new(false) }
+            Self {
+                asserted: AtomicBool::new(false),
+            }
         }
     }
 
@@ -291,7 +319,9 @@ mod tests {
             self.asserted.store(false, Ordering::Relaxed);
             Ok(())
         }
-        fn irq_count(&self) -> u32 { 1 }
+        fn irq_count(&self) -> u32 {
+            1
+        }
     }
 
     #[test]

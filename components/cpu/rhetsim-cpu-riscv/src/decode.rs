@@ -2,19 +2,76 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
-    Lui    { rd: u8, imm: i64 },
-    Auipc  { rd: u8, imm: i64 },
-    Jal    { rd: u8, offset: i64 },
-    Jalr   { rd: u8, rs1: u8, offset: i64 },
-    Branch { funct3: u8, rs1: u8, rs2: u8, offset: i64 },
-    Load   { funct3: u8, rd: u8, rs1: u8, offset: i64 },
-    Store  { funct3: u8, rs1: u8, rs2: u8, offset: i64 },
-    OpImm  { funct3: u8, rd: u8, rs1: u8, imm: i64, funct7: u8 },
-    Op     { funct3: u8, funct7: u8, rd: u8, rs1: u8, rs2: u8 },
-    OpImm32 { funct3: u8, rd: u8, rs1: u8, imm: i64, funct7: u8 },
-    Op32   { funct3: u8, funct7: u8, rd: u8, rs1: u8, rs2: u8 },
+    Lui {
+        rd: u8,
+        imm: i64,
+    },
+    Auipc {
+        rd: u8,
+        imm: i64,
+    },
+    Jal {
+        rd: u8,
+        offset: i64,
+    },
+    Jalr {
+        rd: u8,
+        rs1: u8,
+        offset: i64,
+    },
+    Branch {
+        funct3: u8,
+        rs1: u8,
+        rs2: u8,
+        offset: i64,
+    },
+    Load {
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        offset: i64,
+    },
+    Store {
+        funct3: u8,
+        rs1: u8,
+        rs2: u8,
+        offset: i64,
+    },
+    OpImm {
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        imm: i64,
+        funct7: u8,
+    },
+    Op {
+        funct3: u8,
+        funct7: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+    },
+    OpImm32 {
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        imm: i64,
+        funct7: u8,
+    },
+    Op32 {
+        funct3: u8,
+        funct7: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+    },
     // CSR instructions
-    Csr    { funct3: u8, rd: u8, rs1: u8, csr: u16 },
+    Csr {
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        csr: u16,
+    },
     // System
     Ecall,
     Ebreak,
@@ -23,19 +80,42 @@ pub enum Instruction {
     Wfi,
     Fence,
     FenceI,
-    SfenceVma { rs1: u8, rs2: u8 },
+    SfenceVma {
+        rs1: u8,
+        rs2: u8,
+    },
     // Atomics (A extension)
-    Amo    { funct5: u8, aq: bool, rl: bool, funct3: u8, rd: u8, rs1: u8, rs2: u8 },
+    Amo {
+        funct5: u8,
+        aq: bool,
+        rl: bool,
+        funct3: u8,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+    },
     Unknown(u32),
 }
 
-fn rd(insn: u32) -> u8 { ((insn >> 7) & 0x1F) as u8 }
-fn rs1(insn: u32) -> u8 { ((insn >> 15) & 0x1F) as u8 }
-fn rs2(insn: u32) -> u8 { ((insn >> 20) & 0x1F) as u8 }
-fn funct3(insn: u32) -> u8 { ((insn >> 12) & 0x7) as u8 }
-fn funct7(insn: u32) -> u8 { ((insn >> 25) & 0x7F) as u8 }
+fn rd(insn: u32) -> u8 {
+    ((insn >> 7) & 0x1F) as u8
+}
+fn rs1(insn: u32) -> u8 {
+    ((insn >> 15) & 0x1F) as u8
+}
+fn rs2(insn: u32) -> u8 {
+    ((insn >> 20) & 0x1F) as u8
+}
+fn funct3(insn: u32) -> u8 {
+    ((insn >> 12) & 0x7) as u8
+}
+fn funct7(insn: u32) -> u8 {
+    ((insn >> 25) & 0x7F) as u8
+}
 
-fn i_imm(insn: u32) -> i64 { (insn as i32 >> 20) as i64 }
+fn i_imm(insn: u32) -> i64 {
+    (insn as i32 >> 20) as i64
+}
 
 fn s_imm(insn: u32) -> i64 {
     let lo = (insn >> 7) & 0x1F;
@@ -45,21 +125,23 @@ fn s_imm(insn: u32) -> i64 {
 }
 
 fn b_imm(insn: u32) -> i64 {
-    let b11  = (insn >> 7) & 1;
+    let b11 = (insn >> 7) & 1;
     let b4_1 = (insn >> 8) & 0xF;
     let b10_5 = (insn >> 25) & 0x3F;
-    let b12  = (insn >> 31) & 1;
+    let b12 = (insn >> 31) & 1;
     let val = (b12 << 12) | (b11 << 11) | (b10_5 << 5) | (b4_1 << 1);
     ((val as i32) << 19 >> 19) as i64
 }
 
-fn u_imm(insn: u32) -> i64 { (insn & 0xFFFFF000) as i32 as i64 }
+fn u_imm(insn: u32) -> i64 {
+    (insn & 0xFFFFF000) as i32 as i64
+}
 
 fn j_imm(insn: u32) -> i64 {
     let b19_12 = (insn >> 12) & 0xFF;
-    let b11    = (insn >> 20) & 1;
-    let b10_1  = (insn >> 21) & 0x3FF;
-    let b20    = (insn >> 31) & 1;
+    let b11 = (insn >> 20) & 1;
+    let b10_1 = (insn >> 21) & 0x3FF;
+    let b20 = (insn >> 31) & 1;
     let val = (b20 << 20) | (b19_12 << 12) | (b11 << 11) | (b10_1 << 1);
     ((val as i32) << 11 >> 11) as i64
 }
@@ -67,21 +149,46 @@ fn j_imm(insn: u32) -> i64 {
 pub fn decode(insn: u32) -> Instruction {
     let opcode = insn & 0x7F;
     match opcode {
-        0x37 => Instruction::Lui { rd: rd(insn), imm: u_imm(insn) },
-        0x17 => Instruction::Auipc { rd: rd(insn), imm: u_imm(insn) },
-        0x6F => Instruction::Jal { rd: rd(insn), offset: j_imm(insn) },
-        0x67 => Instruction::Jalr { rd: rd(insn), rs1: rs1(insn), offset: i_imm(insn) },
+        0x37 => Instruction::Lui {
+            rd: rd(insn),
+            imm: u_imm(insn),
+        },
+        0x17 => Instruction::Auipc {
+            rd: rd(insn),
+            imm: u_imm(insn),
+        },
+        0x6F => Instruction::Jal {
+            rd: rd(insn),
+            offset: j_imm(insn),
+        },
+        0x67 => Instruction::Jalr {
+            rd: rd(insn),
+            rs1: rs1(insn),
+            offset: i_imm(insn),
+        },
         0x63 => Instruction::Branch {
-            funct3: funct3(insn), rs1: rs1(insn), rs2: rs2(insn), offset: b_imm(insn),
+            funct3: funct3(insn),
+            rs1: rs1(insn),
+            rs2: rs2(insn),
+            offset: b_imm(insn),
         },
         0x03 => Instruction::Load {
-            funct3: funct3(insn), rd: rd(insn), rs1: rs1(insn), offset: i_imm(insn),
+            funct3: funct3(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            offset: i_imm(insn),
         },
         0x23 => Instruction::Store {
-            funct3: funct3(insn), rs1: rs1(insn), rs2: rs2(insn), offset: s_imm(insn),
+            funct3: funct3(insn),
+            rs1: rs1(insn),
+            rs2: rs2(insn),
+            offset: s_imm(insn),
         },
         0x13 => Instruction::OpImm {
-            funct3: funct3(insn), rd: rd(insn), rs1: rs1(insn), imm: i_imm(insn),
+            funct3: funct3(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            imm: i_imm(insn),
             funct7: funct7(insn),
         },
         0x33 => {
@@ -89,23 +196,35 @@ pub fn decode(insn: u32) -> Instruction {
             if f7 == 0x01 {
                 // M extension (RV64M)
                 Instruction::Op {
-                    funct3: funct3(insn), funct7: f7,
-                    rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+                    funct3: funct3(insn),
+                    funct7: f7,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    rs2: rs2(insn),
                 }
             } else {
                 Instruction::Op {
-                    funct3: funct3(insn), funct7: f7,
-                    rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+                    funct3: funct3(insn),
+                    funct7: f7,
+                    rd: rd(insn),
+                    rs1: rs1(insn),
+                    rs2: rs2(insn),
                 }
             }
         }
         0x1B => Instruction::OpImm32 {
-            funct3: funct3(insn), rd: rd(insn), rs1: rs1(insn), imm: i_imm(insn),
+            funct3: funct3(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            imm: i_imm(insn),
             funct7: funct7(insn),
         },
         0x3B => Instruction::Op32 {
-            funct3: funct3(insn), funct7: funct7(insn),
-            rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+            funct3: funct3(insn),
+            funct7: funct7(insn),
+            rd: rd(insn),
+            rs1: rs1(insn),
+            rs2: rs2(insn),
         },
         0x73 => {
             let f3 = funct3(insn);
@@ -119,7 +238,10 @@ pub fn decode(insn: u32) -> Instruction {
                     0x105 => Instruction::Wfi,
                     _ => {
                         if (insn >> 25) == 0x09 {
-                            Instruction::SfenceVma { rs1: rs1(insn), rs2: rs2(insn) }
+                            Instruction::SfenceVma {
+                                rs1: rs1(insn),
+                                rs2: rs2(insn),
+                            }
                         } else {
                             Instruction::Unknown(insn)
                         }
@@ -138,7 +260,11 @@ pub fn decode(insn: u32) -> Instruction {
             }
         }
         0x0F => {
-            if funct3(insn) == 1 { Instruction::FenceI } else { Instruction::Fence }
+            if funct3(insn) == 1 {
+                Instruction::FenceI
+            } else {
+                Instruction::Fence
+            }
         }
         0x2F => {
             // A extension (atomics)
@@ -146,9 +272,13 @@ pub fn decode(insn: u32) -> Instruction {
             let aq = (insn >> 26) & 1 != 0;
             let rl = (insn >> 25) & 1 != 0;
             Instruction::Amo {
-                funct5: f5 as u8, aq, rl,
+                funct5: f5 as u8,
+                aq,
+                rl,
                 funct3: funct3(insn),
-                rd: rd(insn), rs1: rs1(insn), rs2: rs2(insn),
+                rd: rd(insn),
+                rs1: rs1(insn),
+                rs2: rs2(insn),
             }
         }
         _ => Instruction::Unknown(insn),
@@ -173,20 +303,35 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     if nzuimm == 0 {
                         return Instruction::Unknown(half as u32);
                     }
-                    Instruction::OpImm { funct3: 0, rd: rd_p, rs1: 2, imm: nzuimm as i64, funct7: 0 }
+                    Instruction::OpImm {
+                        funct3: 0,
+                        rd: rd_p,
+                        rs1: 2,
+                        imm: nzuimm as i64,
+                        funct7: 0,
+                    }
                 }
                 0b010 => {
                     // C.LW: lw rd', offset(rs1')
                     let off = ((half >> 6) & 0x1) << 2
                         | ((half >> 10) & 0x7) << 3
                         | ((half >> 5) & 0x1) << 6;
-                    Instruction::Load { funct3: 2, rd: rd_p, rs1: rs1_p, offset: off as i64 }
+                    Instruction::Load {
+                        funct3: 2,
+                        rd: rd_p,
+                        rs1: rs1_p,
+                        offset: off as i64,
+                    }
                 }
                 0b011 => {
                     // C.LD: ld rd', offset(rs1')
-                    let off = ((half >> 10) & 0x7) << 3
-                        | ((half >> 5) & 0x3) << 6;
-                    Instruction::Load { funct3: 3, rd: rd_p, rs1: rs1_p, offset: off as i64 }
+                    let off = ((half >> 10) & 0x7) << 3 | ((half >> 5) & 0x3) << 6;
+                    Instruction::Load {
+                        funct3: 3,
+                        rd: rd_p,
+                        rs1: rs1_p,
+                        offset: off as i64,
+                    }
                 }
                 0b110 => {
                     // C.SW: sw rs2', offset(rs1')
@@ -194,14 +339,23 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     let off = ((half >> 6) & 0x1) << 2
                         | ((half >> 10) & 0x7) << 3
                         | ((half >> 5) & 0x1) << 6;
-                    Instruction::Store { funct3: 2, rs1: rs1_p, rs2: rs2_p, offset: off as i64 }
+                    Instruction::Store {
+                        funct3: 2,
+                        rs1: rs1_p,
+                        rs2: rs2_p,
+                        offset: off as i64,
+                    }
                 }
                 0b111 => {
                     // C.SD: sd rs2', offset(rs1')
                     let rs2_p = rd_p;
-                    let off = ((half >> 10) & 0x7) << 3
-                        | ((half >> 5) & 0x3) << 6;
-                    Instruction::Store { funct3: 3, rs1: rs1_p, rs2: rs2_p, offset: off as i64 }
+                    let off = ((half >> 10) & 0x7) << 3 | ((half >> 5) & 0x3) << 6;
+                    Instruction::Store {
+                        funct3: 3,
+                        rs1: rs1_p,
+                        rs2: rs2_p,
+                        offset: off as i64,
+                    }
                 }
                 _ => Instruction::Unknown(half as u32),
             }
@@ -213,21 +367,39 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     let rd = ((half >> 7) & 0x1F) as u8;
                     let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
                     let imm = ((imm as i16) << 10 >> 10) as i64; // sign-extend 6-bit
-                    Instruction::OpImm { funct3: 0, rd, rs1: rd, imm, funct7: 0 }
+                    Instruction::OpImm {
+                        funct3: 0,
+                        rd,
+                        rs1: rd,
+                        imm,
+                        funct7: 0,
+                    }
                 }
                 0b001 => {
                     // C.ADDIW: addiw rd, rd, imm
                     let rd = ((half >> 7) & 0x1F) as u8;
                     let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
                     let imm = ((imm as i16) << 10 >> 10) as i64;
-                    Instruction::OpImm32 { funct3: 0, rd, rs1: rd, imm, funct7: 0 }
+                    Instruction::OpImm32 {
+                        funct3: 0,
+                        rd,
+                        rs1: rd,
+                        imm,
+                        funct7: 0,
+                    }
                 }
                 0b010 => {
                     // C.LI: addi rd, x0, imm
                     let rd = ((half >> 7) & 0x1F) as u8;
                     let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
                     let imm = ((imm as i16) << 10 >> 10) as i64;
-                    Instruction::OpImm { funct3: 0, rd, rs1: 0, imm, funct7: 0 }
+                    Instruction::OpImm {
+                        funct3: 0,
+                        rd,
+                        rs1: 0,
+                        imm,
+                        funct7: 0,
+                    }
                 }
                 0b011 => {
                     let rd = ((half >> 7) & 0x1F) as u8;
@@ -242,7 +414,13 @@ pub fn decode_compressed(half: u16) -> Instruction {
                         if nzimm == 0 {
                             return Instruction::Unknown(half as u32);
                         }
-                        Instruction::OpImm { funct3: 0, rd: 2, rs1: 2, imm: nzimm, funct7: 0 }
+                        Instruction::OpImm {
+                            funct3: 0,
+                            rd: 2,
+                            rs1: 2,
+                            imm: nzimm,
+                            funct7: 0,
+                        }
                     } else {
                         // C.LUI: lui rd, nzimm
                         let nzimm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
@@ -250,7 +428,7 @@ pub fn decode_compressed(half: u16) -> Instruction {
                         if nzimm == 0 {
                             return Instruction::Unknown(half as u32);
                         }
-                        let imm = (nzimm << 12) as i64;
+                        let imm = nzimm << 12;
                         Instruction::Lui { rd, imm }
                     }
                 }
@@ -261,30 +439,84 @@ pub fn decode_compressed(half: u16) -> Instruction {
                         0b00 => {
                             // C.SRLI: srli rd', rd', shamt
                             let shamt = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
-                            Instruction::OpImm { funct3: 5, rd: rd_p, rs1: rd_p, imm: shamt as i64, funct7: 0 }
+                            Instruction::OpImm {
+                                funct3: 5,
+                                rd: rd_p,
+                                rs1: rd_p,
+                                imm: shamt as i64,
+                                funct7: 0,
+                            }
                         }
                         0b01 => {
                             // C.SRAI: srai rd', rd', shamt
                             let shamt = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
-                            Instruction::OpImm { funct3: 5, rd: rd_p, rs1: rd_p, imm: shamt as i64, funct7: 0x20 }
+                            Instruction::OpImm {
+                                funct3: 5,
+                                rd: rd_p,
+                                rs1: rd_p,
+                                imm: shamt as i64,
+                                funct7: 0x20,
+                            }
                         }
                         0b10 => {
                             // C.ANDI: andi rd', rd', imm
                             let imm = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
                             let imm = ((imm as i16) << 10 >> 10) as i64;
-                            Instruction::OpImm { funct3: 7, rd: rd_p, rs1: rd_p, imm, funct7: 0 }
+                            Instruction::OpImm {
+                                funct3: 7,
+                                rd: rd_p,
+                                rs1: rd_p,
+                                imm,
+                                funct7: 0,
+                            }
                         }
                         0b11 => {
                             let rs2_p = (((half >> 2) & 0x7) + 8) as u8;
                             let funct1 = (half >> 12) & 0x1;
                             let funct2b = (half >> 5) & 0x3;
                             match (funct1, funct2b) {
-                                (0, 0b00) => Instruction::Op { funct3: 0, funct7: 0x20, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.SUB
-                                (0, 0b01) => Instruction::Op { funct3: 4, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.XOR
-                                (0, 0b10) => Instruction::Op { funct3: 6, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.OR
-                                (0, 0b11) => Instruction::Op { funct3: 7, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.AND
-                                (1, 0b00) => Instruction::Op32 { funct3: 0, funct7: 0x20, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.SUBW
-                                (1, 0b01) => Instruction::Op32 { funct3: 0, funct7: 0x00, rd: rd_p, rs1: rd_p, rs2: rs2_p }, // C.ADDW
+                                (0, 0b00) => Instruction::Op {
+                                    funct3: 0,
+                                    funct7: 0x20,
+                                    rd: rd_p,
+                                    rs1: rd_p,
+                                    rs2: rs2_p,
+                                }, // C.SUB
+                                (0, 0b01) => Instruction::Op {
+                                    funct3: 4,
+                                    funct7: 0x00,
+                                    rd: rd_p,
+                                    rs1: rd_p,
+                                    rs2: rs2_p,
+                                }, // C.XOR
+                                (0, 0b10) => Instruction::Op {
+                                    funct3: 6,
+                                    funct7: 0x00,
+                                    rd: rd_p,
+                                    rs1: rd_p,
+                                    rs2: rs2_p,
+                                }, // C.OR
+                                (0, 0b11) => Instruction::Op {
+                                    funct3: 7,
+                                    funct7: 0x00,
+                                    rd: rd_p,
+                                    rs1: rd_p,
+                                    rs2: rs2_p,
+                                }, // C.AND
+                                (1, 0b00) => Instruction::Op32 {
+                                    funct3: 0,
+                                    funct7: 0x20,
+                                    rd: rd_p,
+                                    rs1: rd_p,
+                                    rs2: rs2_p,
+                                }, // C.SUBW
+                                (1, 0b01) => Instruction::Op32 {
+                                    funct3: 0,
+                                    funct7: 0x00,
+                                    rd: rd_p,
+                                    rs1: rd_p,
+                                    rs2: rs2_p,
+                                }, // C.ADDW
                                 _ => Instruction::Unknown(half as u32),
                             }
                         }
@@ -313,7 +545,12 @@ pub fn decode_compressed(half: u16) -> Instruction {
                         | ((half >> 5) & 0x3) << 6
                         | ((half >> 12) & 0x1) << 8;
                     let off = ((off as i16) << 7 >> 7) as i64; // sign-extend 9-bit
-                    Instruction::Branch { funct3: 0, rs1: rs1_p, rs2: 0, offset: off }
+                    Instruction::Branch {
+                        funct3: 0,
+                        rs1: rs1_p,
+                        rs2: 0,
+                        offset: off,
+                    }
                 }
                 0b111 => {
                     // C.BNEZ: bne rs1', x0, offset
@@ -324,7 +561,12 @@ pub fn decode_compressed(half: u16) -> Instruction {
                         | ((half >> 5) & 0x3) << 6
                         | ((half >> 12) & 0x1) << 8;
                     let off = ((off as i16) << 7 >> 7) as i64;
-                    Instruction::Branch { funct3: 1, rs1: rs1_p, rs2: 0, offset: off }
+                    Instruction::Branch {
+                        funct3: 1,
+                        rs1: rs1_p,
+                        rs2: 0,
+                        offset: off,
+                    }
                 }
                 _ => Instruction::Unknown(half as u32),
             }
@@ -335,7 +577,13 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     // C.SLLI: slli rd, rd, shamt
                     let rd = ((half >> 7) & 0x1F) as u8;
                     let shamt = ((half >> 2) & 0x1F) | (((half >> 12) & 0x1) << 5);
-                    Instruction::OpImm { funct3: 1, rd, rs1: rd, imm: shamt as i64, funct7: 0 }
+                    Instruction::OpImm {
+                        funct3: 1,
+                        rd,
+                        rs1: rd,
+                        imm: shamt as i64,
+                        funct7: 0,
+                    }
                 }
                 0b010 => {
                     // C.LWSP: lw rd, offset(sp)
@@ -343,7 +591,12 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     let off = ((half >> 4) & 0x7) << 2
                         | ((half >> 12) & 0x1) << 5
                         | ((half >> 2) & 0x3) << 6;
-                    Instruction::Load { funct3: 2, rd, rs1: 2, offset: off as i64 }
+                    Instruction::Load {
+                        funct3: 2,
+                        rd,
+                        rs1: 2,
+                        offset: off as i64,
+                    }
                 }
                 0b011 => {
                     // C.LDSP: ld rd, offset(sp)
@@ -351,7 +604,12 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     let off = ((half >> 5) & 0x3) << 3
                         | ((half >> 12) & 0x1) << 5
                         | ((half >> 2) & 0x7) << 6;
-                    Instruction::Load { funct3: 3, rd, rs1: 2, offset: off as i64 }
+                    Instruction::Load {
+                        funct3: 3,
+                        rd,
+                        rs1: 2,
+                        offset: off as i64,
+                    }
                 }
                 0b100 => {
                     let bit12 = (half >> 12) & 0x1;
@@ -360,10 +618,20 @@ pub fn decode_compressed(half: u16) -> Instruction {
                     if bit12 == 0 {
                         if rs2 == 0 {
                             // C.JR: jalr x0, 0(rs1)
-                            Instruction::Jalr { rd: 0, rs1: rd, offset: 0 }
+                            Instruction::Jalr {
+                                rd: 0,
+                                rs1: rd,
+                                offset: 0,
+                            }
                         } else {
                             // C.MV: add rd, x0, rs2
-                            Instruction::Op { funct3: 0, funct7: 0, rd, rs1: 0, rs2 }
+                            Instruction::Op {
+                                funct3: 0,
+                                funct7: 0,
+                                rd,
+                                rs1: 0,
+                                rs2,
+                            }
                         }
                     } else {
                         if rd == 0 && rs2 == 0 {
@@ -371,26 +639,44 @@ pub fn decode_compressed(half: u16) -> Instruction {
                             Instruction::Ebreak
                         } else if rs2 == 0 {
                             // C.JALR: jalr x1, 0(rs1)
-                            Instruction::Jalr { rd: 1, rs1: rd, offset: 0 }
+                            Instruction::Jalr {
+                                rd: 1,
+                                rs1: rd,
+                                offset: 0,
+                            }
                         } else {
                             // C.ADD: add rd, rd, rs2
-                            Instruction::Op { funct3: 0, funct7: 0, rd, rs1: rd, rs2 }
+                            Instruction::Op {
+                                funct3: 0,
+                                funct7: 0,
+                                rd,
+                                rs1: rd,
+                                rs2,
+                            }
                         }
                     }
                 }
                 0b110 => {
                     // C.SWSP: sw rs2, offset(sp)
                     let rs2 = ((half >> 2) & 0x1F) as u8;
-                    let off = ((half >> 9) & 0xF) << 2
-                        | ((half >> 7) & 0x3) << 6;
-                    Instruction::Store { funct3: 2, rs1: 2, rs2, offset: off as i64 }
+                    let off = ((half >> 9) & 0xF) << 2 | ((half >> 7) & 0x3) << 6;
+                    Instruction::Store {
+                        funct3: 2,
+                        rs1: 2,
+                        rs2,
+                        offset: off as i64,
+                    }
                 }
                 0b111 => {
                     // C.SDSP: sd rs2, offset(sp)
                     let rs2 = ((half >> 2) & 0x1F) as u8;
-                    let off = ((half >> 10) & 0x7) << 3
-                        | ((half >> 7) & 0x7) << 6;
-                    Instruction::Store { funct3: 3, rs1: 2, rs2, offset: off as i64 }
+                    let off = ((half >> 10) & 0x7) << 3 | ((half >> 7) & 0x7) << 6;
+                    Instruction::Store {
+                        funct3: 3,
+                        rs1: 2,
+                        rs2,
+                        offset: off as i64,
+                    }
                 }
                 _ => Instruction::Unknown(half as u32),
             }
@@ -401,13 +687,22 @@ pub fn decode_compressed(half: u16) -> Instruction {
 
 #[cfg(test)]
 mod tests {
+    // Instruction encodings are written with explicit zero fields for clarity.
+    #![allow(clippy::identity_op)]
+
     use super::*;
 
     #[test]
     fn decode_addi() {
         let insn = decode(0x02A00093);
         match insn {
-            Instruction::OpImm { funct3: 0, rd: 1, rs1: 0, imm: 42, .. } => {}
+            Instruction::OpImm {
+                funct3: 0,
+                rd: 1,
+                rs1: 0,
+                imm: 42,
+                ..
+            } => {}
             other => panic!("unexpected: {:?}", other),
         }
     }
@@ -415,19 +710,41 @@ mod tests {
     #[test]
     fn decode_lui() {
         let insn = decode(0x123452B7);
-        assert_eq!(insn, Instruction::Lui { rd: 5, imm: 0x12345000 });
+        assert_eq!(
+            insn,
+            Instruction::Lui {
+                rd: 5,
+                imm: 0x12345000
+            }
+        );
     }
 
     #[test]
     fn decode_sw() {
         let insn = decode(0x00112023);
-        assert_eq!(insn, Instruction::Store { funct3: 2, rs1: 2, rs2: 1, offset: 0 });
+        assert_eq!(
+            insn,
+            Instruction::Store {
+                funct3: 2,
+                rs1: 2,
+                rs2: 1,
+                offset: 0
+            }
+        );
     }
 
     #[test]
     fn decode_beq() {
         let insn = decode(0x00008463);
-        assert_eq!(insn, Instruction::Branch { funct3: 0, rs1: 1, rs2: 0, offset: 8 });
+        assert_eq!(
+            insn,
+            Instruction::Branch {
+                funct3: 0,
+                rs1: 1,
+                rs2: 0,
+                offset: 8
+            }
+        );
     }
 
     #[test]
@@ -444,9 +761,16 @@ mod tests {
     #[test]
     fn decode_negative_imm() {
         let insn = decode(0xFFF00093);
-        assert_eq!(insn, Instruction::OpImm {
-            funct3: 0, rd: 1, rs1: 0, imm: -1, funct7: 0x7F,
-        });
+        assert_eq!(
+            insn,
+            Instruction::OpImm {
+                funct3: 0,
+                rd: 1,
+                rs1: 0,
+                imm: -1,
+                funct7: 0x7F,
+            }
+        );
     }
 
     #[test]
@@ -454,13 +778,16 @@ mod tests {
         // CSRRW x1, mstatus(0x300), x2
         // funct3=001, csr=0x300, rs1=x2, rd=x1
         // 0011_0000_0000_00010_001_00001_1110011
-        let raw = 0x300_11_0_73u32;
-        // Let me construct properly:
         // [31:20]=0x300, [19:15]=rs1=2, [14:12]=001, [11:7]=rd=1, [6:0]=0x73
         let raw = (0x300 << 20) | (2 << 15) | (1 << 12) | (1 << 7) | 0x73;
         let insn = decode(raw);
         match insn {
-            Instruction::Csr { funct3: 1, rd: 1, rs1: 2, csr: 0x300 } => {}
+            Instruction::Csr {
+                funct3: 1,
+                rd: 1,
+                rs1: 2,
+                csr: 0x300,
+            } => {}
             other => panic!("unexpected: {:?}", other),
         }
     }
@@ -476,7 +803,16 @@ mod tests {
         // C.ADDI x15, x15, -1 → 0x17FD (bit12=1, imm[4:0]=0x1F, rd=15)
         // bits: 000 1 01111 11101 01
         let insn = decode_compressed(0x17FD);
-        assert_eq!(insn, Instruction::OpImm { funct3: 0, rd: 15, rs1: 15, imm: -1, funct7: 0 });
+        assert_eq!(
+            insn,
+            Instruction::OpImm {
+                funct3: 0,
+                rd: 15,
+                rs1: 15,
+                imm: -1,
+                funct7: 0
+            }
+        );
     }
 
     #[test]
@@ -485,7 +821,16 @@ mod tests {
         // funct3=010, imm[5]=0, rd=10, imm[4:0]=00111, op=01
         let half: u16 = (0b010 << 13) | (0 << 12) | (10 << 7) | (0b00111 << 2) | 0b01;
         let insn = decode_compressed(half);
-        assert_eq!(insn, Instruction::OpImm { funct3: 0, rd: 10, rs1: 0, imm: 7, funct7: 0 });
+        assert_eq!(
+            insn,
+            Instruction::OpImm {
+                funct3: 0,
+                rd: 10,
+                rs1: 0,
+                imm: 7,
+                funct7: 0
+            }
+        );
     }
 
     #[test]
@@ -494,7 +839,16 @@ mod tests {
         // funct3=100, bit12=0, rd=1, rs2=2, op=10
         let half: u16 = (0b100 << 13) | (0 << 12) | (1 << 7) | (2 << 2) | 0b10;
         let insn = decode_compressed(half);
-        assert_eq!(insn, Instruction::Op { funct3: 0, funct7: 0, rd: 1, rs1: 0, rs2: 2 });
+        assert_eq!(
+            insn,
+            Instruction::Op {
+                funct3: 0,
+                funct7: 0,
+                rd: 1,
+                rs1: 0,
+                rs2: 2
+            }
+        );
     }
 
     #[test]
@@ -503,7 +857,14 @@ mod tests {
         // funct3=100, bit12=0, rs1=1, rs2=0, op=10
         let half: u16 = (0b100 << 13) | (0 << 12) | (1 << 7) | (0 << 2) | 0b10;
         let insn = decode_compressed(half);
-        assert_eq!(insn, Instruction::Jalr { rd: 0, rs1: 1, offset: 0 });
+        assert_eq!(
+            insn,
+            Instruction::Jalr {
+                rd: 0,
+                rs1: 1,
+                offset: 0
+            }
+        );
     }
 
     #[test]
@@ -512,7 +873,14 @@ mod tests {
         // funct3=100, bit12=1, rs1=5, rs2=0, op=10
         let half: u16 = (0b100 << 13) | (1 << 12) | (5 << 7) | (0 << 2) | 0b10;
         let insn = decode_compressed(half);
-        assert_eq!(insn, Instruction::Jalr { rd: 1, rs1: 5, offset: 0 });
+        assert_eq!(
+            insn,
+            Instruction::Jalr {
+                rd: 1,
+                rs1: 5,
+                offset: 0
+            }
+        );
     }
 
     #[test]
@@ -521,7 +889,16 @@ mod tests {
         // funct3=100, bit12=1, rd=1, rs2=2, op=10
         let half: u16 = (0b100 << 13) | (1 << 12) | (1 << 7) | (2 << 2) | 0b10;
         let insn = decode_compressed(half);
-        assert_eq!(insn, Instruction::Op { funct3: 0, funct7: 0, rd: 1, rs1: 1, rs2: 2 });
+        assert_eq!(
+            insn,
+            Instruction::Op {
+                funct3: 0,
+                funct7: 0,
+                rd: 1,
+                rs1: 1,
+                rs2: 2
+            }
+        );
     }
 
     #[test]
@@ -530,7 +907,15 @@ mod tests {
         // offset=4: offset[4:2]=001 → bits[6:4]=001, offset[5]=0 → bit12=0, offset[7:6]=00 → bits[3:2]=00
         let half: u16 = (0b010 << 13) | (0 << 12) | (10 << 7) | (0b001 << 4) | (0b00 << 2) | 0b10;
         let insn = decode_compressed(half);
-        assert_eq!(insn, Instruction::Load { funct3: 2, rd: 10, rs1: 2, offset: 4 });
+        assert_eq!(
+            insn,
+            Instruction::Load {
+                funct3: 2,
+                rd: 10,
+                rs1: 2,
+                offset: 4
+            }
+        );
     }
 
     #[test]
@@ -548,7 +933,15 @@ mod tests {
         let raw = (0b00000 << 27) | (3 << 20) | (2 << 15) | (0b010 << 12) | (1 << 7) | 0x2F;
         let insn = decode(raw);
         match insn {
-            Instruction::Amo { funct5: 0, aq: false, rl: false, funct3: 2, rd: 1, rs1: 2, rs2: 3 } => {}
+            Instruction::Amo {
+                funct5: 0,
+                aq: false,
+                rl: false,
+                funct3: 2,
+                rd: 1,
+                rs1: 2,
+                rs2: 3,
+            } => {}
             other => panic!("unexpected: {:?}", other),
         }
     }

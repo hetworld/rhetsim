@@ -16,13 +16,21 @@
 /// the `rhetsim::trace` prefix out, and the trace layer enables only the
 /// categories requested on the command line.
 pub mod trace {
+    /// 指令退休事件
     pub const EXEC: &str = "rhetsim::trace::exec";
+    /// CPU 架构状态事件
     pub const CPU: &str = "rhetsim::trace::cpu";
+    /// JIT 基本块事件
     pub const JIT: &str = "rhetsim::trace::jit";
+    /// 中断/异常事件
     pub const INT: &str = "rhetsim::trace::int";
+    /// PLIC 事件
     pub const PLIC: &str = "rhetsim::trace::plic";
+    /// CLINT 事件
     pub const CLINT: &str = "rhetsim::trace::clint";
+    /// UART 事件
     pub const UART: &str = "rhetsim::trace::uart";
+    /// 镜像加载事件
     pub const LOADER: &str = "rhetsim::trace::loader";
 }
 
@@ -48,6 +56,7 @@ pub enum TraceCategory {
 }
 
 impl TraceCategory {
+    /// 所有可选的跟踪类别
     pub const ALL: &'static [TraceCategory] = &[
         Self::Exec,
         Self::Cpu,
@@ -59,6 +68,7 @@ impl TraceCategory {
         Self::Loader,
     ];
 
+    /// 类别的命令行名称
     pub const fn name(self) -> &'static str {
         match self {
             Self::Exec => "exec",
@@ -72,6 +82,7 @@ impl TraceCategory {
         }
     }
 
+    /// 对应的 `tracing` target
     pub const fn target(self) -> &'static str {
         match self {
             Self::Exec => trace::EXEC,
@@ -85,6 +96,7 @@ impl TraceCategory {
         }
     }
 
+    /// 按命令行名称查找类别（不区分大小写）
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL
             .iter()
@@ -129,14 +141,20 @@ impl TraceCategory {
 /// Simulator log level (`--log-level`). Ordered from least to most verbose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
+    /// 仅错误
     Error,
+    /// 警告及以上
     Warn,
+    /// 信息及以上
     Info,
+    /// 调试及以上
     Debug,
+    /// 全部日志
     Trace,
 }
 
 impl LogLevel {
+    /// 解析日志级别名称（不区分大小写）
     pub fn parse(level: &str) -> Option<Self> {
         match level.to_ascii_lowercase().as_str() {
             "error" => Some(Self::Error),
@@ -148,6 +166,7 @@ impl LogLevel {
         }
     }
 
+    /// 日志级别的命令行名称
     pub const fn name(self) -> &'static str {
         match self {
             Self::Error => "error",
@@ -166,14 +185,14 @@ mod tests {
     #[test]
     fn parse_trace_list() {
         assert_eq!(
-            TraceCategory::parse_list("exec, cpu ,int").unwrap(),
+            TraceCategory::parse_list("exec, cpu ,int").expect("valid trace list"),
             vec![TraceCategory::Exec, TraceCategory::Cpu, TraceCategory::Int]
         );
     }
 
     #[test]
     fn parse_all_expands_once() {
-        let all = TraceCategory::parse_list("all,exec").unwrap();
+        let all = TraceCategory::parse_list("all,exec").expect("valid trace list");
         assert_eq!(all.len(), TraceCategory::ALL.len());
     }
 

@@ -1,21 +1,17 @@
 //! End-to-end test: load Manifest → realize Platform → schedule execution
 
-use std::sync::Arc;
-use rhetsim_core::unit::UnitCaps;
 use rhetsim_core::backend::execution::BackendKind;
-use rhetsim_manifest::{
-    load_from_str, Realizer, ComponentRegistry,
-};
-use rhetsim_runtime::Scheduler;
+use rhetsim_core::unit::UnitCaps;
 use rhetsim_cpu_mock::MockCpu;
+use rhetsim_manifest::{load_from_str, ComponentRegistry, Realizer};
+use rhetsim_runtime::Scheduler;
+use std::sync::Arc;
 
 fn mock_registry() -> Arc<ComponentRegistry> {
     let mut reg = ComponentRegistry::new();
     reg.register(
         "mock-cpu",
-        Box::new(|desc| {
-            Ok(Box::new(MockCpu::new(&desc.id)))
-        }),
+        Box::new(|desc| Ok(Box::new(MockCpu::new(&desc.id)))),
         None,
         &[BackendKind::Mock],
     );
@@ -80,8 +76,8 @@ fn schedule_two_mock_cpus() {
 
 #[test]
 fn load_minimal_toml_fixture() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/minimal.toml");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/minimal.toml");
 
     let manifest = rhetsim_manifest::load_from_file(&path).expect("load minimal.toml");
     assert_eq!(manifest.name, "minimal-test");

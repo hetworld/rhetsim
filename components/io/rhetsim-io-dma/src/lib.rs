@@ -10,12 +10,12 @@
 
 pub fn register() {}
 
-use std::sync::{Arc, RwLock};
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::error::OmniResult;
 use rhetsim_core::irq::IrqLine;
-use rhetsim_core::mem::{MemTarget, MemAccessSize};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::sync::{Arc, RwLock};
 
 const REG_SIZE: u64 = 0x20;
 
@@ -75,12 +75,19 @@ impl DmaEngine {
             let off = i * 8;
             match self.bus.read(src + off, MemAccessSize::U64, 0) {
                 Ok(val) => {
-                    if self.bus.write(dst + off, MemAccessSize::U64, val, 0).is_err() {
+                    if self
+                        .bus
+                        .write(dst + off, MemAccessSize::U64, val, 0)
+                        .is_err()
+                    {
                         error = true;
                         break;
                     }
                 }
-                Err(_) => { error = true; break; }
+                Err(_) => {
+                    error = true;
+                    break;
+                }
             }
         }
 
@@ -89,12 +96,19 @@ impl DmaEngine {
             for i in 0..tail {
                 match self.bus.read(src + base_off + i, MemAccessSize::U8, 0) {
                     Ok(val) => {
-                        if self.bus.write(dst + base_off + i, MemAccessSize::U8, val, 0).is_err() {
+                        if self
+                            .bus
+                            .write(dst + base_off + i, MemAccessSize::U8, val, 0)
+                            .is_err()
+                        {
                             error = true;
                             break;
                         }
                     }
-                    Err(_) => { error = true; break; }
+                    Err(_) => {
+                        error = true;
+                        break;
+                    }
                 }
             }
         }
@@ -114,11 +128,19 @@ impl DmaEngine {
 }
 
 impl Unit for DmaEngine {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "dma-engine" }
-    fn caps(&self) -> UnitCaps { UnitCaps::ADDRESSABLE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "dma-engine"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::ADDRESSABLE
+    }
 
-    fn as_mem_target(&self) -> Option<&dyn MemTarget> { Some(self) }
+    fn as_mem_target(&self) -> Option<&dyn MemTarget> {
+        Some(self)
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
         let mut s = self.state.write().unwrap();
@@ -132,9 +154,15 @@ impl Unit for DmaEngine {
 }
 
 impl MemTarget for DmaEngine {
-    fn target_id(&self) -> u32 { 0 }
-    fn base(&self) -> u64 { self.base }
-    fn size(&self) -> u64 { REG_SIZE }
+    fn target_id(&self) -> u32 {
+        0
+    }
+    fn base(&self) -> u64 {
+        self.base
+    }
+    fn size(&self) -> u64 {
+        REG_SIZE
+    }
 
     fn read(&self, offset: u64, _size: MemAccessSize) -> OmniResult<u64> {
         let s = self.state.read().unwrap();
@@ -150,15 +178,23 @@ impl MemTarget for DmaEngine {
 
     fn write(&self, offset: u64, _size: MemAccessSize, val: u64) -> OmniResult<()> {
         match offset {
-            0x00 => { self.state.write().unwrap().src_addr = val; }
-            0x08 => { self.state.write().unwrap().dst_addr = val; }
-            0x10 => { self.state.write().unwrap().length = val as u32; }
+            0x00 => {
+                self.state.write().unwrap().src_addr = val;
+            }
+            0x08 => {
+                self.state.write().unwrap().dst_addr = val;
+            }
+            0x10 => {
+                self.state.write().unwrap().length = val as u32;
+            }
             0x14 => {
                 if val & 1 != 0 {
                     self.do_transfer();
                 }
             }
-            0x1C => { self.state.write().unwrap().irq_en = val as u32; }
+            0x1C => {
+                self.state.write().unwrap().irq_en = val as u32;
+            }
             _ => {}
         }
         Ok(())
@@ -173,7 +209,8 @@ mod tests {
     fn make_bus_with_dram(base: u64, size: usize) -> Arc<MemBus> {
         let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram", size, base));
         let mut bus = MemBus::new("test-bus");
-        bus.map(dram as Arc<dyn MemTarget>, base, MemAttrs::rw(), None).unwrap();
+        bus.map(dram as Arc<dyn MemTarget>, base, MemAttrs::rw(), None)
+            .unwrap();
         Arc::new(bus)
     }
 
@@ -201,14 +238,16 @@ mod tests {
         // Write source data at offset 0x000
         let src_data: Vec<u64> = vec![0x1111, 0x2222, 0x3333, 0x4444];
         for (i, &val) in src_data.iter().enumerate() {
-            bus.write(dram_base + (i * 8) as u64, MemAccessSize::U64, val, 0).unwrap();
+            bus.write(dram_base + (i * 8) as u64, MemAccessSize::U64, val, 0)
+                .unwrap();
         }
 
         let dma = DmaEngine::new("dma0", 0xF000_0000, bus.clone());
 
         // Configure: copy 32 bytes from 0x000 to 0x100
         dma.write(0x00, MemAccessSize::U64, dram_base).unwrap();
-        dma.write(0x08, MemAccessSize::U64, dram_base + 0x100).unwrap();
+        dma.write(0x08, MemAccessSize::U64, dram_base + 0x100)
+            .unwrap();
         dma.write(0x10, MemAccessSize::U32, 32).unwrap();
 
         // Trigger
@@ -220,7 +259,9 @@ mod tests {
 
         // Verify destination data
         for (i, &expected) in src_data.iter().enumerate() {
-            let val = bus.read(dram_base + 0x100 + (i * 8) as u64, MemAccessSize::U64, 0).unwrap();
+            let val = bus
+                .read(dram_base + 0x100 + (i * 8) as u64, MemAccessSize::U64, 0)
+                .unwrap();
             assert_eq!(val, expected, "mismatch at word {}", i);
         }
     }
@@ -232,18 +273,22 @@ mod tests {
 
         // Write 5 bytes of source data
         for i in 0u64..5 {
-            bus.write(dram_base + i, MemAccessSize::U8, 0x10 + i, 0).unwrap();
+            bus.write(dram_base + i, MemAccessSize::U8, 0x10 + i, 0)
+                .unwrap();
         }
 
         let dma = DmaEngine::new("dma0", 0xF000_0000, bus.clone());
         dma.write(0x00, MemAccessSize::U64, dram_base).unwrap();
-        dma.write(0x08, MemAccessSize::U64, dram_base + 0x200).unwrap();
+        dma.write(0x08, MemAccessSize::U64, dram_base + 0x200)
+            .unwrap();
         dma.write(0x10, MemAccessSize::U32, 5).unwrap();
         dma.write(0x14, MemAccessSize::U32, 1).unwrap();
 
         assert!(dma.is_done());
         for i in 0u64..5 {
-            let val = bus.read(dram_base + 0x200 + i, MemAccessSize::U8, 0).unwrap();
+            let val = bus
+                .read(dram_base + 0x200 + i, MemAccessSize::U8, 0)
+                .unwrap();
             assert_eq!(val, 0x10 + i, "byte {} mismatch", i);
         }
     }
@@ -252,18 +297,26 @@ mod tests {
     fn test_irq_on_completion() {
         use std::sync::atomic::{AtomicU32, Ordering};
 
-        struct MockSink { raised: AtomicU32 }
+        struct MockSink {
+            raised: AtomicU32,
+        }
         impl rhetsim_core::irq::IrqSink for MockSink {
             fn raise(&self, irq_num: u32) -> OmniResult<()> {
                 self.raised.store(irq_num + 1, Ordering::SeqCst);
                 Ok(())
             }
-            fn lower(&self, _: u32) -> OmniResult<()> { Ok(()) }
-            fn irq_count(&self) -> u32 { 1 }
+            fn lower(&self, _: u32) -> OmniResult<()> {
+                Ok(())
+            }
+            fn irq_count(&self) -> u32 {
+                1
+            }
         }
 
         let bus = make_bus_with_dram(0, 0x1000);
-        let sink = Arc::new(MockSink { raised: AtomicU32::new(0) });
+        let sink = Arc::new(MockSink {
+            raised: AtomicU32::new(0),
+        });
         let line = IrqLine::new(sink.clone(), 7);
 
         let mut dma = DmaEngine::new("dma0", 0xF000_0000, bus.clone());

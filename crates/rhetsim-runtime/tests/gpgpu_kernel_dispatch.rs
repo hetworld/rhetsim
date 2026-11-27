@@ -12,15 +12,18 @@
 //!   4. GPGPU SIMT-executes the kernel across multiple warps/SMs
 //!   5. RISC-V host reads results from GPGPU VRAM, verifies sum
 
-use std::sync::Arc;
-use rhetsim_core::bus::mem_bus::MemBus;
-use rhetsim_core::mem::{MemAttrs, MemTarget, MemAccessSize};
-use rhetsim_core::backend::execution::ExecutionBackend;
-use rhetsim_cpu_riscv::cpu::RiscvCpu;
-use rhetsim_accel_gpgpu::Gpgpu;
+// Test instruction encodings spell out zero fields for readability.
+#![allow(clippy::identity_op, clippy::eq_op)]
 
-const DRAM_BASE: u64     = 0;
-const DRAM_SIZE: usize   = 64 * 1024;
+use rhetsim_accel_gpgpu::Gpgpu;
+use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
+use rhetsim_cpu_riscv::cpu::RiscvCpu;
+use std::sync::Arc;
+
+const DRAM_BASE: u64 = 0;
+const DRAM_SIZE: usize = 64 * 1024;
 const GPU_CTRL_BASE: u64 = 0x4000_0000;
 const GPU_VRAM_BASE: u64 = 0x4000_1000;
 const GPU_VRAM_SIZE: usize = 64 * 1024;
@@ -44,10 +47,10 @@ fn build_host_program() -> Vec<u32> {
     // ── Write vec_a to VRAM+0x4000 (bus 0x4000_5000) ──
     // x20 = 0x4000_5000
     code.push(0x40005A37); // LUI x20, 0x40005
-    // vec_a = [1,2,3,4,5,6,7,8]
+                           // vec_a = [1,2,3,4,5,6,7,8]
     for (i, val) in [1u32, 2, 3, 4, 5, 6, 7, 8].iter().enumerate() {
         // ADDI x1, x0, val
-        code.push((((*val as u32) & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
+        code.push(((*val & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
         // SW x1, offset(x20)
         let off = (i * 4) as u32;
         let imm_hi = (off >> 5) & 0x7F;
@@ -60,7 +63,7 @@ fn build_host_program() -> Vec<u32> {
     code.push(0x40006AB7); // LUI x21, 0x40006
     for (i, val) in [10u32, 20, 30, 40, 50, 60, 70, 80].iter().enumerate() {
         // ADDI x1, x0, val
-        code.push((((*val as u32) & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
+        code.push(((*val & 0xFFF) << 20) | (0 << 15) | (0 << 12) | (1 << 7) | 0x13);
         // SW x1, offset(x21)
         let off = (i * 4) as u32;
         let imm_hi = (off >> 5) & 0x7F;
@@ -133,13 +136,13 @@ fn build_host_program() -> Vec<u32> {
 
     // GRID_DIM = 2 → CTRL+0x20
     code.push(0x00200093); // ADDI x1, x0, 2
-    // SW x1, 32(x23): imm=32=0b100000, imm_hi=1, imm_lo=0
+                           // SW x1, 32(x23): imm=32=0b100000, imm_hi=1, imm_lo=0
     let sw_off32 = (1u32 << 25) | (1 << 20) | (23 << 15) | (2 << 12) | (0 << 7) | 0x23;
     code.push(sw_off32);
 
     // BLOCK_DIM = 4 → CTRL+0x24
     code.push(0x00400093); // ADDI x1, x0, 4
-    // SW x1, 36(x23): imm=36=0b100100, imm_hi=1, imm_lo=4
+                           // SW x1, 36(x23): imm=36=0b100100, imm_hi=1, imm_lo=4
     let sw_off36 = (1u32 << 25) | (1 << 20) | (23 << 15) | (2 << 12) | (4 << 7) | 0x23;
     code.push(sw_off36);
 
@@ -167,7 +170,7 @@ fn build_host_program() -> Vec<u32> {
     // Store sum to DRAM 0x200
     // x26 = 0x200
     code.push(0x20000D13); // ADDI x26, x0, 0x200
-    // SD x25, 0(x26)
+                           // SD x25, 0(x26)
     code.push((0u32 << 25) | (25 << 20) | (26 << 15) | (3 << 12) | (0 << 7) | 0x23);
 
     // ECALL (halt)
@@ -182,18 +185,44 @@ fn cpu_dispatches_kernel_to_gpgpu() {
     let gpu_ctrl = gpu.ctrl_arc();
     let gpu_vram = gpu.vram_arc();
 
-    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", DRAM_SIZE, DRAM_BASE));
+    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(
+        "dram0", DRAM_SIZE, DRAM_BASE,
+    ));
 
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_ctrl as Arc<dyn MemTarget>, GPU_CTRL_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_vram.clone() as Arc<dyn MemTarget>, GPU_VRAM_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_ctrl as Arc<dyn MemTarget>,
+        GPU_CTRL_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_vram.clone() as Arc<dyn MemTarget>,
+        GPU_VRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     // Load host program into DRAM
     let host_code = build_host_program();
     for (i, &insn) in host_code.iter().enumerate() {
-        bus.write(DRAM_BASE + (i * 4) as u64, MemAccessSize::U32, insn as u64, 0).unwrap();
+        bus.write(
+            DRAM_BASE + (i * 4) as u64,
+            MemAccessSize::U32,
+            insn as u64,
+            0,
+        )
+        .unwrap();
     }
 
     // ── Phase 1: RV host sets up GPU, dispatches kernel ──
@@ -259,7 +288,13 @@ fn cpu_dispatches_kernel_to_gpgpu() {
 
     let reader_base = 0xC000u64;
     for (i, &insn) in reader_code.iter().enumerate() {
-        bus.write(reader_base + (i * 4) as u64, MemAccessSize::U32, insn as u64, 0).unwrap();
+        bus.write(
+            reader_base + (i * 4) as u64,
+            MemAccessSize::U32,
+            insn as u64,
+            0,
+        )
+        .unwrap();
     }
 
     let mut rv2 = RiscvCpu::with_bus("rv-reader", bus.clone(), reader_base);

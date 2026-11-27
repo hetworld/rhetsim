@@ -14,16 +14,16 @@
 //!   3. RISC-V coprocessor reads result from VRAM, sums all elements,
 //!      writes total (110) to shared DRAM offset 0x100
 
-use std::sync::Arc;
-use rhetsim_core::bus::mem_bus::MemBus;
-use rhetsim_core::mem::{MemAttrs, MemTarget, MemAccessSize};
+use rhetsim_accel_gpgpu::Gpgpu;
 use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
 use rhetsim_cpu_arm::cpu::ArmCpu;
 use rhetsim_cpu_riscv::cpu::RiscvCpu;
-use rhetsim_accel_gpgpu::Gpgpu;
+use std::sync::Arc;
 
-const DRAM_BASE: u64     = 0;
-const DRAM_SIZE: usize   = 64 * 1024;
+const DRAM_BASE: u64 = 0;
+const DRAM_SIZE: usize = 64 * 1024;
 const GPU_CTRL_BASE: u64 = 0x4000_0000;
 const GPU_VRAM_BASE: u64 = 0x4000_1000;
 const GPU_VRAM_SIZE: usize = 64 * 1024;
@@ -39,7 +39,6 @@ fn build_arm_gpu_writer() -> Vec<u32> {
         // X3 = 0x4000_2000 (VRAM+0x1000, for vec_b)
         0xD2840003, // MOVZ X3, #0x2000
         0xF2A80003, // MOVK X3, #0x4000, lsl #16
-
         // Write vec_a [1,2,3,4] to VRAM+0x0000
         0xD2800020, // MOVZ X0, #1
         0xB9000020, // STR W0, [X1, #0]
@@ -49,7 +48,6 @@ fn build_arm_gpu_writer() -> Vec<u32> {
         0xB9000820, // STR W0, [X1, #8]
         0xD2800080, // MOVZ X0, #4
         0xB9000C20, // STR W0, [X1, #12]
-
         // Write vec_b [10,20,30,40] to VRAM+0x1000
         0xD2800140, // MOVZ X0, #10
         0xB9000060, // STR W0, [X3, #0]
@@ -59,7 +57,6 @@ fn build_arm_gpu_writer() -> Vec<u32> {
         0xB9000860, // STR W0, [X3, #8]
         0xD2800500, // MOVZ X0, #40
         0xB9000C60, // STR W0, [X3, #12]
-
         // Configure GPU: OP=1(VECTOR_ADD), LEN=4, SRC_A=0, SRC_B=0x1000, DST=0x2000
         0xD2800020, // MOVZ X0, #1
         0xB9000840, // STR W0, [X2, #8]   CMD_OP
@@ -72,7 +69,6 @@ fn build_arm_gpu_writer() -> Vec<u32> {
         0xB9001840, // STR W0, [X2, #24]  CMD_DST
         0xD2800020, // MOVZ X0, #1
         0xB9000040, // STR W0, [X2, #0]   DOORBELL
-
         // Halt
         0xD4000001, // SVC #0
     ]
@@ -107,26 +103,58 @@ fn three_way_arm_rv_gpgpu() {
     let gpu_ctrl = gpu.ctrl_arc();
     let gpu_vram = gpu.vram_arc();
 
-    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", DRAM_SIZE, DRAM_BASE));
+    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(
+        "dram0", DRAM_SIZE, DRAM_BASE,
+    ));
 
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_ctrl as Arc<dyn MemTarget>, GPU_CTRL_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_vram.clone() as Arc<dyn MemTarget>, GPU_VRAM_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_ctrl as Arc<dyn MemTarget>,
+        GPU_CTRL_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_vram.clone() as Arc<dyn MemTarget>,
+        GPU_VRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     // ── Load ARM code at DRAM offset 0x8000 ───────────────────────
     let arm_code = build_arm_gpu_writer();
     let arm_code_base = 0x8000u64;
     for (i, insn) in arm_code.iter().enumerate() {
-        bus.write(arm_code_base + (i * 4) as u64, MemAccessSize::U32, *insn as u64, 0).unwrap();
+        bus.write(
+            arm_code_base + (i * 4) as u64,
+            MemAccessSize::U32,
+            *insn as u64,
+            0,
+        )
+        .unwrap();
     }
 
     // ── Load RISC-V code at DRAM offset 0xA000 ───────────────────
     let rv_code = build_rv_result_reader();
     let rv_code_base = 0xA000u64;
     for (i, insn) in rv_code.iter().enumerate() {
-        bus.write(rv_code_base + (i * 4) as u64, MemAccessSize::U32, *insn as u64, 0).unwrap();
+        bus.write(
+            rv_code_base + (i * 4) as u64,
+            MemAccessSize::U32,
+            *insn as u64,
+            0,
+        )
+        .unwrap();
     }
 
     // ── Phase 1: ARM writes vectors to VRAM, configures GPU ──────
@@ -161,5 +189,8 @@ fn three_way_arm_rv_gpgpu() {
 
     // ── Verify: sum = 11+22+33+44 = 110 at DRAM 0x100 ───────────
     let sum = bus.read(0x100, MemAccessSize::U64, 0).unwrap();
-    assert_eq!(sum, 110, "Three-way heterogeneous result: 11+22+33+44 = 110");
+    assert_eq!(
+        sum, 110,
+        "Three-way heterogeneous result: 11+22+33+44 = 110"
+    );
 }

@@ -6,20 +6,20 @@
 //!   0x4000_1000 — GPGPU VRAM (64 KiB)
 //!   0x8000_0000 — DRAM (64 KiB, CPU code + stack)
 
-use std::sync::{Arc, Mutex};
+use rhetsim_accel_gpgpu::cmd_proc;
+use rhetsim_accel_gpgpu::Gpgpu;
 use rhetsim_core::bus::mem_bus::MemBus;
-use rhetsim_core::mem::{MemAttrs, MemAccessSize};
+use rhetsim_core::mem::{MemAccessSize, MemAttrs};
 use rhetsim_core::unit::Unit;
 use rhetsim_cpu_riscv::RiscvCpu;
-use rhetsim_mem_dram::Dram;
 use rhetsim_io_uart::Uart;
-use rhetsim_accel_gpgpu::Gpgpu;
-use rhetsim_accel_gpgpu::cmd_proc;
+use rhetsim_mem_dram::Dram;
 use rhetsim_runtime::Scheduler;
+use std::sync::{Arc, Mutex};
 
-const DRAM_BASE: u64     = 0x8000_0000;
-const DRAM_SIZE: usize   = 64 * 1024;
-const UART_BASE: u64     = 0x1000_0000;
+const DRAM_BASE: u64 = 0x8000_0000;
+const DRAM_SIZE: usize = 64 * 1024;
+const UART_BASE: u64 = 0x1000_0000;
 const GPU_CTRL_BASE: u64 = 0x4000_0000;
 const GPU_VRAM_BASE: u64 = 0x4000_1000;
 const GPU_VRAM_SIZE: usize = 64 * 1024;
@@ -39,7 +39,7 @@ fn build_vector_add_program() -> Vec<u8> {
     //   x4 = UART base (0x10000000)
     //   x5 = temp
 
-    let mut prog: Vec<u32> = Vec::new();
+    let mut prog: Vec<u32> = Vec::with_capacity(64);
 
     // --- Setup base addresses ---
     // LUI x2, 0x40001  → x2 = 0x40001000 (GPU VRAM)
@@ -54,13 +54,13 @@ fn build_vector_add_program() -> Vec<u8> {
     // ADDI x1, x0, 1; SW x1, 0(x2)
     prog.push(0x00100093); // ADDI x1, x0, 1
     prog.push(0x00112023); // SW x1, 0(x2)
-    // ADDI x1, x0, 2; SW x1, 4(x2)
+                           // ADDI x1, x0, 2; SW x1, 4(x2)
     prog.push(0x00200093); // ADDI x1, x0, 2
     prog.push(0x00112223); // SW x1, 4(x2)
-    // ADDI x1, x0, 3; SW x1, 8(x2)
+                           // ADDI x1, x0, 3; SW x1, 8(x2)
     prog.push(0x00300093); // ADDI x1, x0, 3
     prog.push(0x00112423); // SW x1, 8(x2)
-    // ADDI x1, x0, 4; SW x1, 12(x2)
+                           // ADDI x1, x0, 4; SW x1, 12(x2)
     prog.push(0x00400093); // ADDI x1, x0, 4
     prog.push(0x00112623); // SW x1, 12(x2)
 
@@ -72,13 +72,13 @@ fn build_vector_add_program() -> Vec<u8> {
     // ADDI x1, x0, 10; SW x1, 0(x5)
     prog.push(0x00A00093); // ADDI x1, x0, 10
     prog.push(0x0012A023); // SW x1, 0(x5)
-    // ADDI x1, x0, 20; SW x1, 4(x5)
+                           // ADDI x1, x0, 20; SW x1, 4(x5)
     prog.push(0x01400093); // ADDI x1, x0, 20
     prog.push(0x0012A223); // SW x1, 4(x5)
-    // ADDI x1, x0, 30; SW x1, 8(x5)
+                           // ADDI x1, x0, 30; SW x1, 8(x5)
     prog.push(0x01E00093); // ADDI x1, x0, 30
     prog.push(0x0012A423); // SW x1, 8(x5)
-    // ADDI x1, x0, 40; SW x1, 12(x5)
+                           // ADDI x1, x0, 40; SW x1, 12(x5)
     prog.push(0x02800093); // ADDI x1, x0, 40
     prog.push(0x0012A623); // SW x1, 12(x5)
 
@@ -130,14 +130,34 @@ fn cpu_offloads_vector_add_to_gpgpu() {
     let gpu_ctrl = gpu.ctrl_arc();
     let gpu_vram = gpu.vram_arc();
 
-    bus.map(dram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-            DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(uart.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-            UART_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_ctrl.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-            GPU_CTRL_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_vram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-            GPU_VRAM_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        uart.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+        UART_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_ctrl.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+        GPU_CTRL_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_vram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+        GPU_VRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
 
     let bus = Arc::new(bus);
 
@@ -172,13 +192,16 @@ fn cpu_offloads_vector_add_to_gpgpu() {
     let result_base = GPU_VRAM_BASE + 0x2000;
     let expected: [u32; 4] = [11, 22, 33, 44];
     for (i, &exp) in expected.iter().enumerate() {
-        let val = bus.read(result_base + (i as u64) * 4, MemAccessSize::U32, 0)
+        let val = bus
+            .read(result_base + (i as u64) * 4, MemAccessSize::U32, 0)
             .expect("read result");
         assert_eq!(val as u32, exp, "result mismatch at index {i}");
     }
 
     // Verify GPU status is DONE
-    let status = bus.read(GPU_CTRL_BASE + 0x04, MemAccessSize::U32, 0).unwrap();
+    let status = bus
+        .read(GPU_CTRL_BASE + 0x04, MemAccessSize::U32, 0)
+        .unwrap();
     assert_eq!(status as u32, cmd_proc::STATUS_DONE);
 }
 
@@ -193,14 +216,34 @@ fn cpu_and_gpgpu_on_same_scheduler() {
     let gpu_ctrl = gpu.ctrl_arc();
     let gpu_vram = gpu.vram_arc();
 
-    bus.map(dram as Arc<dyn rhetsim_core::mem::MemTarget>,
-            DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(uart.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-            UART_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_ctrl as Arc<dyn rhetsim_core::mem::MemTarget>,
-            GPU_CTRL_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gpu_vram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
-            GPU_VRAM_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram as Arc<dyn rhetsim_core::mem::MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        uart.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+        UART_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_ctrl as Arc<dyn rhetsim_core::mem::MemTarget>,
+        GPU_CTRL_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gpu_vram.clone() as Arc<dyn rhetsim_core::mem::MemTarget>,
+        GPU_VRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
 
     let bus = Arc::new(bus);
 
@@ -223,7 +266,12 @@ fn cpu_and_gpgpu_on_same_scheduler() {
     // Verify result via bus
     let expected: [u32; 4] = [11, 22, 33, 44];
     for (i, &exp) in expected.iter().enumerate() {
-        let val = bus.read(GPU_VRAM_BASE + 0x2000 + (i as u64) * 4, MemAccessSize::U32, 0)
+        let val = bus
+            .read(
+                GPU_VRAM_BASE + 0x2000 + (i as u64) * 4,
+                MemAccessSize::U32,
+                0,
+            )
             .unwrap();
         assert_eq!(val as u32, exp, "result mismatch at index {i}");
     }

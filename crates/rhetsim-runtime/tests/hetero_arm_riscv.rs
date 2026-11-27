@@ -10,10 +10,10 @@
 //!   2. RISC-V coprocessor reads those values, sums them, writes result to DRAM offset 0x100
 //!   3. ARM host reads the result from DRAM offset 0x100 and verifies it equals 100
 
-use std::sync::Arc;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
-use rhetsim_core::mem::{MemAttrs, MemTarget, MemAccessSize};
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
+use std::sync::Arc;
 
 const SHARED_DRAM_BASE: u64 = 0;
 const SHARED_DRAM_SIZE: usize = 64 * 1024;
@@ -69,11 +69,19 @@ fn build_riscv_summer() -> Vec<u32> {
 #[test]
 fn hetero_arm_riscv_shared_dram() {
     let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(
-        "shared-dram", SHARED_DRAM_SIZE, SHARED_DRAM_BASE,
+        "shared-dram",
+        SHARED_DRAM_SIZE,
+        SHARED_DRAM_BASE,
     ));
 
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, SHARED_DRAM_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        SHARED_DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     // ── Phase 1: ARM host writes data to shared DRAM ──────────
@@ -86,7 +94,13 @@ fn hetero_arm_riscv_shared_dram() {
     let arm_code = build_arm_writer();
     let arm_code_base = 0x8000u64;
     for (i, insn) in arm_code.iter().enumerate() {
-        bus.write(arm_code_base + (i * 4) as u64, MemAccessSize::U32, *insn as u64, 0).unwrap();
+        bus.write(
+            arm_code_base + (i * 4) as u64,
+            MemAccessSize::U32,
+            *insn as u64,
+            0,
+        )
+        .unwrap();
     }
     arm.set_pc(arm_code_base);
     arm.set_sp(0xF000);
@@ -97,20 +111,34 @@ fn hetero_arm_riscv_shared_dram() {
         steps += 1;
     }
     assert!(arm.is_halted(), "ARM should halt via SVC");
-    assert!(steps <= 20, "ARM program should complete quickly (got {} steps)", steps);
+    assert!(
+        steps <= 20,
+        "ARM program should complete quickly (got {} steps)",
+        steps
+    );
 
     // Verify data was written to shared DRAM
     assert_eq!(bus.read(0, MemAccessSize::U64, 0).unwrap(), 10);
     assert_eq!(bus.read(8, MemAccessSize::U64, 0).unwrap(), 20);
     assert_eq!(bus.read(16, MemAccessSize::U64, 0).unwrap(), 30);
     assert_eq!(bus.read(24, MemAccessSize::U64, 0).unwrap(), 40);
-    assert_eq!(bus.read(0x80, MemAccessSize::U64, 0).unwrap(), 1, "ready flag");
+    assert_eq!(
+        bus.read(0x80, MemAccessSize::U64, 0).unwrap(),
+        1,
+        "ready flag"
+    );
 
     // ── Phase 2: RISC-V coprocessor reads data, computes sum ──
     let rv_code = build_riscv_summer();
     let rv_code_base = 0xA000u64;
     for (i, insn) in rv_code.iter().enumerate() {
-        bus.write(rv_code_base + (i * 4) as u64, MemAccessSize::U32, *insn as u64, 0).unwrap();
+        bus.write(
+            rv_code_base + (i * 4) as u64,
+            MemAccessSize::U32,
+            *insn as u64,
+            0,
+        )
+        .unwrap();
     }
 
     let mut rv = rhetsim_cpu_riscv::cpu::RiscvCpu::with_bus("rv-coproc", bus.clone(), rv_code_base);
@@ -127,7 +155,10 @@ fn hetero_arm_riscv_shared_dram() {
 
     // Result should be written to DRAM at offset 0x100
     let result = bus.read(0x100, MemAccessSize::U64, 0).unwrap();
-    assert_eq!(result, 100, "shared DRAM at 0x100 should contain the sum 100");
+    assert_eq!(
+        result, 100,
+        "shared DRAM at 0x100 should contain the sum 100"
+    );
 
     // ── Phase 3: ARM host reads back the result ───────────────
     // Build a small ARM program that reads from 0x100 into X10
@@ -138,7 +169,13 @@ fn hetero_arm_riscv_shared_dram() {
     ];
     let arm_read_base = 0xC000u64;
     for (i, insn) in arm_reader.iter().enumerate() {
-        bus.write(arm_read_base + (i * 4) as u64, MemAccessSize::U32, *insn as u64, 0).unwrap();
+        bus.write(
+            arm_read_base + (i * 4) as u64,
+            MemAccessSize::U32,
+            *insn as u64,
+            0,
+        )
+        .unwrap();
     }
 
     let mut arm2 = rhetsim_cpu_arm::cpu::ArmCpu::with_bus("arm-reader", bus.clone(), arm_read_base);
@@ -150,5 +187,9 @@ fn hetero_arm_riscv_shared_dram() {
         steps2 += 1;
     }
     assert!(arm2.is_halted(), "ARM reader should halt via SVC");
-    assert_eq!(arm2.reg(10), 100, "ARM should read back sum=100 from shared DRAM");
+    assert_eq!(
+        arm2.reg(10),
+        100,
+        "ARM should read back sum=100 from shared DRAM"
+    );
 }

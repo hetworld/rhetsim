@@ -16,7 +16,11 @@ const MSTATUS_SUM: u64 = 1 << 18;
 const MSTATUS_MXR: u64 = 1 << 19;
 
 #[derive(Debug, Clone, Copy)]
-pub enum AccessType { Fetch, Load, Store }
+pub enum AccessType {
+    Fetch,
+    Load,
+    Store,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PageFault {
@@ -28,7 +32,7 @@ impl PageFault {
     fn new(access: AccessType, va: u64) -> Self {
         let cause = match access {
             AccessType::Fetch => 12,
-            AccessType::Load  => 13,
+            AccessType::Load => 13,
             AccessType::Store => 15,
         };
         Self { cause, tval: va }
@@ -49,11 +53,7 @@ pub fn translate_sv39(
     }
 
     let root_ppn = satp & 0x0FFF_FFFF_FFFF;
-    let vpn = [
-        (va >> 12) & 0x1FF,
-        (va >> 21) & 0x1FF,
-        (va >> 30) & 0x1FF,
-    ];
+    let vpn = [(va >> 12) & 0x1FF, (va >> 21) & 0x1FF, (va >> 30) & 0x1FF];
     let page_offset = va & 0xFFF;
 
     let mut a = root_ppn * PAGESIZE;
@@ -85,9 +85,9 @@ pub fn translate_sv39(
             }
 
             let mut pa = page_offset;
-            for l in 0..LEVELS {
+            for (l, &vpn_l) in vpn.iter().enumerate() {
                 let bits = if l < level {
-                    vpn[l]
+                    vpn_l
                 } else {
                     (ppn >> (l * 9)) & 0x1FF
                 };
@@ -124,8 +124,12 @@ fn check_perm(
 
     match access {
         AccessType::Fetch => {
-            if pte & PTE_X == 0 { return Err(PageFault::new(access, va)); }
-            if priv_mode == 1 && u_bit { return Err(PageFault::new(access, va)); }
+            if pte & PTE_X == 0 {
+                return Err(PageFault::new(access, va));
+            }
+            if priv_mode == 1 && u_bit {
+                return Err(PageFault::new(access, va));
+            }
         }
         AccessType::Load => {
             if pte & PTE_R == 0 && !(mxr && pte & PTE_X != 0) {
@@ -133,7 +137,9 @@ fn check_perm(
             }
         }
         AccessType::Store => {
-            if pte & PTE_W == 0 { return Err(PageFault::new(access, va)); }
+            if pte & PTE_W == 0 {
+                return Err(PageFault::new(access, va));
+            }
         }
     }
     Ok(())
@@ -151,7 +157,12 @@ struct TlbEntry {
 
 impl TlbEntry {
     const fn empty() -> Self {
-        Self { va_page: 0, pa_page: 0, perm: 0, valid: false }
+        Self {
+            va_page: 0,
+            pa_page: 0,
+            perm: 0,
+            valid: false,
+        }
     }
 }
 
@@ -159,9 +170,17 @@ pub struct Tlb {
     entries: [TlbEntry; TLB_SIZE],
 }
 
+impl Default for Tlb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tlb {
     pub fn new() -> Self {
-        Self { entries: [TlbEntry::empty(); TLB_SIZE] }
+        Self {
+            entries: [TlbEntry::empty(); TLB_SIZE],
+        }
     }
 
     pub fn flush(&mut self) {
@@ -192,7 +211,12 @@ impl Tlb {
         if e.valid && e.va_page == va_page {
             e.perm |= mask;
         } else {
-            *e = TlbEntry { va_page, pa_page, perm: mask, valid: true };
+            *e = TlbEntry {
+                va_page,
+                pa_page,
+                perm: mask,
+                valid: true,
+            };
         }
     }
 }
@@ -207,6 +231,9 @@ fn access_mask(access: AccessType) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    // Page-table test addresses spell out the zero offset for readability.
+    #![allow(clippy::erasing_op)]
+
     use super::*;
 
     fn make_pte(ppn: u64, flags: u64) -> u64 {
@@ -240,7 +267,11 @@ mod tests {
         let pte = make_pte(ppn, PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D);
 
         let phys_read = |addr: u64| -> u64 {
-            if addr == root_table_pa + pte_offset { pte } else { 0 }
+            if addr == root_table_pa + pte_offset {
+                pte
+            } else {
+                0
+            }
         };
 
         let pa = translate_sv39(0x8000_1234, satp, AccessType::Load, 1, 0, &phys_read).unwrap();
@@ -263,10 +294,21 @@ mod tests {
         let l0_pte = make_pte(target_ppn, PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D);
 
         let phys_read = move |addr: u64| -> u64 {
-            if addr == l2_ppn * PAGESIZE + 0 * PTESIZE { l2_pte }       // VPN[2]=0
-            else if addr == l1_ppn * PAGESIZE + 2 * PTESIZE { l1_pte }  // VPN[1]=2
-            else if addr == l0_ppn * PAGESIZE + 0 * PTESIZE { l0_pte }  // VPN[0]=0
-            else { 0 }
+            if addr == l2_ppn * PAGESIZE + 0 * PTESIZE {
+                l2_pte
+            }
+            // VPN[2]=0
+            else if addr == l1_ppn * PAGESIZE + 2 * PTESIZE {
+                l1_pte
+            }
+            // VPN[1]=2
+            else if addr == l0_ppn * PAGESIZE + 0 * PTESIZE {
+                l0_pte
+            }
+            // VPN[0]=0
+            else {
+                0
+            }
         };
 
         let va = 0x0000_0000_0040_0ABC;
@@ -290,7 +332,11 @@ mod tests {
         let pte = make_pte(0x80000, PTE_V | PTE_R | PTE_X | PTE_A | PTE_D); // no W
 
         let phys_read = move |addr: u64| -> u64 {
-            if addr == root_ppn * PAGESIZE + 2 * PTESIZE { pte } else { 0 }
+            if addr == root_ppn * PAGESIZE + 2 * PTESIZE {
+                pte
+            } else {
+                0
+            }
         };
 
         let result = translate_sv39(0x8000_0000, satp, AccessType::Store, 1, 0, &phys_read);
@@ -305,7 +351,11 @@ mod tests {
         let pte = make_pte(0x80000, PTE_V | PTE_R | PTE_W | PTE_X | PTE_D); // no A
 
         let phys_read = move |addr: u64| -> u64 {
-            if addr == root_ppn * PAGESIZE + 2 * PTESIZE { pte } else { 0 }
+            if addr == root_ppn * PAGESIZE + 2 * PTESIZE {
+                pte
+            } else {
+                0
+            }
         };
 
         let result = translate_sv39(0x8000_0000, satp, AccessType::Load, 1, 0, &phys_read);

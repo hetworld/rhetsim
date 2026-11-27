@@ -10,16 +10,18 @@
 //!
 //! Total size: 0x400000 (4 MiB)
 
-use std::sync::{Arc, RwLock};
 use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::irq::{IrqLineSource, IrqSink};
-use rhetsim_core::mem::{MemTarget, MemAccessSize};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::sync::{Arc, RwLock};
 
 const PLIC_SIZE: u64 = 0x400_0000;
 const MAX_SOURCES: usize = 1024;
 const MAX_CONTEXTS: usize = 15872; // spec max
+                                   // Reserved for priority-register range checks.
+#[allow(dead_code)]
 const PRIORITY_BASE: u64 = 0x0;
 const PENDING_BASE: u64 = 0x1000;
 const ENABLE_BASE: u64 = 0x2000;
@@ -68,19 +70,28 @@ impl Plic {
 
     pub fn pending_irq(&self, context: usize) -> Option<u32> {
         let state = self.state.read().unwrap();
-        if context >= self.num_contexts { return None; }
+        if context >= self.num_contexts {
+            return None;
+        }
         let threshold = state.threshold[context];
-        let words = (self.num_sources + 31) / 32;
+        let words = self.num_sources.div_ceil(32);
         let mut best_irq: Option<u32> = None;
         let mut best_prio = 0u32;
 
         for w in 0..words {
-            let candidates = state.pending[w] & state.enable[context][w] & !state.claimed[context][w];
-            if candidates == 0 { continue; }
+            let candidates =
+                state.pending[w] & state.enable[context][w] & !state.claimed[context][w];
+            if candidates == 0 {
+                continue;
+            }
             for bit in 0..32 {
-                if candidates & (1 << bit) == 0 { continue; }
+                if candidates & (1 << bit) == 0 {
+                    continue;
+                }
                 let irq = (w * 32 + bit) as u32;
-                if irq == 0 || irq as usize > self.num_sources { continue; }
+                if irq == 0 || irq as usize > self.num_sources {
+                    continue;
+                }
                 let prio = state.priority[irq as usize];
                 if prio > threshold && prio > best_prio {
                     best_prio = prio;
@@ -93,30 +104,54 @@ impl Plic {
 }
 
 impl Unit for Plic {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "riscv-plic" }
-    fn caps(&self) -> UnitCaps { UnitCaps::ADDRESSABLE | UnitCaps::IRQ_SINK }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "riscv-plic"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::ADDRESSABLE | UnitCaps::IRQ_SINK
+    }
 
-    fn as_mem_target(&self) -> Option<&dyn MemTarget> { Some(self) }
+    fn as_mem_target(&self) -> Option<&dyn MemTarget> {
+        Some(self)
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
-        let mut state = self.state.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         state.priority.fill(0);
         state.pending.fill(0);
         state.threshold.fill(0);
-        for v in &mut state.enable { v.fill(0); }
-        for v in &mut state.claimed { v.fill(0); }
+        for v in &mut state.enable {
+            v.fill(0);
+        }
+        for v in &mut state.claimed {
+            v.fill(0);
+        }
         Ok(())
     }
 }
 
 impl MemTarget for Plic {
-    fn target_id(&self) -> u32 { 0 }
-    fn base(&self) -> u64 { self.base }
-    fn size(&self) -> u64 { PLIC_SIZE }
+    fn target_id(&self) -> u32 {
+        0
+    }
+    fn base(&self) -> u64 {
+        self.base
+    }
+    fn size(&self) -> u64 {
+        PLIC_SIZE
+    }
 
     fn read(&self, offset: u64, _size: MemAccessSize) -> OmniResult<u64> {
-        let state = self.state.read().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let state = self
+            .state
+            .read()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
 
         // Priority registers
         if offset < PENDING_BASE {
@@ -128,7 +163,7 @@ impl MemTarget for Plic {
         }
 
         // Pending registers
-        if offset >= PENDING_BASE && offset < ENABLE_BASE {
+        if (PENDING_BASE..ENABLE_BASE).contains(&offset) {
             let word = ((offset - PENDING_BASE) / 4) as usize;
             if word < state.pending.len() {
                 return Ok(state.pending[word] as u64);
@@ -137,7 +172,7 @@ impl MemTarget for Plic {
         }
 
         // Enable registers
-        if offset >= ENABLE_BASE && offset < CONTEXT_BASE {
+        if (ENABLE_BASE..CONTEXT_BASE).contains(&offset) {
             let rel = offset - ENABLE_BASE;
             let ctx = (rel / ENABLE_STRIDE) as usize;
             let word = ((rel % ENABLE_STRIDE) / 4) as usize;
@@ -159,7 +194,10 @@ impl MemTarget for Plic {
                         // Claim: return highest-priority pending+enabled IRQ
                         drop(state);
                         if let Some(irq) = self.pending_irq(ctx) {
-                            let mut state = self.state.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+                            let mut state = self
+                                .state
+                                .write()
+                                .map_err(|e| OmniError::Internal(e.to_string()))?;
                             let w = irq as usize / 32;
                             let b = irq as usize % 32;
                             state.claimed[ctx][w] |= 1 << b;
@@ -177,7 +215,10 @@ impl MemTarget for Plic {
     }
 
     fn write(&self, offset: u64, _size: MemAccessSize, val: u64) -> OmniResult<()> {
-        let mut state = self.state.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
 
         // Priority
         if offset < PENDING_BASE {
@@ -190,12 +231,12 @@ impl MemTarget for Plic {
         }
 
         // Pending: read-only (set via IrqSink::raise)
-        if offset >= PENDING_BASE && offset < ENABLE_BASE {
+        if (PENDING_BASE..ENABLE_BASE).contains(&offset) {
             return Ok(());
         }
 
         // Enable
-        if offset >= ENABLE_BASE && offset < CONTEXT_BASE {
+        if (ENABLE_BASE..CONTEXT_BASE).contains(&offset) {
             let rel = offset - ENABLE_BASE;
             let ctx = (rel / ENABLE_STRIDE) as usize;
             let word = ((rel % ENABLE_STRIDE) / 4) as usize;
@@ -248,9 +289,15 @@ impl MemTarget for Plic {
 impl IrqSink for Plic {
     fn raise(&self, irq_num: u32) -> OmniResult<()> {
         if irq_num == 0 || irq_num as usize > self.num_sources {
-            return Err(OmniError::IrqNotFound(format!("source {} out of range", irq_num)));
+            return Err(OmniError::IrqNotFound(format!(
+                "source {} out of range",
+                irq_num
+            )));
         }
-        let mut state = self.state.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         let w = irq_num as usize / 32;
         let b = irq_num as usize % 32;
         state.pending[w] |= 1 << b;
@@ -260,9 +307,15 @@ impl IrqSink for Plic {
 
     fn lower(&self, irq_num: u32) -> OmniResult<()> {
         if irq_num == 0 || irq_num as usize > self.num_sources {
-            return Err(OmniError::IrqNotFound(format!("source {} out of range", irq_num)));
+            return Err(OmniError::IrqNotFound(format!(
+                "source {} out of range",
+                irq_num
+            )));
         }
-        let mut state = self.state.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         let w = irq_num as usize / 32;
         let b = irq_num as usize % 32;
         state.pending[w] &= !(1 << b);
@@ -270,7 +323,9 @@ impl IrqSink for Plic {
         Ok(())
     }
 
-    fn irq_count(&self) -> u32 { self.num_sources as u32 }
+    fn irq_count(&self) -> u32 {
+        self.num_sources as u32
+    }
 }
 
 /// 某个 PLIC context 的输出线，可由 RISC-V CPU 轮询同步到 mip.MEIP/SEIP。
@@ -320,7 +375,7 @@ mod tests {
         plic.write(4, MemAccessSize::U32, 5).unwrap();
         // Enable source 1 for context 0
         plic.write(ENABLE_BASE, MemAccessSize::U32, 0x2).unwrap(); // bit 1
-        // Set threshold to 0 for context 0
+                                                                   // Set threshold to 0 for context 0
         plic.write(CONTEXT_BASE, MemAccessSize::U32, 0).unwrap();
 
         // Raise source 1
@@ -369,7 +424,8 @@ mod tests {
         let plic = Arc::new(Plic::new("plic0", 32, 2, 0x0C00_0000));
         // Enable source 1 for context 1 only.
         plic.write(4, MemAccessSize::U32, 1).unwrap();
-        plic.write(ENABLE_BASE + ENABLE_STRIDE, MemAccessSize::U32, 0x2).unwrap();
+        plic.write(ENABLE_BASE + ENABLE_STRIDE, MemAccessSize::U32, 0x2)
+            .unwrap();
         plic.raise(1).unwrap();
 
         let s_line = PlicContextLine::new(plic.clone(), 1);

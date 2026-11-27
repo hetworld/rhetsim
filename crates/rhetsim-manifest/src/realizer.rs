@@ -1,21 +1,25 @@
 //! Realizer / ComponentRegistry / Platform — Manifest → 运行时平台
 
-use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
-use rhetsim_core::error::OmniResult;
-use rhetsim_core::unit::{Unit, UnitId};
-use rhetsim_core::registry::UnitRegistry;
-use rhetsim_core::bus::{
-    mem_bus::MemBus, irq_bus::{IrqBus, IrqRouter},
-    data_bus::DataBus, sync_bus::SyncBus,
-    pcie_bus::PcieBus, reset_bus::ResetBus,
-    power_bus::PowerBus, interconnect_bus::InterconnectBus,
-};
-use rhetsim_core::snapshot::PlatformSnapshot;
-use rhetsim_core::backend::execution::BackendKind;
-use crate::manifest::{Manifest, UnitDesc, BusDesc, BootDesc};
-use crate::validator::Validator;
 use crate::expander::Expander;
+use crate::manifest::{BootDesc, BusDesc, Manifest, UnitDesc};
+use crate::validator::Validator;
+use rhetsim_core::backend::execution::BackendKind;
+use rhetsim_core::bus::{
+    data_bus::DataBus,
+    interconnect_bus::InterconnectBus,
+    irq_bus::{IrqBus, IrqRouter},
+    mem_bus::MemBus,
+    pcie_bus::PcieBus,
+    power_bus::PowerBus,
+    reset_bus::ResetBus,
+    sync_bus::SyncBus,
+};
+use rhetsim_core::error::OmniResult;
+use rhetsim_core::registry::UnitRegistry;
+use rhetsim_core::snapshot::PlatformSnapshot;
+use rhetsim_core::unit::{Unit, UnitId};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// 组件工厂函数类型
 pub type UnitFactory = Box<dyn Fn(&UnitDesc) -> OmniResult<Box<dyn Unit>> + Send + Sync>;
@@ -23,20 +27,24 @@ pub type UnitFactory = Box<dyn Fn(&UnitDesc) -> OmniResult<Box<dyn Unit>> + Send
 /// 组件注册表
 pub struct ComponentRegistry {
     factories: HashMap<String, UnitFactory>,
-    schemas:   HashMap<String, serde_json::Value>,
-    backends:  HashMap<String, HashSet<String>>,
+    schemas: HashMap<String, serde_json::Value>,
+    backends: HashMap<String, HashSet<String>>,
 }
 
 impl ComponentRegistry {
     pub fn new() -> Self {
-        Self { factories: HashMap::new(), schemas: HashMap::new(), backends: HashMap::new() }
+        Self {
+            factories: HashMap::new(),
+            schemas: HashMap::new(),
+            backends: HashMap::new(),
+        }
     }
 
     pub fn register(
         &mut self,
-        kind:     &'static str,
-        factory:  UnitFactory,
-        schema:   Option<serde_json::Value>,
+        kind: &'static str,
+        factory: UnitFactory,
+        schema: Option<serde_json::Value>,
         backends: &[BackendKind],
     ) {
         self.factories.insert(kind.to_string(), factory);
@@ -63,48 +71,52 @@ impl ComponentRegistry {
 }
 
 impl Default for ComponentRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// 运行时 Bus 集合
 pub struct BusSet {
-    pub mem_buses:          HashMap<String, MemBus>,
-    pub irq_buses:          HashMap<String, IrqBus>,
-    pub data_buses:         HashMap<String, DataBus>,
-    pub sync_buses:         HashMap<String, SyncBus>,
-    pub pcie_buses:         HashMap<String, PcieBus>,
-    pub reset_buses:        HashMap<String, ResetBus>,
-    pub power_buses:        HashMap<String, PowerBus>,
+    pub mem_buses: HashMap<String, MemBus>,
+    pub irq_buses: HashMap<String, IrqBus>,
+    pub data_buses: HashMap<String, DataBus>,
+    pub sync_buses: HashMap<String, SyncBus>,
+    pub pcie_buses: HashMap<String, PcieBus>,
+    pub reset_buses: HashMap<String, ResetBus>,
+    pub power_buses: HashMap<String, PowerBus>,
     pub interconnect_buses: HashMap<String, InterconnectBus>,
 }
 
 impl BusSet {
     pub fn new() -> Self {
         Self {
-            mem_buses:          HashMap::new(),
-            irq_buses:          HashMap::new(),
-            data_buses:         HashMap::new(),
-            sync_buses:         HashMap::new(),
-            pcie_buses:         HashMap::new(),
-            reset_buses:        HashMap::new(),
-            power_buses:        HashMap::new(),
+            mem_buses: HashMap::new(),
+            irq_buses: HashMap::new(),
+            data_buses: HashMap::new(),
+            sync_buses: HashMap::new(),
+            pcie_buses: HashMap::new(),
+            reset_buses: HashMap::new(),
+            power_buses: HashMap::new(),
             interconnect_buses: HashMap::new(),
         }
     }
 }
 
 impl Default for BusSet {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// 运行时平台 — realize 的产物
 pub struct Platform {
-    pub name:       String,
-    pub unit_reg:   UnitRegistry,
-    pub buses:      BusSet,
+    pub name: String,
+    pub unit_reg: UnitRegistry,
+    pub buses: BusSet,
     pub irq_router: IrqRouter,
-    pub boot:       BootDesc,
-    pub manifest:   Manifest,
+    pub boot: BootDesc,
+    pub manifest: Manifest,
 }
 
 impl Platform {
@@ -136,22 +148,24 @@ pub struct Realizer {
 }
 
 impl Realizer {
-    pub fn new(registry: Arc<ComponentRegistry>) -> Self { Self { registry } }
+    pub fn new(registry: Arc<ComponentRegistry>) -> Self {
+        Self { registry }
+    }
 
     pub fn realize(&self, manifest: &Manifest) -> OmniResult<Platform> {
         let validator = Validator::new();
         let report = validator.validate(manifest)?;
         if !report.is_ok() {
             return Err(rhetsim_core::error::OmniError::RealizeFailed(
-                report.errors.join("; ")
+                report.errors.join("; "),
             ));
         }
 
         let expander = Expander::new();
         let expanded = expander.expand(manifest)?;
 
-        let mut unit_reg   = UnitRegistry::new();
-        let mut irq_router = IrqRouter::new();
+        let mut unit_reg = UnitRegistry::new();
+        let irq_router = IrqRouter::new();
 
         for desc in &expanded.units {
             if let Some(factory) = self.registry.get_factory(&desc.kind) {
@@ -161,12 +175,12 @@ impl Realizer {
         }
 
         Ok(Platform {
-            name:       manifest.name.clone(),
+            name: manifest.name.clone(),
             unit_reg,
-            buses:      BusSet::new(),
+            buses: BusSet::new(),
             irq_router,
-            boot:       manifest.boot.clone(),
-            manifest:   manifest.clone(),
+            boot: manifest.boot.clone(),
+            manifest: manifest.clone(),
         })
     }
 }

@@ -14,19 +14,19 @@
 //!   5. Reads back both values and stores to DRAM results area
 //!   6. ECALL to halt
 
-use std::sync::Arc;
 use rhetsim_core::bus::mem_bus::MemBus;
-use rhetsim_core::mem::{MemAttrs, MemAccessSize, MemTarget};
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
 use rhetsim_cpu_riscv::RiscvCpu;
+use rhetsim_io_pcie::{Bdf, PcieEndpoint, PcieRootComplex};
 use rhetsim_mem_dram::Dram;
-use rhetsim_io_pcie::{PcieRootComplex, PcieEndpoint, Bdf};
+use std::sync::Arc;
 
-const DRAM_BASE: u64   = 0x0000_0000;
-const DRAM_SIZE: usize  = 64 * 1024;
-const ECAM_BASE: u64    = 0x3000_0000;
-const DEV0_BAR: u64     = 0x4000_0000;
-const DEV1_BAR: u64     = 0x5000_0000;
-const BAR_SIZE: usize   = 4096;
+const DRAM_BASE: u64 = 0x0000_0000;
+const DRAM_SIZE: usize = 64 * 1024;
+const ECAM_BASE: u64 = 0x3000_0000;
+const DEV0_BAR: u64 = 0x4000_0000;
+const DEV1_BAR: u64 = 0x5000_0000;
+const BAR_SIZE: usize = 4096;
 const RESULT_OFFSET: u64 = 0x2000;
 
 #[test]
@@ -36,10 +36,20 @@ fn cpu_enumerates_and_accesses_pcie_devices() {
     let dev1_mem = Arc::new(Dram::with_base("dev1-bar0", BAR_SIZE, 0));
 
     let mut ep0 = PcieEndpoint::new(Bdf::new(0, 0, 0), 0x10DE, 0x2204, 0x030200);
-    ep0.add_bar(0, DEV0_BAR, BAR_SIZE as u64, dev0_mem.clone() as Arc<dyn MemTarget>);
+    ep0.add_bar(
+        0,
+        DEV0_BAR,
+        BAR_SIZE as u64,
+        dev0_mem.clone() as Arc<dyn MemTarget>,
+    );
 
     let mut ep1 = PcieEndpoint::new(Bdf::new(0, 1, 0), 0x1234, 0x5678, 0x020000);
-    ep1.add_bar(0, DEV1_BAR, BAR_SIZE as u64, dev1_mem.clone() as Arc<dyn MemTarget>);
+    ep1.add_bar(
+        0,
+        DEV1_BAR,
+        BAR_SIZE as u64,
+        dev1_mem.clone() as Arc<dyn MemTarget>,
+    );
 
     let rc = PcieRootComplex::new("pcie0", ECAM_BASE);
     rc.attach(Box::new(ep0));
@@ -48,11 +58,35 @@ fn cpu_enumerates_and_accesses_pcie_devices() {
     // --- Build MemBus ---
     let mut bus = MemBus::new("system-bus");
     let dram = Arc::new(Dram::with_base("dram0", DRAM_SIZE, DRAM_BASE));
-    bus.map(dram.clone() as Arc<dyn MemTarget>, DRAM_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let rc = Arc::new(rc);
-    bus.map(rc.clone() as Arc<dyn MemTarget>, ECAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(dev0_mem.clone() as Arc<dyn MemTarget>, DEV0_BAR, MemAttrs::rw(), None).unwrap();
-    bus.map(dev1_mem.clone() as Arc<dyn MemTarget>, DEV1_BAR, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        rc.clone() as Arc<dyn MemTarget>,
+        ECAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        dev0_mem.clone() as Arc<dyn MemTarget>,
+        DEV0_BAR,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        dev1_mem.clone() as Arc<dyn MemTarget>,
+        DEV1_BAR,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     // --- Build RV64I program ---
@@ -63,28 +97,24 @@ fn cpu_enumerates_and_accesses_pcie_devices() {
     // x1, x5 = temps
     let prog: Vec<u32> = vec![
         // Setup base addresses (all bit 31 = 0, safe for RV64 LUI)
-        0x30000137,  // LUI  x2,  0x30000       ; x2  = 0x30000000 (ECAM)
-        0x400001B7,  // LUI  x3,  0x40000       ; x3  = 0x40000000 (DEV0 BAR)
-        0x50000237,  // LUI  x4,  0x50000       ; x4  = 0x50000000 (DEV1 BAR)
-        0x00002537,  // LUI  x10, 0x2           ; x10 = 0x00002000 (results)
-
+        0x30000137, // LUI  x2,  0x30000       ; x2  = 0x30000000 (ECAM)
+        0x400001B7, // LUI  x3,  0x40000       ; x3  = 0x40000000 (DEV0 BAR)
+        0x50000237, // LUI  x4,  0x50000       ; x4  = 0x50000000 (DEV1 BAR)
+        0x00002537, // LUI  x10, 0x2           ; x10 = 0x00002000 (results)
         // --- Read device 0 config: BDF 00:00.0 → ECAM offset 0 ---
-        0x00012283,  // LW   x5, 0(x2)          ; x5 = vendor|device ID
-        0x00552023,  // SW   x5, 0(x10)         ; results[0] = dev0 ID
-
+        0x00012283, // LW   x5, 0(x2)          ; x5 = vendor|device ID
+        0x00552023, // SW   x5, 0(x10)         ; results[0] = dev0 ID
         // --- Read device 1 config: BDF 00:01.0 → ECAM offset 0x8000 ---
-        0x000080B7,  // LUI  x1, 0x8            ; x1 = 0x8000
-        0x002080B3,  // ADD  x1, x1, x2         ; x1 = ECAM + 0x8000
-        0x0000A283,  // LW   x5, 0(x1)          ; x5 = vendor|device ID
-        0x00552223,  // SW   x5, 4(x10)         ; results[4] = dev1 ID
-
+        0x000080B7, // LUI  x1, 0x8            ; x1 = 0x8000
+        0x002080B3, // ADD  x1, x1, x2         ; x1 = ECAM + 0x8000
+        0x0000A283, // LW   x5, 0(x1)          ; x5 = vendor|device ID
+        0x00552223, // SW   x5, 4(x10)         ; results[4] = dev1 ID
         // --- Write 0x12345678 to device 0 BAR0 ---
         // LUI x1, 0x12345 → x1 = 0x12345000
         // ADDI x1, x1, 0x678 → x1 = 0x12345678
-        0x123450B7,  // LUI  x1, 0x12345
-        0x67808093,  // ADDI x1, x1, 0x678
-        0x0011A023,  // SW   x1, 0(x3)          ; dev0_bar[0] = 0x12345678
-
+        0x123450B7, // LUI  x1, 0x12345
+        0x67808093, // ADDI x1, x1, 0x678
+        0x0011A023, // SW   x1, 0(x3)          ; dev0_bar[0] = 0x12345678
         // --- Write 0x0A0B0C0D to device 1 BAR0 ---
         // LUI x1, 0x0A0B1 → x1 = 0x0A0B1000
         // ADDI x1, x1, -0xFF3 → but that's tricky...
@@ -106,16 +136,14 @@ fn cpu_enumerates_and_accesses_pcie_devices() {
         // But actually in the instruction encoding, the immediate is the raw 12-bit value.
         // 0xEF0 as 12 bits = 0xEF0. As signed: bit 11 = 1, so negative = -(0x1000-0xEF0) = -0x110 = -272
         // 0x0ABCE000 + (-272) = 0x0ABCE000 - 0x110 = 0x0ABCDEF0 ✓
-        0x0ABCE0B7,  // LUI  x1, 0x0ABCE
-        0xEF008093,  // ADDI x1, x1, -272       ; x1 = 0x0ABCDEF0
-        0x00122023,  // SW   x1, 0(x4)          ; dev1_bar[0] = 0x0ABCDEF0
-
+        0x0ABCE0B7, // LUI  x1, 0x0ABCE
+        0xEF008093, // ADDI x1, x1, -272       ; x1 = 0x0ABCDEF0
+        0x00122023, // SW   x1, 0(x4)          ; dev1_bar[0] = 0x0ABCDEF0
         // --- Read back from BARs ---
-        0x0001A283,  // LW   x5, 0(x3)          ; readback dev0
-        0x00552423,  // SW   x5, 8(x10)         ; results[8]
-        0x00022283,  // LW   x5, 0(x4)          ; readback dev1
-        0x00552623,  // SW   x5, 12(x10)        ; results[12]
-
+        0x0001A283, // LW   x5, 0(x3)          ; readback dev0
+        0x00552423, // SW   x5, 8(x10)         ; results[8]
+        0x00022283, // LW   x5, 0(x4)          ; readback dev1
+        0x00552623, // SW   x5, 12(x10)        ; results[12]
         // ECALL (halt)
         0x00000073,
     ];
