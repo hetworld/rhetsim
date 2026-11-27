@@ -1,31 +1,31 @@
 //! GpgpuCtrl — control registers (MemTarget) and command processing logic.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use rhetsim_core::error::OmniResult;
-use rhetsim_core::mem::{MemTarget, MemAccessSize};
-use crate::sm::{StreamingMultiprocessor, SimtHart, Warp, DEFAULT_WARP_SIZE, DEFAULT_NUM_SMS};
+use crate::sm::{SimtHart, StreamingMultiprocessor, Warp, DEFAULT_NUM_SMS, DEFAULT_WARP_SIZE};
 use crate::vram_ctrl::GpgpuVram;
+use rhetsim_core::error::OmniResult;
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
-const CMD_DOORBELL: u64  = 0x00;
-const CMD_STATUS: u64    = 0x04;
-const CMD_OP: u64        = 0x08;
-const CMD_LEN: u64       = 0x0C;
-const CMD_SRC_A: u64     = 0x10;
-const CMD_SRC_B: u64     = 0x14;
-const CMD_DST: u64       = 0x18;
+const CMD_DOORBELL: u64 = 0x00;
+const CMD_STATUS: u64 = 0x04;
+const CMD_OP: u64 = 0x08;
+const CMD_LEN: u64 = 0x0C;
+const CMD_SRC_A: u64 = 0x10;
+const CMD_SRC_B: u64 = 0x14;
+const CMD_DST: u64 = 0x18;
 const CMD_KERN_ADDR: u64 = 0x1C;
-const CMD_GRID_DIM: u64  = 0x20;
+const CMD_GRID_DIM: u64 = 0x20;
 const CMD_BLOCK_DIM: u64 = 0x24;
 
 pub const STATUS_IDLE: u32 = 0;
 pub const STATUS_BUSY: u32 = 1;
 pub const STATUS_DONE: u32 = 2;
 
-pub const OP_NOP: u32        = 0;
+pub const OP_NOP: u32 = 0;
 pub const OP_VECTOR_ADD: u32 = 1;
 pub const OP_VECTOR_MUL: u32 = 2;
-pub const OP_KERNEL: u32     = 3;
+pub const OP_KERNEL: u32 = 3;
 
 pub struct GpgpuCtrl {
     status: AtomicU32,
@@ -138,27 +138,35 @@ impl GpgpuCtrl {
                     all_done = false;
                 }
             }
-            if all_done { break; }
+            if all_done {
+                break;
+            }
         }
         total_steps
     }
 }
 
 impl MemTarget for GpgpuCtrl {
-    fn target_id(&self) -> u32 { 0 }
-    fn base(&self) -> u64 { 0 }
-    fn size(&self) -> u64 { 256 }
+    fn target_id(&self) -> u32 {
+        0
+    }
+    fn base(&self) -> u64 {
+        0
+    }
+    fn size(&self) -> u64 {
+        256
+    }
 
     fn read(&self, offset: u64, _size: MemAccessSize) -> OmniResult<u64> {
         let val = match offset {
-            CMD_STATUS   => self.status.load(Ordering::Acquire),
-            CMD_OP       => self.op.load(Ordering::Acquire),
-            CMD_LEN      => self.len.load(Ordering::Acquire),
-            CMD_SRC_A    => self.src_a.load(Ordering::Acquire),
-            CMD_SRC_B    => self.src_b.load(Ordering::Acquire),
-            CMD_DST      => self.dst.load(Ordering::Acquire),
+            CMD_STATUS => self.status.load(Ordering::Acquire),
+            CMD_OP => self.op.load(Ordering::Acquire),
+            CMD_LEN => self.len.load(Ordering::Acquire),
+            CMD_SRC_A => self.src_a.load(Ordering::Acquire),
+            CMD_SRC_B => self.src_b.load(Ordering::Acquire),
+            CMD_DST => self.dst.load(Ordering::Acquire),
             CMD_KERN_ADDR => self.kern_addr.load(Ordering::Acquire),
-            CMD_GRID_DIM  => self.grid_dim.load(Ordering::Acquire),
+            CMD_GRID_DIM => self.grid_dim.load(Ordering::Acquire),
             CMD_BLOCK_DIM => self.block_dim.load(Ordering::Acquire),
             _ => 0,
         };
@@ -168,15 +176,33 @@ impl MemTarget for GpgpuCtrl {
     fn write(&self, offset: u64, _size: MemAccessSize, val: u64) -> OmniResult<()> {
         let v = val as u32;
         match offset {
-            CMD_DOORBELL  => { self.pending.store(1, Ordering::Release); }
-            CMD_OP        => { self.op.store(v, Ordering::Release); }
-            CMD_LEN       => { self.len.store(v, Ordering::Release); }
-            CMD_SRC_A     => { self.src_a.store(v, Ordering::Release); }
-            CMD_SRC_B     => { self.src_b.store(v, Ordering::Release); }
-            CMD_DST       => { self.dst.store(v, Ordering::Release); }
-            CMD_KERN_ADDR => { self.kern_addr.store(v, Ordering::Release); }
-            CMD_GRID_DIM  => { self.grid_dim.store(v, Ordering::Release); }
-            CMD_BLOCK_DIM => { self.block_dim.store(v, Ordering::Release); }
+            CMD_DOORBELL => {
+                self.pending.store(1, Ordering::Release);
+            }
+            CMD_OP => {
+                self.op.store(v, Ordering::Release);
+            }
+            CMD_LEN => {
+                self.len.store(v, Ordering::Release);
+            }
+            CMD_SRC_A => {
+                self.src_a.store(v, Ordering::Release);
+            }
+            CMD_SRC_B => {
+                self.src_b.store(v, Ordering::Release);
+            }
+            CMD_DST => {
+                self.dst.store(v, Ordering::Release);
+            }
+            CMD_KERN_ADDR => {
+                self.kern_addr.store(v, Ordering::Release);
+            }
+            CMD_GRID_DIM => {
+                self.grid_dim.store(v, Ordering::Release);
+            }
+            CMD_BLOCK_DIM => {
+                self.block_dim.store(v, Ordering::Release);
+            }
             _ => {}
         }
         Ok(())

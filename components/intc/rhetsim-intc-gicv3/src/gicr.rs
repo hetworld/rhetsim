@@ -31,43 +31,71 @@ impl Gicr {
         }
     }
 
-    pub fn cpu_id(&self) -> u8 { self.cpu_id }
+    pub fn cpu_id(&self) -> u8 {
+        self.cpu_id
+    }
 
     pub fn set_enable(&self, intid: usize, en: bool) {
-        if intid >= 32 { return; }
+        if intid >= 32 {
+            return;
+        }
         let mut v = self.enable.write().unwrap();
-        if en { *v |= 1 << intid; } else { *v &= !(1 << intid); }
+        if en {
+            *v |= 1 << intid;
+        } else {
+            *v &= !(1 << intid);
+        }
     }
 
     pub fn is_enabled(&self, intid: usize) -> bool {
-        if intid >= 32 { return false; }
+        if intid >= 32 {
+            return false;
+        }
         (*self.enable.read().unwrap() >> intid) & 1 != 0
     }
 
     pub fn set_pending(&self, intid: usize, pend: bool) {
-        if intid >= 32 { return; }
+        if intid >= 32 {
+            return;
+        }
         let mut v = self.pending.write().unwrap();
-        if pend { *v |= 1 << intid; } else { *v &= !(1 << intid); }
+        if pend {
+            *v |= 1 << intid;
+        } else {
+            *v &= !(1 << intid);
+        }
     }
 
     pub fn is_pending(&self, intid: usize) -> bool {
-        if intid >= 32 { return false; }
+        if intid >= 32 {
+            return false;
+        }
         (*self.pending.read().unwrap() >> intid) & 1 != 0
     }
 
     pub fn set_active(&self, intid: usize, act: bool) {
-        if intid >= 32 { return; }
+        if intid >= 32 {
+            return;
+        }
         let mut v = self.active.write().unwrap();
-        if act { *v |= 1 << intid; } else { *v &= !(1 << intid); }
+        if act {
+            *v |= 1 << intid;
+        } else {
+            *v &= !(1 << intid);
+        }
     }
 
     pub fn set_priority(&self, intid: usize, prio: u8) {
-        if intid >= 32 { return; }
+        if intid >= 32 {
+            return;
+        }
         self.priority.write().unwrap()[intid] = prio;
     }
 
     pub fn priority(&self, intid: usize) -> u8 {
-        if intid >= 32 { return 0xFF; }
+        if intid >= 32 {
+            return 0xFF;
+        }
         self.priority.read().unwrap()[intid]
     }
 
@@ -79,11 +107,15 @@ impl Gicr {
         let prio = self.priority.read().unwrap();
 
         let candidates = enable & pending & !active;
-        if candidates == 0 { return None; }
+        if candidates == 0 {
+            return None;
+        }
 
         let mut best: Option<(usize, u8)> = None;
         for intid in 0..32 {
-            if candidates & (1 << intid) == 0 { continue; }
+            if candidates & (1 << intid) == 0 {
+                continue;
+            }
             let p = prio[intid];
             if best.is_none() || p < best.unwrap().1 {
                 best = Some((intid, p));
@@ -99,7 +131,11 @@ impl Gicr {
             0x0200 => *self.pending.read().unwrap() as u64,
             o if (0x0400..0x0420).contains(&o) => {
                 let idx = (o - 0x0400) as usize;
-                if idx < 32 { self.priority.read().unwrap()[idx] as u64 } else { 0xFF }
+                if idx < 32 {
+                    self.priority.read().unwrap()[idx] as u64
+                } else {
+                    0xFF
+                }
             }
             _ => 0,
         }
@@ -114,7 +150,9 @@ impl Gicr {
             0x0280 => *self.pending.write().unwrap() &= !(val as u32),
             o if (0x0400..0x0420).contains(&o) => {
                 let idx = (o - 0x0400) as usize;
-                if idx < 32 { self.priority.write().unwrap()[idx] = val as u8; }
+                if idx < 32 {
+                    self.priority.write().unwrap()[idx] = val as u8;
+                }
             }
             _ => {}
         }

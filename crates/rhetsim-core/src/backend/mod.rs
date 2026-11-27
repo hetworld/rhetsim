@@ -3,5 +3,5 @@
 pub mod execution;
 pub mod timing;
 
-pub use execution::{ExecutionBackend, DebugBackend, BackendKind, StepResult, BackendEvent};
-pub use timing::{TimingModel, TimingKind};
+pub use execution::{BackendEvent, BackendKind, DebugBackend, ExecutionBackend, StepResult};
+pub use timing::{TimingKind, TimingModel};

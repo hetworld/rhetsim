@@ -11,7 +11,7 @@ pub struct Packet {
 pub struct PacketMeta {
     pub src_port: u16,
     pub dst_port: u16,
-    pub proto:    u8,
+    pub proto: u8,
 }
 
 pub trait NetworkBackend: Send + Sync {

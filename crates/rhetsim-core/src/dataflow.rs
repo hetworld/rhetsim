@@ -12,9 +12,9 @@ pub struct DataToken(pub u64);
 /// 数据传输结果
 #[derive(Debug)]
 pub struct DataResult {
-    pub token:    DataToken,
-    pub bytes:    usize,
-    pub success:  bool,
+    pub token: DataToken,
+    pub bytes: usize,
+    pub success: bool,
 }
 
 /// 数据流端点（生产者或消费者）
@@ -38,8 +38,8 @@ pub struct DataDesc {
     pub src_addr: u64,
     /// 目标地址
     pub dst_addr: u64,
-    pub len:      usize,
-    pub op:       DataOp,
+    pub len: usize,
+    pub op: DataOp,
     /// 算子参数（NPU）/ 数据包头（DPU）/ 自定义
     pub metadata: Vec<u8>,
 }

@@ -1,15 +1,19 @@
 //! UnitRegistry — 全局单元注册表
 
-use std::sync::{Arc, Mutex};
+use crate::unit::{Unit, UnitCaps, UnitId};
 use std::collections::HashMap;
-use crate::unit::{Unit, UnitId, UnitCaps};
+use std::sync::{Arc, Mutex};
 
 pub struct UnitRegistry {
     units: HashMap<UnitId, Arc<Mutex<Box<dyn Unit>>>>,
 }
 
 impl UnitRegistry {
-    pub fn new() -> Self { Self { units: HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            units: HashMap::new(),
+        }
+    }
 
     pub fn register(&mut self, unit: Box<dyn Unit>) -> UnitId {
         let id = unit.id().clone();
@@ -26,14 +30,16 @@ impl UnitRegistry {
     }
 
     pub fn find_by_kind(&self, kind: &str) -> Vec<Arc<Mutex<Box<dyn Unit>>>> {
-        self.units.values()
+        self.units
+            .values()
             .filter(|u| u.lock().unwrap().kind() == kind)
             .cloned()
             .collect()
     }
 
     pub fn find_by_caps(&self, caps: UnitCaps) -> Vec<Arc<Mutex<Box<dyn Unit>>>> {
-        self.units.values()
+        self.units
+            .values()
             .filter(|u| u.lock().unwrap().caps().contains(caps))
             .cloned()
             .collect()
@@ -49,5 +55,7 @@ impl UnitRegistry {
 }
 
 impl Default for UnitRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

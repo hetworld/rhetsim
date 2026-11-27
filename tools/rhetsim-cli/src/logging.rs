@@ -22,13 +22,7 @@ use tracing_subscriber::prelude::*;
 /// Log targets that belong to the simulator. The `rhetsim` prefix covers
 /// library module targets such as `rhetsim_runtime::boot`.
 const LOG_TARGETS: &[&str] = &[
-    "cli",
-    "platform",
-    "boot",
-    "loader",
-    "console",
-    "sched",
-    "rhetsim",
+    "cli", "platform", "boot", "loader", "console", "sched", "rhetsim",
 ];
 
 #[derive(Debug, Clone)]
@@ -72,7 +66,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
         return Err("--log-file and --trace-file must be different files".to_string());
     }
 
-    Ok(Options { level, log_file, trace, trace_file })
+    Ok(Options {
+        level,
+        log_file,
+        trace,
+        trace_file,
+    })
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, String> {
@@ -143,8 +142,7 @@ fn install(opts: &Options) -> Result<(), String> {
 fn make_writer(path: Option<&str>) -> Result<BoxMakeWriter, String> {
     match path {
         Some(path) => {
-            let file = File::create(path)
-                .map_err(|e| format!("failed to create '{path}': {e}"))?;
+            let file = File::create(path).map_err(|e| format!("failed to create '{path}': {e}"))?;
             Ok(BoxMakeWriter::new(Arc::new(file)))
         }
         None => Ok(BoxMakeWriter::new(io::stderr)),

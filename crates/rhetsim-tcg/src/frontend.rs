@@ -1,7 +1,7 @@
 //! TcgFrontend trait — 指令集前端
 
-use rhetsim_core::error::OmniResult;
 use crate::ir::TcgIrBlock;
+use rhetsim_core::error::OmniResult;
 
 pub trait TcgFrontend: Send + Sync {
     fn arch_name(&self) -> &'static str;

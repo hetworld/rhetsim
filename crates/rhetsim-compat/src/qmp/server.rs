@@ -1,11 +1,11 @@
 //! QmpServer — QMP 协议服务端
 
-use std::sync::{Arc, Mutex};
-use tokio::net::TcpListener;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use rhetsim_core::error::OmniResult;
-use crate::qmp::types::{QmpRequest, QmpError, QmpErrorBody};
 use crate::qmp::handlers::QmpHandler;
+use crate::qmp::types::{QmpError, QmpErrorBody, QmpRequest};
+use rhetsim_core::error::OmniResult;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 
 pub struct QmpServer {
     bind_addr: String,
@@ -81,7 +81,8 @@ impl QmpServer {
 
             let should_quit = req.execute == "quit";
 
-            let resp = handler.lock()
+            let resp = handler
+                .lock()
                 .map_err(|e| rhetsim_core::error::OmniError::Internal(e.to_string()))?
                 .dispatch(&req);
 

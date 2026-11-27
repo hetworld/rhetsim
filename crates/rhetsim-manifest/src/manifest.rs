@@ -1,39 +1,39 @@
 //! Manifest / UnitDesc / BusDesc / BootDesc — 平台声明式描述
 
-use serde::{Deserialize, Serialize};
 use rhetsim_core::backend::execution::BackendKind;
 use rhetsim_core::backend::timing::TimingKind;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    pub name:      String,
+    pub name: String,
     #[serde(default)]
     pub templates: Vec<UnitDesc>,
     #[serde(default)]
-    pub units:     Vec<UnitDesc>,
+    pub units: Vec<UnitDesc>,
     #[serde(default)]
-    pub buses:     Vec<BusDesc>,
+    pub buses: Vec<BusDesc>,
     #[serde(default)]
-    pub boot:      BootDesc,
+    pub boot: BootDesc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitDesc {
-    pub id:       String,
-    pub kind:     String,
+    pub id: String,
+    pub kind: String,
     #[serde(default)]
     pub template: Option<String>,
     #[serde(default)]
-    pub backend:  BackendKind,
+    pub backend: BackendKind,
     #[serde(default)]
-    pub timing:   TimingKind,
+    pub timing: TimingKind,
     #[serde(default)]
-    pub config:   serde_json::Value,
+    pub config: serde_json::Value,
     #[serde(default)]
     pub sub_units: Vec<UnitDesc>,
     #[serde(default)]
-    pub count:    Option<CountSpec>,
+    pub count: Option<CountSpec>,
     #[serde(default)]
     pub depends_on: Vec<String>,
 }
@@ -49,82 +49,84 @@ pub enum CountSpec {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BusDesc {
     Mem {
-        id:         String,
+        id: String,
         #[serde(default)]
-        overlap:    bool,
+        overlap: bool,
         initiators: Vec<String>,
-        targets:    Vec<MemTargetDesc>,
+        targets: Vec<MemTargetDesc>,
     },
     Irq {
-        id:          String,
+        id: String,
         connections: Vec<IrqConnectionDesc>,
     },
     Data {
-        id:        String,
+        id: String,
         producers: Vec<String>,
         consumers: Vec<String>,
     },
     Sync {
-        id:              String,
-        participants:    Vec<String>,
+        id: String,
+        participants: Vec<String>,
         #[serde(default = "default_quantum")]
         time_quantum_ns: u64,
     },
     Pcie {
-        id:           String,
+        id: String,
         root_complex: String,
-        endpoints:    Vec<PcieEndpointDesc>,
+        endpoints: Vec<PcieEndpointDesc>,
     },
     Reset {
-        id:          String,
+        id: String,
         connections: Vec<ResetConnectionDesc>,
     },
     Power {
-        id:          String,
+        id: String,
         connections: Vec<PowerConnectionDesc>,
     },
     Interconnect {
-        id:        String,
+        id: String,
         addr_mode: String,
-        nodes:     Vec<String>,
+        nodes: Vec<String>,
     },
 }
 
-fn default_quantum() -> u64 { 1_000_000 }
+fn default_quantum() -> u64 {
+    1_000_000
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemTargetDesc {
-    pub unit:       String,
-    pub base:       u64,
-    pub size:       Option<u64>,
+    pub unit: String,
+    pub base: u64,
+    pub size: Option<u64>,
     pub visible_to: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrqConnectionDesc {
     pub from: String,
-    pub to:   String,
+    pub to: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcieEndpointDesc {
-    pub unit:     String,
-    pub bus:      u8,
-    pub device:   u8,
+    pub unit: String,
+    pub bus: u8,
+    pub device: u8,
     pub function: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetConnectionDesc {
     pub from: String,
-    pub to:   String,
+    pub to: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerConnectionDesc {
     pub controller: String,
-    pub target:     String,
-    pub domain:     String,
+    pub target: String,
+    pub domain: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -134,19 +136,19 @@ pub struct BootDesc {
     #[serde(default)]
     pub firmware_addr: Option<u64>,
     #[serde(default)]
-    pub kernel:   Option<String>,
+    pub kernel: Option<String>,
     #[serde(default)]
     pub kernel_addr: Option<u64>,
     #[serde(default)]
-    pub initrd:   Option<String>,
+    pub initrd: Option<String>,
     #[serde(default)]
     pub initrd_addr: Option<u64>,
     #[serde(default)]
-    pub dtb:      Option<String>,
+    pub dtb: Option<String>,
     #[serde(default)]
     pub dtb_addr: Option<u64>,
     #[serde(default)]
-    pub append:   Option<String>,
+    pub append: Option<String>,
     #[serde(default)]
     pub sequence: Vec<serde_json::Value>,
 }

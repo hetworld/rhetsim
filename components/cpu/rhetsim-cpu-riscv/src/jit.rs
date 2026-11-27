@@ -1,13 +1,15 @@
-use std::collections::HashMap;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::*;
-use cranelift_codegen::ir::{AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, UserFuncName};
+use cranelift_codegen::ir::{
+    AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, UserFuncName,
+};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
+use std::collections::HashMap;
 
 use crate::decode::{decode, decode_compressed, Instruction};
 
@@ -60,7 +62,10 @@ pub struct FastTlbEntry {
 
 impl FastTlbEntry {
     pub const fn invalid() -> Self {
-        Self { tag: u64::MAX, addend: 0 }
+        Self {
+            tag: u64::MAX,
+            addend: 0,
+        }
     }
 }
 
@@ -129,9 +134,11 @@ impl JitEngine {
         flag_builder.set("unwind_info", "false").unwrap();
         flag_builder.set("enable_alias_analysis", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
-        let isa_builder = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu")
+        let isa_builder =
+            cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu").unwrap();
+        let isa = isa_builder
+            .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        let isa = isa_builder.finish(settings::Flags::new(flag_builder)).unwrap();
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol("helper_load", helper_load as *const u8);
@@ -145,7 +152,9 @@ impl JitEngine {
             sig.params.push(AbiParam::new(I64));
             sig.params.push(AbiParam::new(I64));
             sig.returns.push(AbiParam::new(I64));
-            module.declare_function("helper_load", Linkage::Import, &sig).unwrap()
+            module
+                .declare_function("helper_load", Linkage::Import, &sig)
+                .unwrap()
         };
 
         let store_id = {
@@ -155,7 +164,9 @@ impl JitEngine {
             sig.params.push(AbiParam::new(I64));
             sig.params.push(AbiParam::new(I64));
             sig.returns.push(AbiParam::new(I64));
-            module.declare_function("helper_store", Linkage::Import, &sig).unwrap()
+            module
+                .declare_function("helper_store", Linkage::Import, &sig)
+                .unwrap()
         };
 
         JitEngine {
@@ -189,7 +200,11 @@ impl JitEngine {
         satp: u64,
         fetch_fn: &dyn Fn(u64) -> Result<u64, (u64, u64)>,
     ) -> bool {
-        let key = TbKey { pc: state.pc, priv_mode, satp };
+        let key = TbKey {
+            pc: state.pc,
+            priv_mode,
+            satp,
+        };
 
         if !self.tb_cache.contains_key(&key) {
             match self.compile_block(state.pc, fetch_fn) {
@@ -227,7 +242,9 @@ impl JitEngine {
             };
 
             let half = raw as u16;
-            if half == 0 { break; }
+            if half == 0 {
+                break;
+            }
 
             let (insn, size) = if half & 0x3 != 0x3 {
                 (decode_compressed(half), 2u64)
@@ -235,29 +252,34 @@ impl JitEngine {
                 (decode(raw as u32), 4u64)
             };
 
-            let is_block_end = matches!(insn,
-                Instruction::Jal { .. } |
-                Instruction::Jalr { .. } |
-                Instruction::Branch { .. } |
-                Instruction::Ecall |
-                Instruction::Ebreak |
-                Instruction::Mret |
-                Instruction::Sret |
-                Instruction::Wfi |
-                Instruction::Csr { .. } |
-                Instruction::SfenceVma { .. } |
-                Instruction::Amo { .. } |
-                Instruction::FenceI |
-                Instruction::Unknown(_)
+            let is_block_end = matches!(
+                insn,
+                Instruction::Jal { .. }
+                    | Instruction::Jalr { .. }
+                    | Instruction::Branch { .. }
+                    | Instruction::Ecall
+                    | Instruction::Ebreak
+                    | Instruction::Mret
+                    | Instruction::Sret
+                    | Instruction::Wfi
+                    | Instruction::Csr { .. }
+                    | Instruction::SfenceVma { .. }
+                    | Instruction::Amo { .. }
+                    | Instruction::FenceI
+                    | Instruction::Unknown(_)
             );
 
             insns.push((insn, pc, size, raw as u32));
             pc += size;
 
-            if is_block_end || insns.len() >= max_insns { break; }
+            if is_block_end || insns.len() >= max_insns {
+                break;
+            }
         }
 
-        if insns.is_empty() { return None; }
+        if insns.is_empty() {
+            return None;
+        }
 
         let end_pc = pc;
         let insn_count = insns.len() as u64;
@@ -269,13 +291,13 @@ impl JitEngine {
         sig.params.push(AbiParam::new(I64));
         sig.params.push(AbiParam::new(I64));
 
-        let func_id = self.module
+        let func_id = self
+            .module
             .declare_function(&func_name, Linkage::Local, &sig)
             .unwrap();
 
-        let mut func = Function::with_name_signature(
-            UserFuncName::testcase(&func_name), sig.clone(),
-        );
+        let mut func =
+            Function::with_name_signature(UserFuncName::testcase(&func_name), sig.clone());
 
         let load_ref = self.module.declare_func_in_func(self.load_id, &mut func);
         let store_ref = self.module.declare_func_in_func(self.store_id, &mut func);
@@ -302,7 +324,9 @@ impl JitEngine {
                     Instruction::Lui { rd, imm } => {
                         if *rd != 0 {
                             let val = builder.ins().iconst(I64, *imm);
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
@@ -310,11 +334,19 @@ impl JitEngine {
                         if *rd != 0 {
                             let result = insn_pc.wrapping_add(*imm as u64);
                             let val = builder.ins().iconst(I64, result as i64);
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
-                    Instruction::OpImm { funct3, rd, rs1, imm, funct7 } => {
+                    Instruction::OpImm {
+                        funct3,
+                        rd,
+                        rs1,
+                        imm,
+                        funct7,
+                    } => {
                         if *rd != 0 {
                             let src = load_reg(&mut builder, state_ptr, *rs1);
                             let shamt = (*imm as u64) & 0x3F;
@@ -343,8 +375,11 @@ impl JitEngine {
                                 }
                                 5 => {
                                     let sh = builder.ins().iconst(I64, shamt as i64);
-                                    if funct7 & 0x20 != 0 { builder.ins().sshr(src, sh) }
-                                    else { builder.ins().ushr(src, sh) }
+                                    if funct7 & 0x20 != 0 {
+                                        builder.ins().sshr(src, sh)
+                                    } else {
+                                        builder.ins().ushr(src, sh)
+                                    }
                                 }
                                 6 => {
                                     let iv = builder.ins().iconst(I64, *imm);
@@ -356,11 +391,19 @@ impl JitEngine {
                                 }
                                 _ => src,
                             };
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
-                    Instruction::Op { funct3, funct7, rd, rs1, rs2 } => {
+                    Instruction::Op {
+                        funct3,
+                        funct7,
+                        rd,
+                        rs1,
+                        rs2,
+                    } => {
                         if *rd != 0 {
                             let a = load_reg(&mut builder, state_ptr, *rs1);
                             let b = load_reg(&mut builder, state_ptr, *rs2);
@@ -399,11 +442,19 @@ impl JitEngine {
                                     _ => a,
                                 }
                             };
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
-                    Instruction::OpImm32 { funct3, rd, rs1, imm, funct7 } => {
+                    Instruction::OpImm32 {
+                        funct3,
+                        rd,
+                        rs1,
+                        imm,
+                        funct7,
+                    } => {
                         if *rd != 0 {
                             let src64 = load_reg(&mut builder, state_ptr, *rs1);
                             let src = builder.ins().ireduce(I32, src64);
@@ -422,17 +473,28 @@ impl JitEngine {
                                 5 => {
                                     let sh = builder.ins().iconst(I64, shamt as i64);
                                     let sh32 = builder.ins().ireduce(I32, sh);
-                                    if funct7 & 0x20 != 0 { builder.ins().sshr(src, sh32) }
-                                    else { builder.ins().ushr(src, sh32) }
+                                    if funct7 & 0x20 != 0 {
+                                        builder.ins().sshr(src, sh32)
+                                    } else {
+                                        builder.ins().ushr(src, sh32)
+                                    }
                                 }
                                 _ => src,
                             };
                             let val = builder.ins().sextend(I64, val32);
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
-                    Instruction::Op32 { funct3, funct7, rd, rs1, rs2 } => {
+                    Instruction::Op32 {
+                        funct3,
+                        funct7,
+                        rd,
+                        rs1,
+                        rs2,
+                    } => {
                         if *rd != 0 {
                             let a64 = load_reg(&mut builder, state_ptr, *rs1);
                             let b64 = load_reg(&mut builder, state_ptr, *rs2);
@@ -466,15 +528,28 @@ impl JitEngine {
                                 }
                             };
                             let val = builder.ins().sextend(I64, val32);
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
-                    Instruction::Load { funct3, rd, rs1, offset } => {
+                    Instruction::Load {
+                        funct3,
+                        rd,
+                        rs1,
+                        offset,
+                    } => {
                         let base = load_reg(&mut builder, state_ptr, *rs1);
                         let off_val = builder.ins().iconst(I64, *offset);
                         let va = builder.ins().iadd(base, off_val);
-                        let size_val = match funct3 { 0|4 => 1i64, 1|5 => 2, 2|6 => 4, 3 => 8, _ => 1 };
+                        let size_val = match funct3 {
+                            0 | 4 => 1i64,
+                            1 | 5 => 2,
+                            2 | 6 => 4,
+                            3 => 8,
+                            _ => 1,
+                        };
 
                         let twelve = builder.ins().iconst(I64, 12);
                         let va_page = builder.ins().ushr(va, twelve);
@@ -497,10 +572,19 @@ impl JitEngine {
                         let addend = builder.ins().load(I64, memflags(), entry_ptr, 8);
                         let host_addr = builder.ins().iadd(addend, va);
                         let raw_fast = match size_val {
-                            2 => { let v = builder.ins().load(I16, memflags(), host_addr, 0); builder.ins().uextend(I64, v) }
-                            4 => { let v = builder.ins().load(I32, memflags(), host_addr, 0); builder.ins().uextend(I64, v) }
+                            2 => {
+                                let v = builder.ins().load(I16, memflags(), host_addr, 0);
+                                builder.ins().uextend(I64, v)
+                            }
+                            4 => {
+                                let v = builder.ins().load(I32, memflags(), host_addr, 0);
+                                builder.ins().uextend(I64, v)
+                            }
                             8 => builder.ins().load(I64, memflags(), host_addr, 0),
-                            _ => { let v = builder.ins().load(I8, memflags(), host_addr, 0); builder.ins().uextend(I64, v) }
+                            _ => {
+                                let v = builder.ins().load(I8, memflags(), host_addr, 0);
+                                builder.ins().uextend(I64, v)
+                            }
                         };
                         let arg_fast = BlockArg::Value(raw_fast);
                         builder.ins().jump(merge_block, &[arg_fast]);
@@ -532,25 +616,56 @@ impl JitEngine {
 
                         if *rd != 0 {
                             let val = match funct3 {
-                                0 => { let v = builder.ins().ireduce(I8, raw_val); builder.ins().sextend(I64, v) }
-                                1 => { let v = builder.ins().ireduce(I16, raw_val); builder.ins().sextend(I64, v) }
-                                2 => { let v = builder.ins().ireduce(I32, raw_val); builder.ins().sextend(I64, v) }
+                                0 => {
+                                    let v = builder.ins().ireduce(I8, raw_val);
+                                    builder.ins().sextend(I64, v)
+                                }
+                                1 => {
+                                    let v = builder.ins().ireduce(I16, raw_val);
+                                    builder.ins().sextend(I64, v)
+                                }
+                                2 => {
+                                    let v = builder.ins().ireduce(I32, raw_val);
+                                    builder.ins().sextend(I64, v)
+                                }
                                 3 => raw_val,
-                                4 => { let m = builder.ins().iconst(I64, 0xFF); builder.ins().band(raw_val, m) }
-                                5 => { let m = builder.ins().iconst(I64, 0xFFFF); builder.ins().band(raw_val, m) }
-                                6 => { let m = builder.ins().iconst(I64, 0xFFFF_FFFFi64); builder.ins().band(raw_val, m) }
+                                4 => {
+                                    let m = builder.ins().iconst(I64, 0xFF);
+                                    builder.ins().band(raw_val, m)
+                                }
+                                5 => {
+                                    let m = builder.ins().iconst(I64, 0xFFFF);
+                                    builder.ins().band(raw_val, m)
+                                }
+                                6 => {
+                                    let m = builder.ins().iconst(I64, 0xFFFF_FFFFi64);
+                                    builder.ins().band(raw_val, m)
+                                }
                                 _ => raw_val,
                             };
-                            builder.ins().store(memflags(), val, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), val, state_ptr, (*rd as i32) * 8);
                         }
                     }
 
-                    Instruction::Store { funct3, rs1, rs2, offset } => {
+                    Instruction::Store {
+                        funct3,
+                        rs1,
+                        rs2,
+                        offset,
+                    } => {
                         let base = load_reg(&mut builder, state_ptr, *rs1);
                         let off_val = builder.ins().iconst(I64, *offset);
                         let va = builder.ins().iadd(base, off_val);
                         let val = load_reg(&mut builder, state_ptr, *rs2);
-                        let size_val = match funct3 { 0 => 1i64, 1 => 2, 2 => 4, 3 => 8, _ => 1 };
+                        let size_val = match funct3 {
+                            0 => 1i64,
+                            1 => 2,
+                            2 => 4,
+                            3 => 8,
+                            _ => 1,
+                        };
 
                         let twelve = builder.ins().iconst(I64, 12);
                         let va_page = builder.ins().ushr(va, twelve);
@@ -572,10 +687,21 @@ impl JitEngine {
                         let addend = builder.ins().load(I64, memflags(), entry_ptr, 8);
                         let host_addr = builder.ins().iadd(addend, va);
                         match funct3 {
-                            1 => { let v = builder.ins().ireduce(I16, val); builder.ins().store(memflags(), v, host_addr, 0); }
-                            2 => { let v = builder.ins().ireduce(I32, val); builder.ins().store(memflags(), v, host_addr, 0); }
-                            3 => { builder.ins().store(memflags(), val, host_addr, 0); }
-                            _ => { let v = builder.ins().ireduce(I8, val); builder.ins().store(memflags(), v, host_addr, 0); }
+                            1 => {
+                                let v = builder.ins().ireduce(I16, val);
+                                builder.ins().store(memflags(), v, host_addr, 0);
+                            }
+                            2 => {
+                                let v = builder.ins().ireduce(I32, val);
+                                builder.ins().store(memflags(), v, host_addr, 0);
+                            }
+                            3 => {
+                                builder.ins().store(memflags(), val, host_addr, 0);
+                            }
+                            _ => {
+                                let v = builder.ins().ireduce(I8, val);
+                                builder.ins().store(memflags(), v, host_addr, 0);
+                            }
                         };
                         builder.ins().jump(cont_block, &[]);
 
@@ -588,7 +714,9 @@ impl JitEngine {
                         let zero = builder.ins().iconst(I64, 0);
                         let faulted = builder.ins().icmp(IntCC::NotEqual, fault, zero);
                         let fault_block = builder.create_block();
-                        builder.ins().brif(faulted, fault_block, &[], cont_block, &[]);
+                        builder
+                            .ins()
+                            .brif(faulted, fault_block, &[], cont_block, &[]);
                         builder.switch_to_block(fault_block);
                         builder.seal_block(fault_block);
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_FAULT, idx + 1, 0);
@@ -601,7 +729,9 @@ impl JitEngine {
                     Instruction::Jal { rd, offset } => {
                         if *rd != 0 {
                             let link = builder.ins().iconst(I64, (insn_pc + insn_size) as i64);
-                            builder.ins().store(memflags(), link, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), link, state_ptr, (*rd as i32) * 8);
                         }
                         let target = insn_pc.wrapping_add(*offset as u64);
                         emit_exit_with_pc(&mut builder, state_ptr, target, EXIT_BLOCK_END, idx + 1);
@@ -615,7 +745,9 @@ impl JitEngine {
                         let base = load_reg(&mut builder, state_ptr, *rs1);
                         if *rd != 0 {
                             let link = builder.ins().iconst(I64, (insn_pc + insn_size) as i64);
-                            builder.ins().store(memflags(), link, state_ptr, (*rd as i32) * 8);
+                            builder
+                                .ins()
+                                .store(memflags(), link, state_ptr, (*rd as i32) * 8);
                         }
                         let off_val = builder.ins().iconst(I64, *offset);
                         let target = builder.ins().iadd(base, off_val);
@@ -633,7 +765,12 @@ impl JitEngine {
                         builder.seal_block(nb);
                     }
 
-                    Instruction::Branch { funct3, rs1, rs2, offset } => {
+                    Instruction::Branch {
+                        funct3,
+                        rs1,
+                        rs2,
+                        offset,
+                    } => {
                         let a = load_reg(&mut builder, state_ptr, *rs1);
                         let b = load_reg(&mut builder, state_ptr, *rs2);
                         let cc = match funct3 {
@@ -648,7 +785,9 @@ impl JitEngine {
                         let cond = builder.ins().icmp(cc, a, b);
                         let taken_block = builder.create_block();
                         let not_taken_block = builder.create_block();
-                        builder.ins().brif(cond, taken_block, &[], not_taken_block, &[]);
+                        builder
+                            .ins()
+                            .brif(cond, taken_block, &[], not_taken_block, &[]);
 
                         builder.switch_to_block(taken_block);
                         builder.seal_block(taken_block);
@@ -658,7 +797,13 @@ impl JitEngine {
 
                         builder.switch_to_block(not_taken_block);
                         builder.seal_block(not_taken_block);
-                        emit_exit_with_pc(&mut builder, state_ptr, insn_pc + insn_size, EXIT_BLOCK_END, idx + 1);
+                        emit_exit_with_pc(
+                            &mut builder,
+                            state_ptr,
+                            insn_pc + insn_size,
+                            EXIT_BLOCK_END,
+                            idx + 1,
+                        );
                         builder.ins().jump(exit_block, &[]);
 
                         let nb = builder.create_block();
@@ -670,68 +815,84 @@ impl JitEngine {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_ECALL, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Ebreak => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_EBREAK, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Mret => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_MRET, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Sret => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_SRET, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Wfi => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_WFI, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::SfenceVma { .. } => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_SFENCE, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Csr { .. } => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_CSR, idx + 1, raw);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Amo { .. } => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_AMO, idx + 1, raw);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::FenceI => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_FENCEI, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                     Instruction::Fence => { /* no-op */ }
                     Instruction::Unknown(_) => {
                         emit_exit_insn(&mut builder, state_ptr, insn_pc, EXIT_TRAP, idx + 1, 0);
                         builder.ins().jump(exit_block, &[]);
                         let nb = builder.create_block();
-                        builder.switch_to_block(nb); builder.seal_block(nb);
+                        builder.switch_to_block(nb);
+                        builder.seal_block(nb);
                     }
                 }
             }
 
             // Fallthrough: set PC past end of block
-            emit_exit_with_pc(&mut builder, state_ptr, end_pc, EXIT_BLOCK_END, insn_count as usize);
+            emit_exit_with_pc(
+                &mut builder,
+                state_ptr,
+                end_pc,
+                EXIT_BLOCK_END,
+                insn_count as usize,
+            );
             builder.ins().jump(exit_block, &[]);
 
             builder.switch_to_block(exit_block);
@@ -756,11 +917,17 @@ impl JitEngine {
     }
 }
 
-fn load_reg(builder: &mut FunctionBuilder, state_ptr: cranelift_codegen::ir::Value, reg: u8) -> cranelift_codegen::ir::Value {
+fn load_reg(
+    builder: &mut FunctionBuilder,
+    state_ptr: cranelift_codegen::ir::Value,
+    reg: u8,
+) -> cranelift_codegen::ir::Value {
     if reg == 0 {
         builder.ins().iconst(I64, 0)
     } else {
-        builder.ins().load(I64, memflags(), state_ptr, (reg as i32) * 8)
+        builder
+            .ins()
+            .load(I64, memflags(), state_ptr, (reg as i32) * 8)
     }
 }
 

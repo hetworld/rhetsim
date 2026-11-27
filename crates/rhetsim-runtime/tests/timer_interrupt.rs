@@ -10,12 +10,12 @@
 //!   3. At mtime >= 50, timer interrupt fires → handler sets x10=1, disables MTIE, MRETs
 //!   4. Main code continues, sets x11=42, ECALLs
 
-use std::sync::Arc;
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::mem::{MemAttrs, MemTarget};
 use rhetsim_cpu_riscv::cpu::RiscvCpu;
 use rhetsim_cpu_riscv::csr;
+use std::sync::Arc;
 
 const MEM_BASE: u64 = 0;
 const CLINT_BASE: u64 = 0x0200_0000;
@@ -35,65 +35,113 @@ fn build_main_code() -> Vec<u32> {
     vec![
         // x1 = HANDLER_OFFSET (0x400)
         0x40000093, // ADDI x1, x0, 0x400
-
         // CSRRW x0, mtvec, x1
         csrrw(0x305, 1, 0),
-
         // Build CLINT mtimecmp address: CLINT_BASE + 0x4000 = 0x0200_4000
         // LUI x2, 0x0200 → x2 = 0x0020_0000... no, LUI shifts by 12
         // LUI x2, 0x2004 → x2 = 0x0200_4000
         ((0x02004u32) << 12) | (2 << 7) | 0x37, // LUI x2, 0x2004
-
         // x3 = 50 (mtimecmp value)
         0x03200193u32, // ADDI x3, x0, 50
-
         // SD x3, 0(x2) — write mtimecmp
         (0 << 25) | (3 << 20) | (2 << 15) | (3 << 12) | (0 << 7) | 0x23, // SD x3, 0(x2)
-
         // Enable MTIE (bit 7 = 128) in mie
         0x08000313, // ADDI x6, x0, 128
         csrrs(0x304, 6, 0),
-
         // Enable global MIE (bit 3 = 8) in mstatus
         0x00800393, // ADDI x7, x0, 8
         csrrs(0x300, 7, 0),
-
         // NOP sled — interrupt will fire during one of these
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-        0x00000013, 0x00000013, 0x00000013, 0x00000013, 0x00000013,
-
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
+        0x00000013,
         // After returning from interrupt handler:
-        0x02A00593, // ADDI x11, x0, 42
+        0x02A00593,         // ADDI x11, x0, 42
         csrrw(0x305, 0, 0), // clear mtvec so ECALL halts
-        0x00000073, // ECALL
+        0x00000073,         // ECALL
     ]
 }
 
 fn build_handler_code() -> Vec<u32> {
     vec![
-        0x00100513, // ADDI x10, x0, 1    — marker: handler ran
-        0x08000493, // ADDI x9, x0, 128   — MTIE bit
+        0x00100513,         // ADDI x10, x0, 1    — marker: handler ran
+        0x08000493,         // ADDI x9, x0, 128   — MTIE bit
         csrrc(0x304, 9, 0), // CSRRC x0, mie, x9  — disable MTIE
-        0x30200073, // MRET
+        0x30200073,         // MRET
     ]
 }
 
 #[test]
 fn timer_interrupt_end_to_end() {
-    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base("dram0", 64 * 1024, MEM_BASE));
+    let dram = Arc::new(rhetsim_mem_dram::Dram::with_base(
+        "dram0",
+        64 * 1024,
+        MEM_BASE,
+    ));
     let clint = Arc::new(rhetsim_intc_clint::Clint::new("clint0", 1, CLINT_BASE));
 
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, MEM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(clint.clone() as Arc<dyn MemTarget>, CLINT_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        MEM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        clint.clone() as Arc<dyn MemTarget>,
+        CLINT_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     let mut cpu = RiscvCpu::with_bus("rv-core0", bus, MEM_BASE);
@@ -129,7 +177,15 @@ fn timer_interrupt_end_to_end() {
         }
     }
 
-    assert!(cpu.is_halted(), "CPU should halt via ECALL (ran {} steps)", steps);
+    assert!(
+        cpu.is_halted(),
+        "CPU should halt via ECALL (ran {} steps)",
+        steps
+    );
     assert_eq!(cpu.reg(10), 1, "trap handler should have set x10=1");
-    assert_eq!(cpu.reg(11), 42, "main code should have set x11=42 after MRET");
+    assert_eq!(
+        cpu.reg(11),
+        42,
+        "main code should have set x11=42 after MRET"
+    );
 }

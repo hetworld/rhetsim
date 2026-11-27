@@ -1,9 +1,9 @@
 //! Streaming Multiprocessor — SIMT execution with RV64I hart array.
 
-use std::sync::Arc;
-use rhetsim_cpu_riscv::decode::{decode, Instruction};
-use rhetsim_core::mem::{MemAccessSize, MemTarget};
 use crate::vram_ctrl::GpgpuVram;
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
+use rhetsim_cpu_riscv::decode::{decode, Instruction};
+use std::sync::Arc;
 
 pub const DEFAULT_WARP_SIZE: usize = 4;
 pub const DEFAULT_NUM_SMS: usize = 2;
@@ -28,7 +28,9 @@ impl SimtHart {
         hart
     }
 
-    pub fn is_halted(&self) -> bool { self.halted }
+    pub fn is_halted(&self) -> bool {
+        self.halted
+    }
 
     fn set_rd(&mut self, rd: u8, val: u64) {
         if rd != 0 {
@@ -60,7 +62,12 @@ pub struct StreamingMultiprocessor {
 
 impl StreamingMultiprocessor {
     pub fn new(id: u32, vram: Arc<GpgpuVram>) -> Self {
-        Self { id, warps: Vec::new(), vram, current_warp: 0 }
+        Self {
+            id,
+            warps: Vec::new(),
+            vram,
+            current_warp: 0,
+        }
     }
 
     pub fn add_warp(&mut self, warp: Warp) {
@@ -96,7 +103,10 @@ impl StreamingMultiprocessor {
     fn step_thread(vram: &GpgpuVram, hart: &mut SimtHart) {
         let raw = match vram.read(hart.pc, MemAccessSize::U32) {
             Ok(val) => val as u32,
-            Err(_) => { hart.halted = true; return; }
+            Err(_) => {
+                hart.halted = true;
+                return;
+            }
         };
 
         if raw == 0 {
@@ -150,7 +160,12 @@ impl StreamingMultiprocessor {
                 hart.set_rd(rd, hart.pc + 4);
                 hart.pc = target;
             }
-            Instruction::Branch { funct3, rs1, rs2, offset } => {
+            Instruction::Branch {
+                funct3,
+                rs1,
+                rs2,
+                offset,
+            } => {
                 let a = hart.regs[rs1 as usize];
                 let b = hart.regs[rs2 as usize];
                 let taken = match funct3 {
@@ -168,7 +183,12 @@ impl StreamingMultiprocessor {
                     hart.pc += 4;
                 }
             }
-            Instruction::Load { funct3, rd, rs1, offset } => {
+            Instruction::Load {
+                funct3,
+                rd,
+                rs1,
+                offset,
+            } => {
                 let addr = hart.regs[rs1 as usize].wrapping_add(offset as u64);
                 let val = match funct3 {
                     0 => Self::vram_read(vram, addr, 1) as i8 as i64 as u64,
@@ -183,7 +203,12 @@ impl StreamingMultiprocessor {
                 hart.set_rd(rd, val);
                 hart.pc += 4;
             }
-            Instruction::Store { funct3, rs1, rs2, offset } => {
+            Instruction::Store {
+                funct3,
+                rs1,
+                rs2,
+                offset,
+            } => {
                 let addr = hart.regs[rs1 as usize].wrapping_add(offset as u64);
                 let val = hart.regs[rs2 as usize];
                 match funct3 {
@@ -195,7 +220,13 @@ impl StreamingMultiprocessor {
                 }
                 hart.pc += 4;
             }
-            Instruction::OpImm { funct3, rd, rs1, imm, funct7 } => {
+            Instruction::OpImm {
+                funct3,
+                rd,
+                rs1,
+                imm,
+                funct7,
+            } => {
                 let src = hart.regs[rs1 as usize];
                 let shamt = (imm as u64) & 0x3F;
                 let val = match funct3 {
@@ -218,7 +249,13 @@ impl StreamingMultiprocessor {
                 hart.set_rd(rd, val);
                 hart.pc += 4;
             }
-            Instruction::Op { funct3, funct7, rd, rs1, rs2 } => {
+            Instruction::Op {
+                funct3,
+                funct7,
+                rd,
+                rs1,
+                rs2,
+            } => {
                 let a = hart.regs[rs1 as usize];
                 let b = hart.regs[rs2 as usize];
                 let val = if funct7 == 0x01 {
@@ -233,18 +270,38 @@ impl StreamingMultiprocessor {
                         3 => ((a as u128).wrapping_mul(b as u128) >> 64) as u64,
                         4 => {
                             let (sa, sb) = (a as i64, b as i64);
-                            if sb == 0 { u64::MAX }
-                            else if sa == i64::MIN && sb == -1 { sa as u64 }
-                            else { sa.wrapping_div(sb) as u64 }
+                            if sb == 0 {
+                                u64::MAX
+                            } else if sa == i64::MIN && sb == -1 {
+                                sa as u64
+                            } else {
+                                sa.wrapping_div(sb) as u64
+                            }
                         }
-                        5 => if b == 0 { u64::MAX } else { a / b },
+                        5 => {
+                            if b == 0 {
+                                u64::MAX
+                            } else {
+                                a / b
+                            }
+                        }
                         6 => {
                             let (sa, sb) = (a as i64, b as i64);
-                            if sb == 0 { a }
-                            else if sa == i64::MIN && sb == -1 { 0 }
-                            else { sa.wrapping_rem(sb) as u64 }
+                            if sb == 0 {
+                                a
+                            } else if sa == i64::MIN && sb == -1 {
+                                0
+                            } else {
+                                sa.wrapping_rem(sb) as u64
+                            }
                         }
-                        7 => if b == 0 { a } else { a % b },
+                        7 => {
+                            if b == 0 {
+                                a
+                            } else {
+                                a % b
+                            }
+                        }
                         _ => 0,
                     }
                 } else {
@@ -265,7 +322,13 @@ impl StreamingMultiprocessor {
                 hart.set_rd(rd, val);
                 hart.pc += 4;
             }
-            Instruction::OpImm32 { funct3, rd, rs1, imm, funct7 } => {
+            Instruction::OpImm32 {
+                funct3,
+                rd,
+                rs1,
+                imm,
+                funct7,
+            } => {
                 let src = hart.regs[rs1 as usize] as u32;
                 let shamt = (imm as u32) & 0x1F;
                 let val = match funct3 {
@@ -283,7 +346,13 @@ impl StreamingMultiprocessor {
                 hart.set_rd(rd, val as i32 as i64 as u64);
                 hart.pc += 4;
             }
-            Instruction::Op32 { funct3, funct7, rd, rs1, rs2 } => {
+            Instruction::Op32 {
+                funct3,
+                funct7,
+                rd,
+                rs1,
+                rs2,
+            } => {
                 let a = hart.regs[rs1 as usize] as u32;
                 let b = hart.regs[rs2 as usize] as u32;
                 let val = if funct7 == 0x01 {
@@ -291,18 +360,38 @@ impl StreamingMultiprocessor {
                         0 => a.wrapping_mul(b),
                         4 => {
                             let (sa, sb) = (a as i32, b as i32);
-                            if sb == 0 { u32::MAX }
-                            else if sa == i32::MIN && sb == -1 { sa as u32 }
-                            else { sa.wrapping_div(sb) as u32 }
+                            if sb == 0 {
+                                u32::MAX
+                            } else if sa == i32::MIN && sb == -1 {
+                                sa as u32
+                            } else {
+                                sa.wrapping_div(sb) as u32
+                            }
                         }
-                        5 => if b == 0 { u32::MAX } else { a / b },
+                        5 => {
+                            if b == 0 {
+                                u32::MAX
+                            } else {
+                                a / b
+                            }
+                        }
                         6 => {
                             let (sa, sb) = (a as i32, b as i32);
-                            if sb == 0 { a }
-                            else if sa == i32::MIN && sb == -1 { 0 }
-                            else { sa.wrapping_rem(sb) as u32 }
+                            if sb == 0 {
+                                a
+                            } else if sa == i32::MIN && sb == -1 {
+                                0
+                            } else {
+                                sa.wrapping_rem(sb) as u32
+                            }
                         }
-                        7 => if b == 0 { a } else { a % b },
+                        7 => {
+                            if b == 0 {
+                                a
+                            } else {
+                                a % b
+                            }
+                        }
                         _ => 0,
                     }
                 } else {
@@ -318,9 +407,15 @@ impl StreamingMultiprocessor {
                 hart.set_rd(rd, val as i32 as i64 as u64);
                 hart.pc += 4;
             }
-            Instruction::Fence => { hart.pc += 4; }
-            Instruction::Ecall | Instruction::Ebreak => { hart.halted = true; }
-            _ => { hart.halted = true; }
+            Instruction::Fence => {
+                hart.pc += 4;
+            }
+            Instruction::Ecall | Instruction::Ebreak => {
+                hart.halted = true;
+            }
+            _ => {
+                hart.halted = true;
+            }
         }
     }
 }
@@ -390,9 +485,7 @@ mod tests {
         }
 
         // Create 4 threads, 1 warp
-        let threads: Vec<SimtHart> = (0..4)
-            .map(|tid| SimtHart::new(0, tid, 0, 4, 1))
-            .collect();
+        let threads: Vec<SimtHart> = (0..4).map(|tid| SimtHart::new(0, tid, 0, 4, 1)).collect();
         let warp = Warp::new(threads);
 
         let mut sm = StreamingMultiprocessor::new(0, vram.clone());
@@ -424,8 +517,8 @@ mod tests {
         let kernel: Vec<u32> = vec![
             0x00251093, // SLLI x1, x10, 2
             0x20051023, // SH... no, let me use SW with offset
-            // Actually let's make it simpler: SW x10, 0(x1) where x1 = 0x200 + tid*4
-            // ADDI x1, x0, 0x200; SLLI x2, x10, 2; ADD x1, x1, x2; SW x10, 0(x1); ECALL
+                        // Actually let's make it simpler: SW x10, 0(x1) where x1 = 0x200 + tid*4
+                        // ADDI x1, x0, 0x200; SLLI x2, x10, 2; ADD x1, x1, x2; SW x10, 0(x1); ECALL
         ];
 
         // Let me re-encode:
@@ -497,15 +590,15 @@ mod tests {
         let mul_x3_x1_x2 = (0x01 << 25) | (2 << 20) | (1 << 15) | (0 << 12) | (3 << 7) | 0x33;
         let sw_x3_0_x5 = (0 << 25) | (3 << 20) | (5 << 15) | (2 << 12) | (0 << 7) | 0x23;
         let kernel: Vec<u32> = vec![
-            mul_x1_x11_x12,  // MUL  x1, x11, x12
-            add_x1_x1_x10,   // ADD  x1, x1, x10
-            0x00A00113,       // ADDI x2, x0, 10
-            mul_x3_x1_x2,    // MUL  x3, x1, x2
-            0x00209213,       // SLLI x4, x1, 2
-            0x000082B7,       // LUI  x5, 0x8
-            0x004282B3,       // ADD  x5, x5, x4
-            sw_x3_0_x5,       // SW   x3, 0(x5)
-            0x00000073,       // ECALL
+            mul_x1_x11_x12, // MUL  x1, x11, x12
+            add_x1_x1_x10,  // ADD  x1, x1, x10
+            0x00A00113,     // ADDI x2, x0, 10
+            mul_x3_x1_x2,   // MUL  x3, x1, x2
+            0x00209213,     // SLLI x4, x1, 2
+            0x000082B7,     // LUI  x5, 0x8
+            0x004282B3,     // ADD  x5, x5, x4
+            sw_x3_0_x5,     // SW   x3, 0(x5)
+            0x00000073,     // ECALL
         ];
         for (i, &insn) in kernel.iter().enumerate() {
             write_insn(&vram, (i * 4) as u64, insn);

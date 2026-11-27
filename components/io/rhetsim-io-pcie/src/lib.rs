@@ -12,27 +12,27 @@
 
 pub fn register() {}
 
-use std::sync::{Arc, RwLock};
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::error::{OmniError, OmniResult};
-use rhetsim_core::mem::{MemTarget, MemAttrs, MemAccessSize};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::sync::{Arc, RwLock};
 
 const CONFIG_SPACE_SIZE: usize = 256;
 const BAR_COUNT: usize = 6;
 
-const CFG_VENDOR_ID: usize    = 0x00;
-const CFG_DEVICE_ID: usize    = 0x02;
-const CFG_COMMAND: usize      = 0x04;
-const CFG_STATUS: usize       = 0x06;
-const CFG_REVISION: usize     = 0x08;
-const CFG_CLASS_CODE: usize   = 0x09;
-const CFG_HEADER_TYPE: usize  = 0x0E;
-const CFG_BAR0: usize         = 0x10;
+const CFG_VENDOR_ID: usize = 0x00;
+const CFG_DEVICE_ID: usize = 0x02;
+const CFG_COMMAND: usize = 0x04;
+const CFG_STATUS: usize = 0x06;
+const CFG_REVISION: usize = 0x08;
+const CFG_CLASS_CODE: usize = 0x09;
+const CFG_HEADER_TYPE: usize = 0x0E;
+const CFG_BAR0: usize = 0x10;
 const CFG_SUBSYS_VENDOR: usize = 0x2C;
-const CFG_SUBSYS_ID: usize    = 0x2E;
-const CFG_INT_LINE: usize     = 0x3C;
-const CFG_INT_PIN: usize      = 0x3D;
+const CFG_SUBSYS_ID: usize = 0x2E;
+const CFG_INT_LINE: usize = 0x3C;
+const CFG_INT_PIN: usize = 0x3D;
 
 pub struct PcieConfigSpace {
     data: [u8; CONFIG_SPACE_SIZE],
@@ -55,7 +55,11 @@ impl PcieConfigSpace {
     }
 
     pub fn read_u8(&self, offset: usize) -> u8 {
-        if offset < CONFIG_SPACE_SIZE { self.data[offset] } else { 0xFF }
+        if offset < CONFIG_SPACE_SIZE {
+            self.data[offset]
+        } else {
+            0xFF
+        }
     }
 
     pub fn read_u16(&self, offset: usize) -> u16 {
@@ -69,8 +73,10 @@ impl PcieConfigSpace {
     pub fn read_u32(&self, offset: usize) -> u32 {
         if offset + 3 < CONFIG_SPACE_SIZE {
             u32::from_le_bytes([
-                self.data[offset], self.data[offset + 1],
-                self.data[offset + 2], self.data[offset + 3],
+                self.data[offset],
+                self.data[offset + 1],
+                self.data[offset + 2],
+                self.data[offset + 3],
             ])
         } else {
             0xFFFF_FFFF
@@ -111,12 +117,17 @@ impl PcieConfigSpace {
     }
 
     fn is_writable(&self, offset: usize) -> bool {
-        !matches!(offset,
-            CFG_VENDOR_ID | 0x01 |
-            CFG_DEVICE_ID | 0x03 |
-            CFG_REVISION |
-            CFG_CLASS_CODE | 0x0A | 0x0B |
-            CFG_HEADER_TYPE
+        !matches!(
+            offset,
+            CFG_VENDOR_ID
+                | 0x01
+                | CFG_DEVICE_ID
+                | 0x03
+                | CFG_REVISION
+                | CFG_CLASS_CODE
+                | 0x0A
+                | 0x0B
+                | CFG_HEADER_TYPE
         )
     }
 }
@@ -139,7 +150,11 @@ pub struct Bdf {
 
 impl Bdf {
     pub fn new(bus: u8, device: u8, function: u8) -> Self {
-        Self { bus, device, function }
+        Self {
+            bus,
+            device,
+            function,
+        }
     }
 
     pub fn ecam_offset(&self) -> u64 {
@@ -174,28 +189,49 @@ pub struct PcieEndpoint {
 impl PcieEndpoint {
     pub fn new(bdf: Bdf, vendor_id: u16, device_id: u16, class_code: u32) -> Self {
         let config = PcieConfigSpace::new(vendor_id, device_id, class_code);
-        Self { bdf, config, bars: Vec::new() }
+        Self {
+            bdf,
+            config,
+            bars: Vec::new(),
+        }
     }
 
     pub fn add_bar(&mut self, index: u8, base: u64, size: u64, target: Arc<dyn MemTarget>) {
         self.config.set_bar(index as usize, base as u32);
-        self.bars.push(PcieBar { index, base, size, target });
+        self.bars.push(PcieBar {
+            index,
+            base,
+            size,
+            target,
+        });
     }
 }
 
 impl PcieDevice for PcieEndpoint {
-    fn vendor_id(&self) -> u16 { self.config.read_u16(CFG_VENDOR_ID) }
-    fn device_id(&self) -> u16 { self.config.read_u16(CFG_DEVICE_ID) }
+    fn vendor_id(&self) -> u16 {
+        self.config.read_u16(CFG_VENDOR_ID)
+    }
+    fn device_id(&self) -> u16 {
+        self.config.read_u16(CFG_DEVICE_ID)
+    }
     fn class_code(&self) -> u32 {
         let b0 = self.config.read_u8(CFG_CLASS_CODE) as u32;
         let b1 = self.config.read_u8(CFG_CLASS_CODE + 1) as u32;
         let b2 = self.config.read_u8(CFG_CLASS_CODE + 2) as u32;
         b0 | (b1 << 8) | (b2 << 16)
     }
-    fn bdf(&self) -> Bdf { self.bdf }
-    fn bars(&self) -> &[PcieBar] { &self.bars }
-    fn config_read(&self, offset: usize) -> u32 { self.config.read_u32(offset & 0xFC) }
-    fn config_write(&mut self, offset: usize, val: u32) { self.config.write_u32(offset & 0xFC, val); }
+    fn bdf(&self) -> Bdf {
+        self.bdf
+    }
+    fn bars(&self) -> &[PcieBar] {
+        &self.bars
+    }
+    fn config_read(&self, offset: usize) -> u32 {
+        self.config.read_u32(offset & 0xFC)
+    }
+    fn config_write(&mut self, offset: usize, val: u32) {
+        self.config.write_u32(offset & 0xFC, val);
+    }
 }
 
 /// PCIe Root Complex — holds devices, routes ECAM config and BAR memory transactions.
@@ -267,37 +303,55 @@ impl PcieRootComplex {
 }
 
 impl Unit for PcieRootComplex {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "pcie-rc" }
-    fn caps(&self) -> UnitCaps { UnitCaps::ADDRESSABLE }
-    fn as_mem_target(&self) -> Option<&dyn MemTarget> { Some(self) }
-    fn reset(&mut self) -> OmniResult<()> { Ok(()) }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "pcie-rc"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::ADDRESSABLE
+    }
+    fn as_mem_target(&self) -> Option<&dyn MemTarget> {
+        Some(self)
+    }
+    fn reset(&mut self) -> OmniResult<()> {
+        Ok(())
+    }
 }
 
 impl MemTarget for PcieRootComplex {
-    fn target_id(&self) -> u32 { 0 }
-    fn base(&self) -> u64 { self.ecam_base }
-    fn size(&self) -> u64 { self.ecam_size }
+    fn target_id(&self) -> u32 {
+        0
+    }
+    fn base(&self) -> u64 {
+        self.ecam_base
+    }
+    fn size(&self) -> u64 {
+        self.ecam_size
+    }
 
     fn read(&self, offset: u64, size: MemAccessSize) -> OmniResult<u64> {
         let (bdf, reg) = self.decode_ecam(offset);
-        let devs = self.devices.read().map_err(|e| OmniError::Internal(e.to_string()))?;
-        let val = devs.iter()
+        let devs = self
+            .devices
+            .read()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
+        let val = devs
+            .iter()
             .find(|d| d.bdf() == bdf)
-            .map(|d| {
-                match size {
-                    MemAccessSize::U8 => {
-                        let dword = d.config_read(reg & 0xFC);
-                        let shift = (reg & 3) * 8;
-                        ((dword >> shift) & 0xFF) as u64
-                    }
-                    MemAccessSize::U16 => {
-                        let dword = d.config_read(reg & 0xFC);
-                        let shift = (reg & 2) * 8;
-                        ((dword >> shift) & 0xFFFF) as u64
-                    }
-                    _ => d.config_read(reg) as u64,
+            .map(|d| match size {
+                MemAccessSize::U8 => {
+                    let dword = d.config_read(reg & 0xFC);
+                    let shift = (reg & 3) * 8;
+                    ((dword >> shift) & 0xFF) as u64
                 }
+                MemAccessSize::U16 => {
+                    let dword = d.config_read(reg & 0xFC);
+                    let shift = (reg & 2) * 8;
+                    ((dword >> shift) & 0xFFFF) as u64
+                }
+                _ => d.config_read(reg) as u64,
             })
             .unwrap_or(match size {
                 MemAccessSize::U8 => 0xFF,
@@ -309,7 +363,10 @@ impl MemTarget for PcieRootComplex {
 
     fn write(&self, offset: u64, size: MemAccessSize, val: u64) -> OmniResult<()> {
         let (bdf, reg) = self.decode_ecam(offset);
-        let mut devs = self.devices.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut devs = self
+            .devices
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         if let Some(dev) = devs.iter_mut().find(|d| d.bdf() == bdf) {
             match size {
                 MemAccessSize::U8 => {
@@ -432,12 +489,14 @@ mod tests {
         rc.attach(Box::new(ep));
 
         // Write command register via ECAM MMIO
-        rc.write(CFG_COMMAND as u64, MemAccessSize::U16, 0x0006).unwrap();
+        rc.write(CFG_COMMAND as u64, MemAccessSize::U16, 0x0006)
+            .unwrap();
         let cmd = rc.read(CFG_COMMAND as u64, MemAccessSize::U16).unwrap();
         assert_eq!(cmd, 0x0006);
 
         // Verify vendor_id is still read-only
-        rc.write(CFG_VENDOR_ID as u64, MemAccessSize::U16, 0xFFFF).unwrap();
+        rc.write(CFG_VENDOR_ID as u64, MemAccessSize::U16, 0xFFFF)
+            .unwrap();
         let vendor = rc.read(CFG_VENDOR_ID as u64, MemAccessSize::U16).unwrap();
         assert_eq!(vendor, 0xBEEF);
     }
@@ -465,7 +524,8 @@ mod tests {
         rc.map_bars(&mut bus).unwrap();
         let bus = Arc::new(bus);
 
-        bus.write(0xC000_0000, MemAccessSize::U32, 0xDEAD_BEEF, 0).unwrap();
+        bus.write(0xC000_0000, MemAccessSize::U32, 0xDEAD_BEEF, 0)
+            .unwrap();
         let val = bus.read(0xC000_0000, MemAccessSize::U32, 0).unwrap();
         assert_eq!(val, 0xDEAD_BEEF);
         assert_eq!(dram.read(0, MemAccessSize::U32).unwrap(), 0xDEAD_BEEF);

@@ -1,16 +1,16 @@
 //! GPGPU — functional accelerator with control registers, VRAM, and command processing.
 
-pub mod sm;
 pub mod cmd_proc;
+pub mod sm;
 pub mod vram_ctrl;
 
-use std::sync::Arc;
-use rhetsim_core::error::OmniResult;
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
-use rhetsim_core::backend::execution::ExecutionBackend;
-use rhetsim_core::mem::MemTarget;
 use crate::cmd_proc::GpgpuCtrl;
 use crate::vram_ctrl::GpgpuVram;
+use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::error::OmniResult;
+use rhetsim_core::mem::MemTarget;
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::sync::Arc;
 
 pub struct Gpgpu {
     id: UnitId,
@@ -29,17 +29,31 @@ impl Gpgpu {
         }
     }
 
-    pub fn ctrl(&self) -> &GpgpuCtrl { &self.ctrl }
-    pub fn vram(&self) -> &GpgpuVram { self.vram.as_ref() }
+    pub fn ctrl(&self) -> &GpgpuCtrl {
+        &self.ctrl
+    }
+    pub fn vram(&self) -> &GpgpuVram {
+        self.vram.as_ref()
+    }
 
-    pub fn ctrl_arc(&self) -> Arc<GpgpuCtrl> { Arc::clone(&self.ctrl) }
-    pub fn vram_arc(&self) -> Arc<GpgpuVram> { Arc::clone(&self.vram) }
+    pub fn ctrl_arc(&self) -> Arc<GpgpuCtrl> {
+        Arc::clone(&self.ctrl)
+    }
+    pub fn vram_arc(&self) -> Arc<GpgpuVram> {
+        Arc::clone(&self.vram)
+    }
 }
 
 impl Unit for Gpgpu {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "gpgpu" }
-    fn caps(&self) -> UnitCaps { UnitCaps::EXECUTABLE | UnitCaps::ADDRESSABLE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "gpgpu"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::EXECUTABLE | UnitCaps::ADDRESSABLE
+    }
 
     fn execution_backend(&mut self) -> Option<&mut dyn ExecutionBackend> {
         Some(self)
@@ -67,7 +81,9 @@ impl ExecutionBackend for Gpgpu {
         Ok(())
     }
 
-    fn backend_name(&self) -> &'static str { "gpgpu-functional" }
+    fn backend_name(&self) -> &'static str {
+        "gpgpu-functional"
+    }
 }
 
 pub fn register() {}
@@ -83,8 +99,13 @@ mod tests {
         gpu.vram().write(0, MemAccessSize::U32, 0xDEADBEEF).unwrap();
         assert_eq!(gpu.vram().read(0, MemAccessSize::U32).unwrap(), 0xDEADBEEF);
 
-        gpu.vram().write(100, MemAccessSize::U64, 0x0123456789ABCDEF).unwrap();
-        assert_eq!(gpu.vram().read(100, MemAccessSize::U64).unwrap(), 0x0123456789ABCDEF);
+        gpu.vram()
+            .write(100, MemAccessSize::U64, 0x0123456789ABCDEF)
+            .unwrap();
+        assert_eq!(
+            gpu.vram().read(100, MemAccessSize::U64).unwrap(),
+            0x0123456789ABCDEF
+        );
     }
 
     #[test]
@@ -100,7 +121,7 @@ mod tests {
 
         let src_a_off: u64 = 0x0000;
         let src_b_off: u64 = 0x1000;
-        let dst_off: u64   = 0x2000;
+        let dst_off: u64 = 0x2000;
         let len: u32 = 4;
 
         let vec_a: [u32; 4] = [1, 2, 3, 4];
@@ -114,10 +135,18 @@ mod tests {
         }
 
         // Set up command registers
-        gpu.ctrl().write(0x08, MemAccessSize::U32, cmd_proc::OP_VECTOR_ADD as u64).unwrap();
-        gpu.ctrl().write(0x0C, MemAccessSize::U32, len as u64).unwrap();
-        gpu.ctrl().write(0x10, MemAccessSize::U32, src_a_off).unwrap();
-        gpu.ctrl().write(0x14, MemAccessSize::U32, src_b_off).unwrap();
+        gpu.ctrl()
+            .write(0x08, MemAccessSize::U32, cmd_proc::OP_VECTOR_ADD as u64)
+            .unwrap();
+        gpu.ctrl()
+            .write(0x0C, MemAccessSize::U32, len as u64)
+            .unwrap();
+        gpu.ctrl()
+            .write(0x10, MemAccessSize::U32, src_a_off)
+            .unwrap();
+        gpu.ctrl()
+            .write(0x14, MemAccessSize::U32, src_b_off)
+            .unwrap();
         gpu.ctrl().write(0x18, MemAccessSize::U32, dst_off).unwrap();
         // Ring doorbell
         gpu.ctrl().write(0x00, MemAccessSize::U32, 1).unwrap();
@@ -176,11 +205,13 @@ mod tests {
         }
 
         // Dispatch kernel: 2 blocks × 4 threads
-        gpu.ctrl().write(0x08, MemAccessSize::U32, cmd_proc::OP_KERNEL as u64).unwrap();
-        gpu.ctrl().write(0x1C, MemAccessSize::U32, 0).unwrap();      // kernel at VRAM 0
-        gpu.ctrl().write(0x20, MemAccessSize::U32, 2).unwrap();      // grid_dim = 2
-        gpu.ctrl().write(0x24, MemAccessSize::U32, 4).unwrap();      // block_dim = 4
-        gpu.ctrl().write(0x00, MemAccessSize::U32, 1).unwrap();      // doorbell
+        gpu.ctrl()
+            .write(0x08, MemAccessSize::U32, cmd_proc::OP_KERNEL as u64)
+            .unwrap();
+        gpu.ctrl().write(0x1C, MemAccessSize::U32, 0).unwrap(); // kernel at VRAM 0
+        gpu.ctrl().write(0x20, MemAccessSize::U32, 2).unwrap(); // grid_dim = 2
+        gpu.ctrl().write(0x24, MemAccessSize::U32, 4).unwrap(); // block_dim = 4
+        gpu.ctrl().write(0x00, MemAccessSize::U32, 1).unwrap(); // doorbell
 
         let consumed = gpu.exec(1000).unwrap();
         assert!(consumed > 0);
@@ -201,7 +232,7 @@ mod tests {
 
         let src_a_off: u64 = 0x0000;
         let src_b_off: u64 = 0x1000;
-        let dst_off: u64   = 0x2000;
+        let dst_off: u64 = 0x2000;
 
         let vec_a: [u32; 3] = [2, 3, 5];
         let vec_b: [u32; 3] = [7, 11, 13];
@@ -213,10 +244,16 @@ mod tests {
             gpu.vram().write_u32(src_b_off + (i as u64) * 4, v).unwrap();
         }
 
-        gpu.ctrl().write(0x08, MemAccessSize::U32, cmd_proc::OP_VECTOR_MUL as u64).unwrap();
+        gpu.ctrl()
+            .write(0x08, MemAccessSize::U32, cmd_proc::OP_VECTOR_MUL as u64)
+            .unwrap();
         gpu.ctrl().write(0x0C, MemAccessSize::U32, 3).unwrap();
-        gpu.ctrl().write(0x10, MemAccessSize::U32, src_a_off).unwrap();
-        gpu.ctrl().write(0x14, MemAccessSize::U32, src_b_off).unwrap();
+        gpu.ctrl()
+            .write(0x10, MemAccessSize::U32, src_a_off)
+            .unwrap();
+        gpu.ctrl()
+            .write(0x14, MemAccessSize::U32, src_b_off)
+            .unwrap();
         gpu.ctrl().write(0x18, MemAccessSize::U32, dst_off).unwrap();
         gpu.ctrl().write(0x00, MemAccessSize::U32, 1).unwrap();
 

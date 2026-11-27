@@ -1,8 +1,8 @@
 //! QemuCliParser — QEMU 命令行解析
 
-use std::collections::HashMap;
 use rhetsim_core::error::OmniResult;
 use rhetsim_manifest::manifest::Manifest;
+use std::collections::HashMap;
 
 pub struct DeviceFactory;
 
@@ -11,7 +11,11 @@ pub struct QemuCliParser {
 }
 
 impl QemuCliParser {
-    pub fn new() -> Self { Self { machine_map: HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            machine_map: HashMap::new(),
+        }
+    }
 
     pub fn parse(&self, args: &[String]) -> OmniResult<Manifest> {
         // TODO: 解析 -machine / -cpu / -m / -smp / -device 等参数
@@ -20,5 +24,7 @@ impl QemuCliParser {
 }
 
 impl Default for QemuCliParser {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

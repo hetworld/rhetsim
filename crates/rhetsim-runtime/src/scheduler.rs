@@ -1,8 +1,8 @@
 //! Scheduler — round-robin execution driver for all executable Units
 
-use std::sync::{Arc, Mutex};
-use rhetsim_core::error::{OmniResult, OmniError};
+use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::unit::Unit;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulerState {
@@ -55,9 +55,9 @@ impl Scheduler {
         };
 
         for unit_arc in &self.units {
-            let mut unit = unit_arc.lock().map_err(|e| {
-                OmniError::Internal(format!("unit lock poisoned: {e}"))
-            })?;
+            let mut unit = unit_arc
+                .lock()
+                .map_err(|e| OmniError::Internal(format!("unit lock poisoned: {e}")))?;
             if let Some(backend) = unit.execution_backend() {
                 let consumed = backend.exec(quantum_ns)?;
                 stats.total_ns_elapsed += consumed;

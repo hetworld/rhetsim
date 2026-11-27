@@ -9,13 +9,21 @@ pub struct SimClock {
 }
 
 impl SimClock {
-    pub fn new() -> Self { Self { now_ns: Arc::new(AtomicU64::new(0)) } }
-    pub fn now_ns(&self) -> u64 { self.now_ns.load(Ordering::Relaxed) }
+    pub fn new() -> Self {
+        Self {
+            now_ns: Arc::new(AtomicU64::new(0)),
+        }
+    }
+    pub fn now_ns(&self) -> u64 {
+        self.now_ns.load(Ordering::Relaxed)
+    }
     pub fn advance(&self, delta_ns: u64) -> u64 {
         self.now_ns.fetch_add(delta_ns, Ordering::Relaxed) + delta_ns
     }
 }
 
 impl Default for SimClock {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

@@ -1,7 +1,7 @@
 //! IrqSink / IrqLine / IrqSource / MsiSender — 中断子系统接口
 
-use std::sync::Arc;
 use crate::error::OmniResult;
+use std::sync::Arc;
 
 /// 中断类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub trait IrqSink: Send + Sync {
 /// 一条中断线（从外设到 IrqSink 的连接）
 #[derive(Clone)]
 pub struct IrqLine {
-    pub sink:    Arc<dyn IrqSink>,
+    pub sink: Arc<dyn IrqSink>,
     pub irq_num: u32,
 }
 
@@ -40,9 +40,15 @@ impl IrqLine {
         Self { sink, irq_num }
     }
 
-    pub fn raise(&self) -> OmniResult<()>  { self.sink.raise(self.irq_num) }
-    pub fn lower(&self) -> OmniResult<()>  { self.sink.lower(self.irq_num) }
-    pub fn pulse(&self) -> OmniResult<()>  { self.sink.pulse(self.irq_num) }
+    pub fn raise(&self) -> OmniResult<()> {
+        self.sink.raise(self.irq_num)
+    }
+    pub fn lower(&self) -> OmniResult<()> {
+        self.sink.lower(self.irq_num)
+    }
+    pub fn pulse(&self) -> OmniResult<()> {
+        self.sink.pulse(self.irq_num)
+    }
 }
 
 /// 中断发出端描述（Unit 声明自己有哪些中断输出）
@@ -68,8 +74,8 @@ pub trait IrqLineSource: Send + Sync {
 /// MSI 描述符
 #[derive(Debug, Clone, Copy)]
 pub struct MsiDesc {
-    pub addr:   u64,
-    pub data:   u32,
+    pub addr: u64,
+    pub data: u32,
     pub vector: u32,
 }
 

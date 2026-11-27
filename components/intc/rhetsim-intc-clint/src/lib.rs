@@ -7,13 +7,13 @@
 //!
 //! Total size: 0xC000 (48 KiB)
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
 use rhetsim_core::diag::trace as trace_cat;
 use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::irq::{IrqLineSource, IrqSink};
-use rhetsim_core::mem::{MemTarget, MemAccessSize};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 const MSIP_BASE: u64 = 0x0000;
 const MTIMECMP_BASE: u64 = 0x4000;
@@ -52,19 +52,25 @@ impl Clint {
     }
 
     pub fn mtimecmp(&self, hart: usize) -> u64 {
-        if hart >= self.num_harts { return u64::MAX; }
+        if hart >= self.num_harts {
+            return u64::MAX;
+        }
         self.mtimecmp.read().unwrap()[hart]
     }
 
     pub fn timer_pending(&self, hart: usize) -> bool {
-        if hart >= self.num_harts { return false; }
+        if hart >= self.num_harts {
+            return false;
+        }
         let mtime = self.mtime.load(Ordering::Relaxed);
         let mtimecmp = self.mtimecmp.read().unwrap();
         mtime >= mtimecmp[hart]
     }
 
     pub fn sw_pending(&self, hart: usize) -> bool {
-        if hart >= self.num_harts { return false; }
+        if hart >= self.num_harts {
+            return false;
+        }
         let msip = self.msip.read().unwrap();
         msip[hart] & 1 != 0
     }
@@ -94,26 +100,46 @@ impl IrqLineSource for ClintLine {
 }
 
 impl Unit for Clint {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "riscv-clint" }
-    fn caps(&self) -> UnitCaps { UnitCaps::ADDRESSABLE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "riscv-clint"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::ADDRESSABLE
+    }
 
-    fn as_mem_target(&self) -> Option<&dyn MemTarget> { Some(self) }
+    fn as_mem_target(&self) -> Option<&dyn MemTarget> {
+        Some(self)
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
         self.mtime.store(0, Ordering::Relaxed);
-        let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut msip = self
+            .msip
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         msip.fill(0);
-        let mut mtimecmp = self.mtimecmp.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut mtimecmp = self
+            .mtimecmp
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         mtimecmp.fill(u64::MAX);
         Ok(())
     }
 }
 
 impl MemTarget for Clint {
-    fn target_id(&self) -> u32 { 0 }
-    fn base(&self) -> u64 { self.base }
-    fn size(&self) -> u64 { CLINT_SIZE }
+    fn target_id(&self) -> u32 {
+        0
+    }
+    fn base(&self) -> u64 {
+        self.base
+    }
+    fn size(&self) -> u64 {
+        CLINT_SIZE
+    }
 
     fn read(&self, offset: u64, size: MemAccessSize) -> OmniResult<u64> {
         if offset >= MTIME_OFFSET && offset < MTIME_OFFSET + 8 {
@@ -126,7 +152,10 @@ impl MemTarget for Clint {
             let rel = offset - MTIMECMP_BASE;
             let hart = (rel / 8) as usize;
             if hart < self.num_harts {
-                let mtimecmp = self.mtimecmp.read().map_err(|e| OmniError::Internal(e.to_string()))?;
+                let mtimecmp = self
+                    .mtimecmp
+                    .read()
+                    .map_err(|e| OmniError::Internal(e.to_string()))?;
                 let byte_off = (rel % 8) as usize;
                 return Ok(extract_bytes(mtimecmp[hart], byte_off, size));
             }
@@ -136,7 +165,10 @@ impl MemTarget for Clint {
             let rel = offset - MSIP_BASE;
             let hart = (rel / 4) as usize;
             if hart < self.num_harts {
-                let msip = self.msip.read().map_err(|e| OmniError::Internal(e.to_string()))?;
+                let msip = self
+                    .msip
+                    .read()
+                    .map_err(|e| OmniError::Internal(e.to_string()))?;
                 let byte_off = (rel % 4) as usize;
                 return Ok(extract_bytes(msip[hart] as u64, byte_off, size));
             }
@@ -159,7 +191,10 @@ impl MemTarget for Clint {
             let rel = offset - MTIMECMP_BASE;
             let hart = (rel / 8) as usize;
             if hart < self.num_harts {
-                let mut mtimecmp = self.mtimecmp.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+                let mut mtimecmp = self
+                    .mtimecmp
+                    .write()
+                    .map_err(|e| OmniError::Internal(e.to_string()))?;
                 let byte_off = (rel % 8) as usize;
                 mtimecmp[hart] = deposit_bytes(mtimecmp[hart], byte_off, size, val);
                 tracing::trace!(
@@ -176,7 +211,10 @@ impl MemTarget for Clint {
             let rel = offset - MSIP_BASE;
             let hart = (rel / 4) as usize;
             if hart < self.num_harts {
-                let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+                let mut msip = self
+                    .msip
+                    .write()
+                    .map_err(|e| OmniError::Internal(e.to_string()))?;
                 msip[hart] = (val as u32) & 1;
                 tracing::trace!(target: trace_cat::CLINT, hart, msip = msip[hart], "write msip");
             }
@@ -191,9 +229,15 @@ impl IrqSink for Clint {
     fn raise(&self, irq_num: u32) -> OmniResult<()> {
         let hart = irq_num as usize;
         if hart >= self.num_harts {
-            return Err(OmniError::IrqNotFound(format!("hart {} out of range", hart)));
+            return Err(OmniError::IrqNotFound(format!(
+                "hart {} out of range",
+                hart
+            )));
         }
-        let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut msip = self
+            .msip
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         msip[hart] |= 1;
         tracing::trace!(target: trace_cat::CLINT, hart, "raise msip");
         Ok(())
@@ -202,21 +246,29 @@ impl IrqSink for Clint {
     fn lower(&self, irq_num: u32) -> OmniResult<()> {
         let hart = irq_num as usize;
         if hart >= self.num_harts {
-            return Err(OmniError::IrqNotFound(format!("hart {} out of range", hart)));
+            return Err(OmniError::IrqNotFound(format!(
+                "hart {} out of range",
+                hart
+            )));
         }
-        let mut msip = self.msip.write().map_err(|e| OmniError::Internal(e.to_string()))?;
+        let mut msip = self
+            .msip
+            .write()
+            .map_err(|e| OmniError::Internal(e.to_string()))?;
         msip[hart] &= !1;
         tracing::trace!(target: trace_cat::CLINT, hart, "lower msip");
         Ok(())
     }
 
-    fn irq_count(&self) -> u32 { self.num_harts as u32 }
+    fn irq_count(&self) -> u32 {
+        self.num_harts as u32
+    }
 }
 
 fn extract_bytes(val: u64, byte_off: usize, size: MemAccessSize) -> u64 {
     let shift = byte_off * 8;
     match size {
-        MemAccessSize::U8  => (val >> shift) & 0xFF,
+        MemAccessSize::U8 => (val >> shift) & 0xFF,
         MemAccessSize::U16 => (val >> shift) & 0xFFFF,
         MemAccessSize::U32 => (val >> shift) & 0xFFFF_FFFF,
         MemAccessSize::U64 | MemAccessSize::U128 => val >> shift,
@@ -226,7 +278,7 @@ fn extract_bytes(val: u64, byte_off: usize, size: MemAccessSize) -> u64 {
 fn deposit_bytes(old: u64, byte_off: usize, size: MemAccessSize, val: u64) -> u64 {
     let shift = byte_off * 8;
     let mask: u64 = match size {
-        MemAccessSize::U8  => 0xFF << shift,
+        MemAccessSize::U8 => 0xFF << shift,
         MemAccessSize::U16 => 0xFFFF << shift,
         MemAccessSize::U32 => 0xFFFF_FFFF << shift,
         MemAccessSize::U64 | MemAccessSize::U128 => !0u64,
@@ -253,7 +305,9 @@ mod tests {
     #[test]
     fn test_mtime_read_write() {
         let clint = Clint::new("clint0", 1, 0x200_0000);
-        clint.write(MTIME_OFFSET, MemAccessSize::U64, 0x12345678_ABCDEF00).unwrap();
+        clint
+            .write(MTIME_OFFSET, MemAccessSize::U64, 0x12345678_ABCDEF00)
+            .unwrap();
         let val = clint.read(MTIME_OFFSET, MemAccessSize::U64).unwrap();
         assert_eq!(val, 0x12345678_ABCDEF00);
     }
@@ -312,11 +366,15 @@ mod tests {
     #[test]
     fn test_partial_access() {
         let clint = Clint::new("clint0", 1, 0x200_0000);
-        clint.write(MTIME_OFFSET, MemAccessSize::U32, 0xDEADBEEF).unwrap();
+        clint
+            .write(MTIME_OFFSET, MemAccessSize::U32, 0xDEADBEEF)
+            .unwrap();
         let lo = clint.read(MTIME_OFFSET, MemAccessSize::U32).unwrap();
         assert_eq!(lo, 0xDEADBEEF);
 
-        clint.write(MTIME_OFFSET + 4, MemAccessSize::U32, 0xCAFEBABE).unwrap();
+        clint
+            .write(MTIME_OFFSET + 4, MemAccessSize::U32, 0xCAFEBABE)
+            .unwrap();
         let full = clint.read(MTIME_OFFSET, MemAccessSize::U64).unwrap();
         assert_eq!(full, 0xCAFEBABE_DEADBEEF);
     }

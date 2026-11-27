@@ -1,6 +1,6 @@
-use rhetsim_core::error::OmniResult;
 use rhetsim_core::backend::execution::ExecutionBackend;
-use rhetsim_core::mem::{MemTarget, MemAccessSize};
+use rhetsim_core::error::OmniResult;
+use rhetsim_core::mem::{MemAccessSize, MemTarget};
 use std::collections::HashSet;
 
 pub struct DebugSession {
@@ -9,7 +9,9 @@ pub struct DebugSession {
 
 impl DebugSession {
     pub fn new() -> Self {
-        Self { breakpoints: HashSet::new() }
+        Self {
+            breakpoints: HashSet::new(),
+        }
     }
 
     pub fn add_breakpoint(&mut self, addr: u64) -> bool {
@@ -73,12 +75,18 @@ impl DebugSession {
             let line_addr = addr + (i * 16) as u64;
             out.push_str(&format!("{:08x}: ", line_addr));
             for (j, &byte) in chunk.iter().enumerate() {
-                if j == 8 { out.push(' '); }
+                if j == 8 {
+                    out.push(' ');
+                }
                 out.push_str(&format!("{:02x} ", byte));
             }
             out.push_str(" |");
             for &byte in chunk {
-                let c = if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' };
+                let c = if byte.is_ascii_graphic() || byte == b' ' {
+                    byte as char
+                } else {
+                    '.'
+                };
                 out.push(c);
             }
             out.push_str("|\n");
@@ -88,22 +96,27 @@ impl DebugSession {
 
     pub fn format_regs_rv64(regs: &[u64; 32], pc: u64) -> String {
         let names = [
-            "zero","ra","sp","gp","tp","t0","t1","t2",
-            "s0","s1","a0","a1","a2","a3","a4","a5",
-            "a6","a7","s2","s3","s4","s5","s6","s7",
-            "s8","s9","s10","s11","t3","t4","t5","t6",
+            "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3",
+            "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+            "t3", "t4", "t5", "t6",
         ];
         let mut out = format!("pc  = {:#018x}\n", pc);
         for (i, (name, val)) in names.iter().zip(regs.iter()).enumerate() {
             out.push_str(&format!("{:4} = {:#018x}", name, val));
-            if i % 4 == 3 { out.push('\n'); } else { out.push_str("  "); }
+            if i % 4 == 3 {
+                out.push('\n');
+            } else {
+                out.push_str("  ");
+            }
         }
         out
     }
 }
 
 impl Default for DebugSession {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -8,14 +8,14 @@
 //!   5. Handler acknowledges (ICC_IAR1), sets flag, EOIs (ICC_EOIR1), ERETurns
 //!   6. CPU resumes, sees flag set, halts via SVC
 
-use std::sync::Arc;
+use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
 use rhetsim_core::irq::IrqSink;
-use rhetsim_core::mem::{MemAttrs, MemTarget, MemAccessSize};
-use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
 use rhetsim_cpu_arm::cpu::ArmCpu;
 use rhetsim_intc_gicv3::Gicv3;
 use rhetsim_mem_dram::Dram;
+use std::sync::Arc;
 
 const DRAM_BASE: u64 = 0x4000_0000;
 const DRAM_SIZE: usize = 0x1_0000; // 64 KiB
@@ -27,8 +27,20 @@ fn arm_gicv3_spi_interrupt() {
     let gic = Arc::new(Gicv3::new("gic0", 1, 64, GIC_BASE));
 
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gic.clone() as Arc<dyn MemTarget>, GIC_BASE, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gic.clone() as Arc<dyn MemTarget>,
+        GIC_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     let mut cpu = ArmCpu::with_bus("arm0", bus.clone(), DRAM_BASE);
@@ -67,7 +79,8 @@ fn arm_gicv3_spi_interrupt() {
     ];
     let main_bytes: Vec<u8> = main_code.iter().flat_map(|w| w.to_le_bytes()).collect();
     for (i, &b) in main_bytes.iter().enumerate() {
-        bus.write(DRAM_BASE + i as u64, MemAccessSize::U8, b as u64, 0).unwrap();
+        bus.write(DRAM_BASE + i as u64, MemAccessSize::U8, b as u64, 0)
+            .unwrap();
     }
 
     // ── IRQ handler at VBAR + 0x480 = DRAM_BASE + 0x2480 ─────────
@@ -90,7 +103,13 @@ fn arm_gicv3_spi_interrupt() {
     let handler_bytes: Vec<u8> = handler_code.iter().flat_map(|w| w.to_le_bytes()).collect();
     let handler_offset = 0x2480u64;
     for (i, &b) in handler_bytes.iter().enumerate() {
-        bus.write(DRAM_BASE + handler_offset + i as u64, MemAccessSize::U8, b as u64, 0).unwrap();
+        bus.write(
+            DRAM_BASE + handler_offset + i as u64,
+            MemAccessSize::U8,
+            b as u64,
+            0,
+        )
+        .unwrap();
     }
 
     // ── Configure GIC: enable SPI 32, priority 0x40, routed to CPU 0 ──

@@ -1,23 +1,23 @@
 //! AArch64 CPU — core integer interpreter
 
-use std::sync::Arc;
-use rhetsim_core::error::{OmniError, OmniResult};
-use rhetsim_core::unit::{Unit, UnitId, UnitCaps};
+use crate::decode::{decode, Cond, Instruction, ShiftType, WriteBack};
 use rhetsim_core::backend::execution::ExecutionBackend;
 use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::error::{OmniError, OmniResult};
 use rhetsim_core::mem::MemAccessSize;
+use rhetsim_core::unit::{Unit, UnitCaps, UnitId};
 use rhetsim_intc_gicv3::Gicv3;
-use crate::decode::{decode, Instruction, ShiftType, Cond, WriteBack};
+use std::sync::Arc;
 
-const SYSREG_NZCV: u16        = 0xDA10;
-const SYSREG_DAIF: u16        = 0xDA11;
-const SYSREG_VBAR_EL1: u16    = 0xC600;
-const SYSREG_ELR_EL1: u16     = 0xC201;
-const SYSREG_SPSR_EL1: u16    = 0xC200;
-const SYSREG_ICC_IAR1: u16    = 0xC660;
-const SYSREG_ICC_PMR: u16     = 0xC230;
-const SYSREG_ICC_EOIR1: u16   = 0xC661;
-const SYSREG_ICC_BPR1: u16    = 0xC663;
+const SYSREG_NZCV: u16 = 0xDA10;
+const SYSREG_DAIF: u16 = 0xDA11;
+const SYSREG_VBAR_EL1: u16 = 0xC600;
+const SYSREG_ELR_EL1: u16 = 0xC201;
+const SYSREG_SPSR_EL1: u16 = 0xC200;
+const SYSREG_ICC_IAR1: u16 = 0xC660;
+const SYSREG_ICC_PMR: u16 = 0xC230;
+const SYSREG_ICC_EOIR1: u16 = 0xC661;
+const SYSREG_ICC_BPR1: u16 = 0xC663;
 const SYSREG_ICC_IGRPEN1: u16 = 0xC667;
 
 enum MemBackend {
@@ -30,8 +30,8 @@ pub struct ArmCpu {
     regs: [u64; 31], // X0-X30
     sp: u64,
     pc: u64,
-    nzcv: u32,       // bits [31:28] = N,Z,C,V
-    daif: u32,        // bits [9:6] = D,A,I,F
+    nzcv: u32, // bits [31:28] = N,Z,C,V
+    daif: u32, // bits [9:6] = D,A,I,F
     vbar_el1: u64,
     elr_el1: u64,
     spsr_el1: u64,
@@ -58,7 +58,9 @@ impl ArmCpu {
             halted: false,
             mem_base,
             insn_count: 0,
-            backend: MemBackend::Flat { memory: vec![0u8; mem_size] },
+            backend: MemBackend::Flat {
+                memory: vec![0u8; mem_size],
+            },
             gic: None,
             cpu_id: 0,
         }
@@ -107,28 +109,56 @@ impl ArmCpu {
         }
     }
 
-    pub fn set_pc(&mut self, pc: u64) { self.pc = pc; }
-    pub fn set_sp(&mut self, sp: u64) { self.sp = sp; }
-    pub fn pc(&self) -> u64 { self.pc }
-    pub fn sp(&self) -> u64 { self.sp }
-    pub fn reg(&self, idx: usize) -> u64 { self.regs[idx] }
-    pub fn is_halted(&self) -> bool { self.halted }
-    pub fn insn_count(&self) -> u64 { self.insn_count }
+    pub fn set_pc(&mut self, pc: u64) {
+        self.pc = pc;
+    }
+    pub fn set_sp(&mut self, sp: u64) {
+        self.sp = sp;
+    }
+    pub fn pc(&self) -> u64 {
+        self.pc
+    }
+    pub fn sp(&self) -> u64 {
+        self.sp
+    }
+    pub fn reg(&self, idx: usize) -> u64 {
+        self.regs[idx]
+    }
+    pub fn is_halted(&self) -> bool {
+        self.halted
+    }
+    pub fn insn_count(&self) -> u64 {
+        self.insn_count
+    }
 
     fn read_gpr(&self, r: u8) -> u64 {
-        if r == 31 { 0 } else { self.regs[r as usize] }
+        if r == 31 {
+            0
+        } else {
+            self.regs[r as usize]
+        }
     }
 
     fn read_gpr_or_sp(&self, r: u8) -> u64 {
-        if r == 31 { self.sp } else { self.regs[r as usize] }
+        if r == 31 {
+            self.sp
+        } else {
+            self.regs[r as usize]
+        }
     }
 
     fn write_gpr(&mut self, r: u8, val: u64) {
-        if r < 31 { self.regs[r as usize] = val; }
+        if r < 31 {
+            self.regs[r as usize] = val;
+        }
     }
 
     fn write_gpr_or_sp(&mut self, r: u8, val: u64) {
-        if r == 31 { self.sp = val; } else { self.regs[r as usize] = val; }
+        if r == 31 {
+            self.sp = val;
+        } else {
+            self.regs[r as usize] = val;
+        }
     }
 
     fn mem_read(&self, addr: u64, size: usize) -> u64 {
@@ -237,7 +267,10 @@ impl ArmCpu {
         let (n, z) = if sf {
             (((result >> 63) & 1) as u64, (result == 0) as u64)
         } else {
-            ((((result as u32) >> 31) & 1) as u64, (result as u32 == 0) as u64)
+            (
+                (((result as u32) >> 31) & 1) as u64,
+                (result as u32 == 0) as u64,
+            )
         };
         self.nzcv = ((n << 3 | z << 2) << 28) as u32;
     }
@@ -271,7 +304,9 @@ impl ArmCpu {
     }
 
     fn check_interrupt(&mut self) -> bool {
-        if self.daif & (1 << 7) != 0 { return false; }
+        if self.daif & (1 << 7) != 0 {
+            return false;
+        }
         if let Some(ref gic) = self.gic {
             if gic.pending_irq(self.cpu_id).is_some() {
                 self.elr_el1 = self.pc;
@@ -302,32 +337,88 @@ impl ArmCpu {
     fn execute(&mut self, insn: Instruction) {
         match insn {
             // ── Data processing immediate ──────────────────────
-            Instruction::AddImm { sf, rd, rn, imm, shift } => {
+            Instruction::AddImm {
+                sf,
+                rd,
+                rn,
+                imm,
+                shift,
+            } => {
                 let a = self.read_gpr_or_sp(rn);
-                let b = if shift { (imm as u64) << 12 } else { imm as u64 };
-                let result = if sf { a.wrapping_add(b) } else { Self::trunc32(a.wrapping_add(b)) };
+                let b = if shift {
+                    (imm as u64) << 12
+                } else {
+                    imm as u64
+                };
+                let result = if sf {
+                    a.wrapping_add(b)
+                } else {
+                    Self::trunc32(a.wrapping_add(b))
+                };
                 self.write_gpr_or_sp(rd, result);
                 self.pc += 4;
             }
-            Instruction::SubImm { sf, rd, rn, imm, shift } => {
+            Instruction::SubImm {
+                sf,
+                rd,
+                rn,
+                imm,
+                shift,
+            } => {
                 let a = self.read_gpr_or_sp(rn);
-                let b = if shift { (imm as u64) << 12 } else { imm as u64 };
-                let result = if sf { a.wrapping_sub(b) } else { Self::trunc32(a.wrapping_sub(b)) };
+                let b = if shift {
+                    (imm as u64) << 12
+                } else {
+                    imm as u64
+                };
+                let result = if sf {
+                    a.wrapping_sub(b)
+                } else {
+                    Self::trunc32(a.wrapping_sub(b))
+                };
                 self.write_gpr_or_sp(rd, result);
                 self.pc += 4;
             }
-            Instruction::AddsImm { sf, rd, rn, imm, shift } => {
+            Instruction::AddsImm {
+                sf,
+                rd,
+                rn,
+                imm,
+                shift,
+            } => {
                 let a = self.read_gpr_or_sp(rn);
-                let b = if shift { (imm as u64) << 12 } else { imm as u64 };
-                let result = if sf { a.wrapping_add(b) } else { Self::trunc32(a.wrapping_add(b)) };
+                let b = if shift {
+                    (imm as u64) << 12
+                } else {
+                    imm as u64
+                };
+                let result = if sf {
+                    a.wrapping_add(b)
+                } else {
+                    Self::trunc32(a.wrapping_add(b))
+                };
                 self.set_nzcv_add(a, b, result, sf);
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::SubsImm { sf, rd, rn, imm, shift } => {
+            Instruction::SubsImm {
+                sf,
+                rd,
+                rn,
+                imm,
+                shift,
+            } => {
                 let a = self.read_gpr_or_sp(rn);
-                let b = if shift { (imm as u64) << 12 } else { imm as u64 };
-                let result = if sf { a.wrapping_sub(b) } else { Self::trunc32(a.wrapping_sub(b)) };
+                let b = if shift {
+                    (imm as u64) << 12
+                } else {
+                    imm as u64
+                };
+                let result = if sf {
+                    a.wrapping_sub(b)
+                } else {
+                    Self::trunc32(a.wrapping_sub(b))
+                };
                 self.set_nzcv_sub(a, b, result, sf);
                 self.write_gpr(rd, result);
                 self.pc += 4;
@@ -379,57 +470,125 @@ impl ArmCpu {
                 self.pc += 4;
             }
             // ── Data processing register ───────────────────────
-            Instruction::AddReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::AddReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
                 let a = self.read_gpr(rn);
                 let b = Self::apply_shift(self.read_gpr(rm), shift, amount, width);
-                let result = if sf { a.wrapping_add(b) } else { Self::trunc32(a.wrapping_add(b)) };
+                let result = if sf {
+                    a.wrapping_add(b)
+                } else {
+                    Self::trunc32(a.wrapping_add(b))
+                };
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::SubReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::SubReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
                 let a = self.read_gpr(rn);
                 let b = Self::apply_shift(self.read_gpr(rm), shift, amount, width);
-                let result = if sf { a.wrapping_sub(b) } else { Self::trunc32(a.wrapping_sub(b)) };
+                let result = if sf {
+                    a.wrapping_sub(b)
+                } else {
+                    Self::trunc32(a.wrapping_sub(b))
+                };
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::AddsReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::AddsReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
                 let a = self.read_gpr(rn);
                 let b = Self::apply_shift(self.read_gpr(rm), shift, amount, width);
-                let result = if sf { a.wrapping_add(b) } else { Self::trunc32(a.wrapping_add(b)) };
+                let result = if sf {
+                    a.wrapping_add(b)
+                } else {
+                    Self::trunc32(a.wrapping_add(b))
+                };
                 self.set_nzcv_add(a, b, result, sf);
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::SubsReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::SubsReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
                 let a = self.read_gpr(rn);
                 let b = Self::apply_shift(self.read_gpr(rm), shift, amount, width);
-                let result = if sf { a.wrapping_sub(b) } else { Self::trunc32(a.wrapping_sub(b)) };
+                let result = if sf {
+                    a.wrapping_sub(b)
+                } else {
+                    Self::trunc32(a.wrapping_sub(b))
+                };
                 self.set_nzcv_sub(a, b, result, sf);
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::AndReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::AndReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
-                let result = self.read_gpr(rn) & Self::apply_shift(self.read_gpr(rm), shift, amount, width);
+                let result =
+                    self.read_gpr(rn) & Self::apply_shift(self.read_gpr(rm), shift, amount, width);
                 let result = if sf { result } else { Self::trunc32(result) };
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::OrrReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::OrrReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
-                let result = self.read_gpr(rn) | Self::apply_shift(self.read_gpr(rm), shift, amount, width);
+                let result =
+                    self.read_gpr(rn) | Self::apply_shift(self.read_gpr(rm), shift, amount, width);
                 let result = if sf { result } else { Self::trunc32(result) };
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
-            Instruction::EorReg { sf, rd, rn, rm, shift, amount } => {
+            Instruction::EorReg {
+                sf,
+                rd,
+                rn,
+                rm,
+                shift,
+                amount,
+            } => {
                 let width = if sf { 64 } else { 32 };
-                let result = self.read_gpr(rn) ^ Self::apply_shift(self.read_gpr(rm), shift, amount, width);
+                let result =
+                    self.read_gpr(rn) ^ Self::apply_shift(self.read_gpr(rm), shift, amount, width);
                 let result = if sf { result } else { Self::trunc32(result) };
                 self.write_gpr(rd, result);
                 self.pc += 4;
@@ -457,12 +616,23 @@ impl ArmCpu {
                 let (a, b) = if sf {
                     (self.read_gpr(rn) as i64, self.read_gpr(rm) as i64)
                 } else {
-                    (self.read_gpr(rn) as i32 as i64, self.read_gpr(rm) as i32 as i64)
+                    (
+                        self.read_gpr(rn) as i32 as i64,
+                        self.read_gpr(rm) as i32 as i64,
+                    )
                 };
-                let result = if b == 0 { 0 }
-                    else if a == i64::MIN && b == -1 { a }
-                    else { a.wrapping_div(b) };
-                let result = if sf { result as u64 } else { Self::trunc32(result as u64) };
+                let result = if b == 0 {
+                    0
+                } else if a == i64::MIN && b == -1 {
+                    a
+                } else {
+                    a.wrapping_div(b)
+                };
+                let result = if sf {
+                    result as u64
+                } else {
+                    Self::trunc32(result as u64)
+                };
                 self.write_gpr(rd, result);
                 self.pc += 4;
             }
@@ -470,7 +640,10 @@ impl ArmCpu {
                 let (a, b) = if sf {
                     (self.read_gpr(rn), self.read_gpr(rm))
                 } else {
-                    (self.read_gpr(rn) & 0xFFFF_FFFF, self.read_gpr(rm) & 0xFFFF_FFFF)
+                    (
+                        self.read_gpr(rn) & 0xFFFF_FFFF,
+                        self.read_gpr(rm) & 0xFFFF_FFFF,
+                    )
                 };
                 let result = if b == 0 { 0 } else { a / b };
                 let result = if sf { result } else { Self::trunc32(result) };
@@ -489,7 +662,11 @@ impl ArmCpu {
             Instruction::Lsrv { sf, rd, rn, rm } => {
                 let width = if sf { 64u32 } else { 32 };
                 let shift = (self.read_gpr(rm) as u32) % width;
-                let val = if sf { self.read_gpr(rn) } else { self.read_gpr(rn) & 0xFFFF_FFFF };
+                let val = if sf {
+                    self.read_gpr(rn)
+                } else {
+                    self.read_gpr(rn) & 0xFFFF_FFFF
+                };
                 let result = val >> shift;
                 let result = if sf { result } else { Self::trunc32(result) };
                 self.write_gpr(rd, result);
@@ -507,14 +684,27 @@ impl ArmCpu {
                 self.pc += 4;
             }
             // ── Loads and stores ───────────────────────────────
-            Instruction::LdrImm { sf, rt, rn, offset, wb } => {
+            Instruction::LdrImm {
+                sf,
+                rt,
+                rn,
+                offset,
+                wb,
+            } => {
                 let size = if sf { 8 } else { 4 };
                 let base = self.read_gpr_or_sp(rn);
                 let addr = match wb {
                     WriteBack::Pre => base.wrapping_add(offset as u64),
                     _ => base,
                 };
-                let val = self.mem_read(addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 }), size);
+                let val = self.mem_read(
+                    addr.wrapping_add(if wb == WriteBack::None {
+                        offset as u64
+                    } else {
+                        0
+                    }),
+                    size,
+                );
                 let val = if !sf { val & 0xFFFF_FFFF } else { val };
                 self.write_gpr(rt, val);
                 match wb {
@@ -524,7 +714,13 @@ impl ArmCpu {
                 }
                 self.pc += 4;
             }
-            Instruction::StrImm { sf, rt, rn, offset, wb } => {
+            Instruction::StrImm {
+                sf,
+                rt,
+                rn,
+                offset,
+                wb,
+            } => {
                 let size = if sf { 8 } else { 4 };
                 let base = self.read_gpr_or_sp(rn);
                 let addr = match wb {
@@ -532,7 +728,15 @@ impl ArmCpu {
                     _ => base,
                 };
                 let val = self.read_gpr(rt);
-                self.mem_write(addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 }), size, val);
+                self.mem_write(
+                    addr.wrapping_add(if wb == WriteBack::None {
+                        offset as u64
+                    } else {
+                        0
+                    }),
+                    size,
+                    val,
+                );
                 match wb {
                     WriteBack::Pre => self.write_gpr_or_sp(rn, addr),
                     WriteBack::Post => self.write_gpr_or_sp(rn, base.wrapping_add(offset as u64)),
@@ -542,8 +746,15 @@ impl ArmCpu {
             }
             Instruction::LdrbImm { rt, rn, offset, wb } => {
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 let val = self.mem_read(eff, 1) & 0xFF;
                 self.write_gpr(rt, val);
                 match wb {
@@ -555,8 +766,15 @@ impl ArmCpu {
             }
             Instruction::StrbImm { rt, rn, offset, wb } => {
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 self.mem_write(eff, 1, self.read_gpr(rt) & 0xFF);
                 match wb {
                     WriteBack::Pre => self.write_gpr_or_sp(rn, addr),
@@ -567,8 +785,15 @@ impl ArmCpu {
             }
             Instruction::LdrhImm { rt, rn, offset, wb } => {
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 let val = self.mem_read(eff, 2) & 0xFFFF;
                 self.write_gpr(rt, val);
                 match wb {
@@ -580,8 +805,15 @@ impl ArmCpu {
             }
             Instruction::StrhImm { rt, rn, offset, wb } => {
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 self.mem_write(eff, 2, self.read_gpr(rt) & 0xFFFF);
                 match wb {
                     WriteBack::Pre => self.write_gpr_or_sp(rn, addr),
@@ -592,8 +824,15 @@ impl ArmCpu {
             }
             Instruction::LdrswImm { rt, rn, offset, wb } => {
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 let val = self.mem_read(eff, 4) as i32 as i64 as u64;
                 self.write_gpr(rt, val);
                 match wb {
@@ -610,11 +849,25 @@ impl ArmCpu {
                 self.write_gpr(rt, val);
                 self.pc += 4;
             }
-            Instruction::Ldp { sf, rt, rt2, rn, offset, wb } => {
+            Instruction::Ldp {
+                sf,
+                rt,
+                rt2,
+                rn,
+                offset,
+                wb,
+            } => {
                 let size = if sf { 8usize } else { 4 };
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 let v1 = self.mem_read(eff, size);
                 let v2 = self.mem_read(eff + size as u64, size);
                 self.write_gpr(rt, if sf { v1 } else { v1 & 0xFFFF_FFFF });
@@ -626,11 +879,25 @@ impl ArmCpu {
                 }
                 self.pc += 4;
             }
-            Instruction::Stp { sf, rt, rt2, rn, offset, wb } => {
+            Instruction::Stp {
+                sf,
+                rt,
+                rt2,
+                rn,
+                offset,
+                wb,
+            } => {
                 let size = if sf { 8usize } else { 4 };
                 let base = self.read_gpr_or_sp(rn);
-                let addr = match wb { WriteBack::Pre => base.wrapping_add(offset as u64), _ => base };
-                let eff = addr.wrapping_add(if wb == WriteBack::None { offset as u64 } else { 0 });
+                let addr = match wb {
+                    WriteBack::Pre => base.wrapping_add(offset as u64),
+                    _ => base,
+                };
+                let eff = addr.wrapping_add(if wb == WriteBack::None {
+                    offset as u64
+                } else {
+                    0
+                });
                 self.mem_write(eff, size, self.read_gpr(rt));
                 self.mem_write(eff + size as u64, size, self.read_gpr(rt2));
                 match wb {
@@ -667,7 +934,11 @@ impl ArmCpu {
                 }
             }
             Instruction::Cbz { sf, rt, offset } => {
-                let val = if sf { self.read_gpr(rt) } else { self.read_gpr(rt) & 0xFFFF_FFFF };
+                let val = if sf {
+                    self.read_gpr(rt)
+                } else {
+                    self.read_gpr(rt) & 0xFFFF_FFFF
+                };
                 if val == 0 {
                     self.pc = self.pc.wrapping_add(offset as u64);
                 } else {
@@ -675,7 +946,11 @@ impl ArmCpu {
                 }
             }
             Instruction::Cbnz { sf, rt, offset } => {
-                let val = if sf { self.read_gpr(rt) } else { self.read_gpr(rt) & 0xFFFF_FFFF };
+                let val = if sf {
+                    self.read_gpr(rt)
+                } else {
+                    self.read_gpr(rt) & 0xFFFF_FFFF
+                };
                 if val != 0 {
                     self.pc = self.pc.wrapping_add(offset as u64);
                 } else {
@@ -706,7 +981,9 @@ impl ArmCpu {
                     SYSREG_ICC_IAR1 | SYSREG_ICC_PMR | SYSREG_ICC_BPR1 | SYSREG_ICC_IGRPEN1 => {
                         if let Some(ref gic) = self.gic {
                             gic.read_icc_reg(self.cpu_id, sysreg)
-                        } else { 0 }
+                        } else {
+                            0
+                        }
                     }
                     _ => 0,
                 };
@@ -735,17 +1012,29 @@ impl ArmCpu {
                 self.nzcv = (self.spsr_el1 as u32) & 0xF000_0000;
                 self.daif = (self.spsr_el1 as u32) & 0x3C0;
             }
-            Instruction::Nop => { self.pc += 4; }
-            Instruction::Wfi => { self.pc += 4; }
-            Instruction::Unknown(_) => { self.halted = true; }
+            Instruction::Nop => {
+                self.pc += 4;
+            }
+            Instruction::Wfi => {
+                self.pc += 4;
+            }
+            Instruction::Unknown(_) => {
+                self.halted = true;
+            }
         }
     }
 }
 
 impl Unit for ArmCpu {
-    fn id(&self) -> &UnitId { &self.id }
-    fn kind(&self) -> &'static str { "aarch64-core" }
-    fn caps(&self) -> UnitCaps { UnitCaps::EXECUTABLE }
+    fn id(&self) -> &UnitId {
+        &self.id
+    }
+    fn kind(&self) -> &'static str {
+        "aarch64-core"
+    }
+    fn caps(&self) -> UnitCaps {
+        UnitCaps::EXECUTABLE
+    }
 
     fn reset(&mut self) -> OmniResult<()> {
         self.regs = [0; 31];
@@ -776,11 +1065,15 @@ impl ExecutionBackend for ArmCpu {
         Ok(executed)
     }
 
-    fn reset(&mut self) -> OmniResult<()> { Unit::reset(self) }
+    fn reset(&mut self) -> OmniResult<()> {
+        Unit::reset(self)
+    }
 
     fn save_state(&self) -> OmniResult<Vec<u8>> {
         let mut state = Vec::with_capacity(31 * 8 + 8 + 8 + 4 + 1);
-        for r in &self.regs { state.extend_from_slice(&r.to_le_bytes()); }
+        for r in &self.regs {
+            state.extend_from_slice(&r.to_le_bytes());
+        }
         state.extend_from_slice(&self.sp.to_le_bytes());
         state.extend_from_slice(&self.pc.to_le_bytes());
         state.extend_from_slice(&self.nzcv.to_le_bytes());
@@ -811,7 +1104,9 @@ impl ExecutionBackend for ArmCpu {
         Ok(())
     }
 
-    fn backend_name(&self) -> &'static str { "aarch64-interp" }
+    fn backend_name(&self) -> &'static str {
+        "aarch64-interp"
+    }
 }
 
 #[cfg(test)]
@@ -895,8 +1190,8 @@ mod tests {
             0xD65F03C0, // RET
         ]);
         cpu.exec(10).unwrap();
-        assert_eq!(cpu.reg(1), 42);  // func executed
-        assert_eq!(cpu.reg(0), 99);  // returned to after BL
+        assert_eq!(cpu.reg(1), 42); // func executed
+        assert_eq!(cpu.reg(0), 99); // returned to after BL
     }
 
     #[test]
@@ -937,8 +1232,7 @@ mod tests {
         let mut cpu = cpu_with(&[
             0xD28000E0, // MOVZ X0, #7
             0xD28000C1, // MOVZ X1, #6
-            madd,
-            0xD4000001,
+            madd, 0xD4000001,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(2), 42);
@@ -952,8 +1246,7 @@ mod tests {
         let mut cpu = cpu_with(&[
             0xD2800540, // MOVZ X0, #42
             0xD28000E1, // MOVZ X1, #7
-            sdiv,
-            0xD4000001,
+            sdiv, 0xD4000001,
         ]);
         cpu.exec(10).unwrap();
         assert_eq!(cpu.reg(2), 6);

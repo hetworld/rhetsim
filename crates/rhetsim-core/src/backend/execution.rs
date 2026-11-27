@@ -21,7 +21,9 @@ pub trait ExecutionBackend: Send + Sync {
     fn backend_name(&self) -> &'static str;
 
     /// 是否支持暂停
-    fn supports_pause(&self) -> bool { false }
+    fn supports_pause(&self) -> bool {
+        false
+    }
 
     /// 暂停执行
     fn pause(&mut self) -> OmniResult<()> {
@@ -34,7 +36,9 @@ pub trait ExecutionBackend: Send + Sync {
     }
 
     /// 上报事件（VM exit、中断等）
-    fn poll_event(&mut self) -> Option<BackendEvent> { None }
+    fn poll_event(&mut self) -> Option<BackendEvent> {
+        None
+    }
 }
 
 /// 调试接口扩展（CPU 类 Unit 实现）
@@ -95,7 +99,12 @@ pub enum BackendEvent {
     /// VM exit（KVM）
     VmExit { reason: u32, addr: u64 },
     /// MMIO 访问请求
-    MmioAccess { addr: u64, size: u8, is_write: bool, data: u64 },
+    MmioAccess {
+        addr: u64,
+        size: u8,
+        is_write: bool,
+        data: u64,
+    },
     /// 中断注入完成
     IrqDelivered { irq: u32 },
     /// 执行停止

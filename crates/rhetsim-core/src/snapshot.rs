@@ -7,23 +7,23 @@ use crate::unit::UnitId;
 pub struct UnitSnapshot {
     pub unit_id: UnitId,
     pub version: u32,
-    pub data:    Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 /// 整个平台的状态快照
 #[derive(Debug, Clone)]
 pub struct PlatformSnapshot {
     pub platform_name: String,
-    pub timestamp_ns:  u64,
-    pub units:         Vec<UnitSnapshot>,
+    pub timestamp_ns: u64,
+    pub units: Vec<UnitSnapshot>,
 }
 
 impl PlatformSnapshot {
     pub fn new(platform_name: impl Into<String>) -> Self {
         Self {
             platform_name: platform_name.into(),
-            timestamp_ns:  0,
-            units:         Vec::new(),
+            timestamp_ns: 0,
+            units: Vec::new(),
         }
     }
 

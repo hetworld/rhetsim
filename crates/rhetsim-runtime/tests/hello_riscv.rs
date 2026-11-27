@@ -45,9 +45,9 @@ fn riscv_hello_world() {
 
 #[test]
 fn riscv_hello_via_scheduler() {
-    use std::sync::{Arc, Mutex};
     use rhetsim_core::unit::Unit;
     use rhetsim_runtime::Scheduler;
+    use std::sync::{Arc, Mutex};
 
     let mut cpu = RiscvCpu::new("rv-core0", MEM_SIZE, MEM_BASE);
     cpu.set_uart_addr(UART_ADDR);

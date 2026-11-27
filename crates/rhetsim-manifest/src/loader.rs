@@ -1,17 +1,17 @@
 //! Loader — JSON / TOML 序列化与反序列化
 
-use std::path::Path;
-use rhetsim_core::error::{OmniError, OmniResult};
 use crate::manifest::Manifest;
+use rhetsim_core::error::{OmniError, OmniResult};
+use std::path::Path;
 
 pub fn load_from_file(path: &Path) -> OmniResult<Manifest> {
     let content = std::fs::read_to_string(path)?;
     match path.extension().and_then(|e| e.to_str()) {
         Some("toml") => from_toml(&content),
         Some("json") => from_json(&content),
-        Some(ext) => Err(OmniError::InvalidConfig(
-            format!("unsupported manifest format: .{ext}"),
-        )),
+        Some(ext) => Err(OmniError::InvalidConfig(format!(
+            "unsupported manifest format: .{ext}"
+        ))),
         None => from_toml(&content),
     }
 }

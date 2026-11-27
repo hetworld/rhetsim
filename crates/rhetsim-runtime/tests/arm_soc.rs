@@ -19,31 +19,31 @@
 //!   7. Writes 0xCAFEBABE to PCIe BAR0, reads back
 //!   8. Stores all results to DRAM, halts via SVC
 
-use std::sync::Arc;
-use rhetsim_core::bus::mem_bus::MemBus;
-use rhetsim_core::mem::{MemAttrs, MemTarget, MemAccessSize};
 use rhetsim_core::backend::execution::ExecutionBackend;
+use rhetsim_core::bus::mem_bus::MemBus;
+use rhetsim_core::mem::{MemAccessSize, MemAttrs, MemTarget};
 use rhetsim_cpu_arm::cpu::ArmCpu;
 use rhetsim_intc_gicv3::Gicv3;
-use rhetsim_mem_dram::Dram;
-use rhetsim_io_uart::Uart;
 use rhetsim_io_dma::DmaEngine;
+use rhetsim_io_pcie::{Bdf, PcieEndpoint, PcieRootComplex};
+use rhetsim_io_uart::Uart;
 use rhetsim_io_virtio::VirtioConsole;
-use rhetsim_io_pcie::{PcieRootComplex, PcieEndpoint, Bdf};
+use rhetsim_mem_dram::Dram;
+use std::sync::Arc;
 
-const DRAM_BASE: u64    = 0x0000_0000;
-const DRAM_SIZE: usize  = 128 * 1024;
-const GIC_BASE: u64     = 0x0800_0000;
-const UART_BASE: u64    = 0x0900_0000;
-const DMA_BASE: u64     = 0x0A00_0000;
-const VIRTIO_BASE: u64  = 0x0B00_0000;
-const ECAM_BASE: u64    = 0x1000_0000;
-const PCIE_BAR: u64     = 0x2000_0000;
-const BAR_SIZE: usize   = 4096;
+const DRAM_BASE: u64 = 0x0000_0000;
+const DRAM_SIZE: usize = 128 * 1024;
+const GIC_BASE: u64 = 0x0800_0000;
+const UART_BASE: u64 = 0x0900_0000;
+const DMA_BASE: u64 = 0x0A00_0000;
+const VIRTIO_BASE: u64 = 0x0B00_0000;
+const ECAM_BASE: u64 = 0x1000_0000;
+const PCIE_BAR: u64 = 0x2000_0000;
+const BAR_SIZE: usize = 4096;
 
-const SRC_OFF: u64      = 0x4000;
-const DST_OFF: u64      = 0x5000;
-const RESULT_OFF: u64   = 0x1_0000;
+const SRC_OFF: u64 = 0x4000;
+const DST_OFF: u64 = 0x5000;
+const RESULT_OFF: u64 = 0x1_0000;
 
 // ── AArch64 instruction encoding helpers ──────────────────────
 
@@ -87,32 +87,115 @@ fn arm_soc_full_platform() {
 
     let nic_mem = Arc::new(Dram::with_base("nic-bar0", BAR_SIZE, 0));
     let mut ep = PcieEndpoint::new(Bdf::new(0, 0, 0), 0x8086, 0x15B8, 0x020000);
-    ep.add_bar(0, PCIE_BAR, BAR_SIZE as u64, nic_mem.clone() as Arc<dyn MemTarget>);
+    ep.add_bar(
+        0,
+        PCIE_BAR,
+        BAR_SIZE as u64,
+        nic_mem.clone() as Arc<dyn MemTarget>,
+    );
     let rc = PcieRootComplex::new("pcie0", ECAM_BASE);
     rc.attach(Box::new(ep));
     let rc = Arc::new(rc);
 
     // ── Build MemBus ──────────────────────────────────────────
     let mut bus = MemBus::new("sys-bus");
-    bus.map(dram.clone() as Arc<dyn MemTarget>, DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(gic.clone()  as Arc<dyn MemTarget>, GIC_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(uart.clone() as Arc<dyn MemTarget>, UART_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(virtio.clone() as Arc<dyn MemTarget>, VIRTIO_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(rc.clone()   as Arc<dyn MemTarget>, ECAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus.map(nic_mem.clone() as Arc<dyn MemTarget>, PCIE_BAR, MemAttrs::rw(), None).unwrap();
+    bus.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        gic.clone() as Arc<dyn MemTarget>,
+        GIC_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        uart.clone() as Arc<dyn MemTarget>,
+        UART_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        virtio.clone() as Arc<dyn MemTarget>,
+        VIRTIO_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        rc.clone() as Arc<dyn MemTarget>,
+        ECAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus.map(
+        nic_mem.clone() as Arc<dyn MemTarget>,
+        PCIE_BAR,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus = Arc::new(bus);
 
     // DMA needs bus access
     let dma = Arc::new(DmaEngine::new("dma0", DMA_BASE, bus.clone()));
     // Re-open bus to add DMA (need mutable access — rebuild)
     let mut bus2 = MemBus::new("sys-bus");
-    bus2.map(dram.clone() as Arc<dyn MemTarget>, DRAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus2.map(gic.clone()  as Arc<dyn MemTarget>, GIC_BASE, MemAttrs::rw(), None).unwrap();
-    bus2.map(uart.clone() as Arc<dyn MemTarget>, UART_BASE, MemAttrs::rw(), None).unwrap();
-    bus2.map(dma.clone()  as Arc<dyn MemTarget>, DMA_BASE, MemAttrs::rw(), None).unwrap();
-    bus2.map(virtio.clone() as Arc<dyn MemTarget>, VIRTIO_BASE, MemAttrs::rw(), None).unwrap();
-    bus2.map(rc.clone()   as Arc<dyn MemTarget>, ECAM_BASE, MemAttrs::rw(), None).unwrap();
-    bus2.map(nic_mem.clone() as Arc<dyn MemTarget>, PCIE_BAR, MemAttrs::rw(), None).unwrap();
+    bus2.map(
+        dram.clone() as Arc<dyn MemTarget>,
+        DRAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus2.map(
+        gic.clone() as Arc<dyn MemTarget>,
+        GIC_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus2.map(
+        uart.clone() as Arc<dyn MemTarget>,
+        UART_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus2.map(
+        dma.clone() as Arc<dyn MemTarget>,
+        DMA_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus2.map(
+        virtio.clone() as Arc<dyn MemTarget>,
+        VIRTIO_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus2.map(
+        rc.clone() as Arc<dyn MemTarget>,
+        ECAM_BASE,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
+    bus2.map(
+        nic_mem.clone() as Arc<dyn MemTarget>,
+        PCIE_BAR,
+        MemAttrs::rw(),
+        None,
+    )
+    .unwrap();
     let bus2 = Arc::new(bus2);
 
     // ── Build ARM CPU ─────────────────────────────────────────
@@ -131,71 +214,74 @@ fn arm_soc_full_platform() {
     //   X0, X1, X9 = temps
     let prog: Vec<u32> = vec![
         // ── Set up base addresses ─────────────────────────────
-        movz(2, 0x0000, 0),  movk(2, 0x0900, 16),   // X2 = UART
-        movz(3, 0x0000, 0),  movk(3, 0x0A00, 16),   // X3 = DMA
-        movz(4, 0x0000, 0),  movk(4, 0x1000, 16),   // X4 = ECAM
-        movz(5, 0x0000, 0),  movk(5, 0x2000, 16),   // X5 = PCIe BAR
-        movz(6, 0x0000, 0),  movk(6, 0x0001, 16),   // X6 = results
-        movz(7, 0x0000, 0),  movk(7, 0x0B00, 16),   // X7 = VirtIO
-
+        movz(2, 0x0000, 0),
+        movk(2, 0x0900, 16), // X2 = UART
+        movz(3, 0x0000, 0),
+        movk(3, 0x0A00, 16), // X3 = DMA
+        movz(4, 0x0000, 0),
+        movk(4, 0x1000, 16), // X4 = ECAM
+        movz(5, 0x0000, 0),
+        movk(5, 0x2000, 16), // X5 = PCIe BAR
+        movz(6, 0x0000, 0),
+        movk(6, 0x0001, 16), // X6 = results
+        movz(7, 0x0000, 0),
+        movk(7, 0x0B00, 16), // X7 = VirtIO
         // ── Part 1: Write "SoC\n" to UART ─────────────────────
-        movz(0, b'S' as u32, 0), strb_uoff(0, 2, 0),
-        movz(0, b'o' as u32, 0), strb_uoff(0, 2, 0),
-        movz(0, b'C' as u32, 0), strb_uoff(0, 2, 0),
-        movz(0, b'\n' as u32, 0), strb_uoff(0, 2, 0),
-
+        movz(0, b'S' as u32, 0),
+        strb_uoff(0, 2, 0),
+        movz(0, b'o' as u32, 0),
+        strb_uoff(0, 2, 0),
+        movz(0, b'C' as u32, 0),
+        strb_uoff(0, 2, 0),
+        movz(0, b'\n' as u32, 0),
+        strb_uoff(0, 2, 0),
         // ── Part 2: Write test pattern to DRAM at SRC_OFF ─────
-        movz(8, SRC_OFF as u32, 0),                  // X8 = 0x4000
-        movz(0, 0xBEEF, 0), movk(0, 0xDEAD, 16),    // X0 = 0xDEADBEEF
-        str_w_uoff(0, 8, 0),                         // DRAM[0x4000] = 0xDEADBEEF
-        movz(0, 0xFACE, 0), movk(0, 0xCAFE, 16),    // X0 = 0xCAFEFACE
-        str_w_uoff(0, 8, 4),                         // DRAM[0x4004] = 0xCAFEFACE
-
+        movz(8, SRC_OFF as u32, 0), // X8 = 0x4000
+        movz(0, 0xBEEF, 0),
+        movk(0, 0xDEAD, 16), // X0 = 0xDEADBEEF
+        str_w_uoff(0, 8, 0), // DRAM[0x4000] = 0xDEADBEEF
+        movz(0, 0xFACE, 0),
+        movk(0, 0xCAFE, 16), // X0 = 0xCAFEFACE
+        str_w_uoff(0, 8, 4), // DRAM[0x4004] = 0xCAFEFACE
         // ── Part 3: Program DMA transfer ──────────────────────
         // SRC_ADDR (offset 0x00) = 0x4000
         movz(0, SRC_OFF as u32, 0),
-        str_x_uoff(0, 3, 0),                         // DMA[0x00] = src
+        str_x_uoff(0, 3, 0), // DMA[0x00] = src
         // DST_ADDR (offset 0x08) = 0x5000
         movz(0, DST_OFF as u32, 0),
-        str_x_uoff(0, 3, 8),                         // DMA[0x08] = dst
+        str_x_uoff(0, 3, 8), // DMA[0x08] = dst
         // LENGTH (offset 0x10) = 8 bytes
         movz(0, 8, 0),
-        str_w_uoff(0, 3, 0x10),                      // DMA[0x10] = 8
+        str_w_uoff(0, 3, 0x10), // DMA[0x10] = 8
         // CTRL = 1 (start)
         movz(0, 1, 0),
-        str_w_uoff(0, 3, 0x14),                      // DMA[0x14] = start
-
+        str_w_uoff(0, 3, 0x14), // DMA[0x14] = start
         // ── Part 4: Read DMA status → results[0] ─────────────
-        ldr_w_uoff(0, 3, 0x18),                      // X0 = DMA STATUS
-        str_w_uoff(0, 6, 0),                         // results[0]
-
+        ldr_w_uoff(0, 3, 0x18), // X0 = DMA STATUS
+        str_w_uoff(0, 6, 0),    // results[0]
         // ── Part 5: Verify DMA copy ──────────────────────────
-        movz(8, DST_OFF as u32, 0),                  // X8 = 0x5000
+        movz(8, DST_OFF as u32, 0), // X8 = 0x5000
         ldr_w_uoff(0, 8, 0),
-        str_w_uoff(0, 6, 4),                         // results[4] = DRAM[0x5000]
+        str_w_uoff(0, 6, 4), // results[4] = DRAM[0x5000]
         ldr_w_uoff(0, 8, 4),
-        str_w_uoff(0, 6, 8),                         // results[8] = DRAM[0x5004]
-
+        str_w_uoff(0, 6, 8), // results[8] = DRAM[0x5004]
         // ── Part 6: VirtIO magic → results[12] ───────────────
-        ldr_w_uoff(0, 7, 0),                         // VirtIO magic
-        str_w_uoff(0, 6, 12),                        // results[12]
-
+        ldr_w_uoff(0, 7, 0),  // VirtIO magic
+        str_w_uoff(0, 6, 12), // results[12]
         // ── Part 7: Write "OK" to VirtIO TX ──────────────────
         movz(0, b'O' as u32, 0),
-        str_w_uoff(0, 7, 0x100),                     // VirtIO TX port
+        str_w_uoff(0, 7, 0x100), // VirtIO TX port
         movz(0, b'K' as u32, 0),
         str_w_uoff(0, 7, 0x100),
-
         // ── Part 8: PCIe ECAM read → results[16] ─────────────
-        ldr_w_uoff(0, 4, 0),                         // ECAM[0] = vendor|device
-        str_w_uoff(0, 6, 16),                        // results[16]
-
+        ldr_w_uoff(0, 4, 0),  // ECAM[0] = vendor|device
+        str_w_uoff(0, 6, 16), // results[16]
         // ── Part 9: Write 0xCAFEBABE to PCIe BAR, readback ───
-        movz(0, 0xBABE, 0), movk(0, 0xCAFE, 16),
-        str_w_uoff(0, 5, 0),                         // BAR[0] = 0xCAFEBABE
-        ldr_w_uoff(0, 5, 0),                         // readback
-        str_w_uoff(0, 6, 20),                        // results[20]
-
+        movz(0, 0xBABE, 0),
+        movk(0, 0xCAFE, 16),
+        str_w_uoff(0, 5, 0),  // BAR[0] = 0xCAFEBABE
+        ldr_w_uoff(0, 5, 0),  // readback
+        str_w_uoff(0, 6, 20), // results[20]
         // ── Halt ──────────────────────────────────────────────
         svc0(),
     ];

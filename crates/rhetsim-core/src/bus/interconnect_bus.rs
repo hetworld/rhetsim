@@ -2,9 +2,9 @@
 //!
 //! 覆盖：多卡 GPU 互联、NUMA 多路服务器、CXL 内存、片上 NoC。
 
-use std::sync::Arc;
 use crate::error::OmniResult;
 use crate::unit::UnitId;
+use std::sync::Arc;
 
 /// 寻址模式
 #[derive(Debug, Clone, Copy)]
@@ -24,22 +24,27 @@ pub enum NodeKind {
 }
 
 pub struct InterconnectNode {
-    pub unit_id:         UnitId,
-    pub node_kind:       NodeKind,
-    pub base_addr:       u64,
-    pub size:            u64,
+    pub unit_id: UnitId,
+    pub node_kind: NodeKind,
+    pub base_addr: u64,
+    pub size: u64,
     pub accessible_from: Option<Vec<UnitId>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterconnectPerf {
     pub bandwidth_gbps: f64,
-    pub latency_ns:     u64,
+    pub latency_ns: u64,
 }
 
 /// 原子操作类型
 #[derive(Debug, Clone, Copy)]
-pub enum AtomicOp { Add, CmpSwap, FetchOr, FetchAnd }
+pub enum AtomicOp {
+    Add,
+    CmpSwap,
+    FetchOr,
+    FetchAnd,
+}
 
 /// 协议后端接口
 pub trait InterconnectBackend: Send + Sync {
@@ -52,37 +57,63 @@ pub trait InterconnectBackend: Send + Sync {
 /// PCIe P2P 后端
 pub struct PciePeerBackend;
 impl InterconnectBackend for PciePeerBackend {
-    fn name(&self) -> &'static str { "pcie-peer" }
-    fn read(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &mut [u8]) -> OmniResult<()> { Ok(()) }
-    fn write(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &[u8]) -> OmniResult<()> { Ok(()) }
-    fn atomic(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _op: AtomicOp) -> OmniResult<u64> { Ok(0) }
+    fn name(&self) -> &'static str {
+        "pcie-peer"
+    }
+    fn read(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &mut [u8]) -> OmniResult<()> {
+        Ok(())
+    }
+    fn write(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &[u8]) -> OmniResult<()> {
+        Ok(())
+    }
+    fn atomic(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _op: AtomicOp) -> OmniResult<u64> {
+        Ok(0)
+    }
 }
 
 /// 高速直连后端（NVLink / Infinity Fabric / 片上 NoC）
 pub struct DirectFabricBackend;
 impl InterconnectBackend for DirectFabricBackend {
-    fn name(&self) -> &'static str { "direct-fabric" }
-    fn read(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &mut [u8]) -> OmniResult<()> { Ok(()) }
-    fn write(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &[u8]) -> OmniResult<()> { Ok(()) }
-    fn atomic(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _op: AtomicOp) -> OmniResult<u64> { Ok(0) }
+    fn name(&self) -> &'static str {
+        "direct-fabric"
+    }
+    fn read(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &mut [u8]) -> OmniResult<()> {
+        Ok(())
+    }
+    fn write(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _buf: &[u8]) -> OmniResult<()> {
+        Ok(())
+    }
+    fn atomic(&self, _src: &UnitId, _dst: &UnitId, _addr: u64, _op: AtomicOp) -> OmniResult<u64> {
+        Ok(0)
+    }
 }
 
 pub struct InterconnectBus {
-    pub id:        String,
+    pub id: String,
     pub addr_mode: AddrMode,
-    pub nodes:     Vec<InterconnectNode>,
-    pub perf:      Option<InterconnectPerf>,
-    pub backend:   Box<dyn InterconnectBackend>,
+    pub nodes: Vec<InterconnectNode>,
+    pub perf: Option<InterconnectPerf>,
+    pub backend: Box<dyn InterconnectBackend>,
 }
 
 impl InterconnectBus {
     pub fn new_windowed(id: impl Into<String>) -> Self {
-        Self { id: id.into(), addr_mode: AddrMode::Windowed, nodes: Vec::new(),
-               perf: None, backend: Box::new(PciePeerBackend) }
+        Self {
+            id: id.into(),
+            addr_mode: AddrMode::Windowed,
+            nodes: Vec::new(),
+            perf: None,
+            backend: Box::new(PciePeerBackend),
+        }
     }
 
     pub fn new_unified(id: impl Into<String>) -> Self {
-        Self { id: id.into(), addr_mode: AddrMode::Unified, nodes: Vec::new(),
-               perf: None, backend: Box::new(DirectFabricBackend) }
+        Self {
+            id: id.into(),
+            addr_mode: AddrMode::Unified,
+            nodes: Vec::new(),
+            perf: None,
+            backend: Box::new(DirectFabricBackend),
+        }
     }
 }
